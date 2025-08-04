@@ -113,7 +113,7 @@ func Port(FileName string, Bytes []byte) {
 	}
 	fmt.Print("Porting finished: " + outFile + "\n")
 	for conn := range finishedPackConnections {
-		SendMessage(conn, "Porting finished: "+outFile) // This will now send a JSON object
+		SendMessage(conn, outFile)
 	}
 }
 

@@ -148,8 +148,6 @@
             </div>
         </div>
     </div>
-
-
     <script>
         FinishPort();
 
@@ -271,7 +269,7 @@ function FinishedPack() {
         try {
             const message = JSON.parse(event.data);
             console.log("Message received:", message);
-            Popup("Porting Finished", message.message + " has finished porting", "success", "OK");
+            Popup("Porting Finished", message.message + " Has been ported ! ", "success", "OK");
         } catch (error) {
             console.error("Error parsing message:", error);
         }
