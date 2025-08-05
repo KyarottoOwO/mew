@@ -191,10 +191,9 @@
                 hoverBox.classList.add("hidden");
                 fileInfoBox.classList.remove("hidden");
                 fileName.textContent = file.name;
-                fileSize.textContent = `${(file.size / 1024 / 1024).toFixed(2)} MB`;
+                fileSize.textContent = (file.size / 1024 / 1024).toFixed(2)} + " MB";
                 fileType.textContent = file.type;
-                fileModified.textContent = `modified ${new Date(file.lastModified).toLocaleDateString()}`;
-            }
+                fileModified.textContent = "modified" + new Date(file.lastModified).toLocaleDateString();
         }
 
         fileUpload.addEventListener("change", (eva) => {
@@ -212,7 +211,7 @@
                     },
                 }).fire({
                     title: "Cura",
-                    html: `Cura is a tool designed to help people port or create texture packs for <strong>Minecraft: Bedrock Edition</strong>. It is developed by <strong>Kyarotto</strong>, and the UI is designed by <strong>zkyrosz</strong>. Cura is still in development and may contain bugs or issues. Please report any problems to the <a href="https://discord.gg/XMQXn3eW2D" target="_blank" rel="noopener noreferrer">Discord server</a>.`,
+                    html: 'Cura is a tool designed to help people port or create texture packs for <strong>Minecraft: Bedrock Edition</strong>. It is developed by <strong>Kyarotto</strong>, and the UI is designed by <strong>zkyrosz</strong>. Cura is still in development and may contain bugs or issues. Please report any problems to the <a href="https://discord.gg/XMQXn3eW2D" target="_blank" rel="noopener noreferrer">Discord server</a>.',
                     confirmButtonText: "Got it!",
                 });
             };

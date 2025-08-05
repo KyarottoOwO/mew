@@ -77,7 +77,6 @@ func FinishedPack() {
 }
 
 func SendMessage(conn *websocket.Conn, message string) {
-	// Create a JSON object
 	msg := map[string]string{"message": message}
 	jsonMsg, err := json.Marshal(msg)
 	if err != nil {
@@ -91,7 +90,6 @@ func SendMessage(conn *websocket.Conn, message string) {
 	}
 }
 
-// In the Port function, send a JSON message
 func Port(FileName string, Bytes []byte) {
 	if !strings.HasSuffix(FileName, ".zip") {
 		return
