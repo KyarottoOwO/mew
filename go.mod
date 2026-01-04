@@ -1,8 +1,6 @@
-module Cura
+module srm
 
-go 1.23.4
-
-toolchain go1.23.7
+go 1.25
 
 require (
 	github.com/gorilla/websocket v1.5.3
@@ -11,13 +9,11 @@ require (
 )
 
 require (
-	github.com/akavel/rsrc v0.10.2 // indirect
 	github.com/crazy3lf/colorconv v1.2.0 // indirect
 	github.com/disintegration/imaging v1.6.2 // indirect
 	github.com/gameparrot/fastpng v0.0.0-20250305185850-d72e123a2123 // indirect
 	github.com/gameparrot/tga v1.0.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/josephspurrier/goversioninfo v1.5.0 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/muhammadmuzzammil1998/jsonc v1.0.0 // indirect
 	github.com/sandertv/gophertunnel v1.43.1 // indirect
