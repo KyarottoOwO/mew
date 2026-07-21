@@ -1,0 +1,50 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  background-color: hsl(0, 0%, 2%);
+  color: white;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  overflow: hidden;
+  height: 100vh;
+}
+
+#app {
+  height: 100vh;
+  width: 100vw;
+}
+
+.swal-custom-popup {
+  background: hsl(0, 0%, 5%) !important;
+  border: 1px solid hsl(0, 0%, 15%) !important;
+  color: white !important;
+}
+
+.custom-confirm-btn {
+  background: #A90B3C !important;
+  color: white !important;
+  border: none !important;
+  border-radius: 4px !important;
+  padding: 0.5rem 1.5rem !important;
+  cursor: pointer !important;
+}
+
+.custom-confirm-btn:hover {
+  background: #c41048 !important;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: hsl(0, 0%, 5%);
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(0, 0%, 20%);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(0, 0%, 30%);
+}

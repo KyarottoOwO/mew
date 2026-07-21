@@ -1,5 +1,4 @@
 *
-
 !*/
 
 !.gitignore
@@ -9,13 +8,30 @@
 
 !*.go
 !*.html
+!*.css
+!*.js
+!*.vue
 !go.sum
 !go.work
 !go.work.sum
 !*.mod
 
 !*.ps1
+!*.bat
 
 !*.md
 
+*.exe
+*.syso
+*.ico
+rsrc.exe
 .idea/
+folder_port_temp/
+temp_unzip/
+Java/
+Bedrock/
+
+frontend/node_modules/
+frontend/dist/
+frontend/wailsjs/
+build/
