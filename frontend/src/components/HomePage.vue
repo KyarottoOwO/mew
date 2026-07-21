@@ -13,10 +13,10 @@ onMounted(() => {
 
 <template>
   <div class="home-page">
-    <h1 v-if="!showSuite" class="welcome-text fade-in">Welcome to SRM</h1>
+    <h1 v-if="!showSuite" class="welcome-text fade-in">Welcome to MEW</h1>
 
     <div v-if="showSuite" class="suite-content fade-in">
-      <h1 class="text-4xl font-bold mb-4" style="color: #A90B3C;">Pack Tools Suite</h1>
+      <h1 class="text-4xl font-bold mb-4" style="color: #e879a8;">Pack Tools Suite</h1>
       <p class="text-neutral-400 mb-10">All the tools you need to handle Minecraft Bedrock texture packs in one place.</p>
 
       <div class="flex gap-8 justify-center mb-10">
@@ -31,15 +31,15 @@ onMounted(() => {
       </div>
 
       <div class="about-box">
-        <h3 class="text-xl font-semibold mb-2">About SRM</h3>
-        <p class="text-neutral-400 text-sm mb-4">SRM helps you work with resource packs faster by automating common tasks and keeping things simple.</p>
+        <h3 class="text-xl font-semibold mb-2">About MEW</h3>
+        <p class="text-neutral-400 text-sm mb-4">MEW helps you work with resource packs faster by automating common tasks and keeping things simple.</p>
         <div class="flex justify-around">
           <div>
-            <span class="font-bold" style="color: #A90B3C;">Fast</span>
+            <span class="font-bold" style="color: #e879a8;">Fast</span>
             <p class="text-neutral-400 text-sm">Quick and smooth performance.</p>
           </div>
           <div>
-            <span class="font-bold" style="color: #A90B3C;">User-Friendly</span>
+            <span class="font-bold" style="color: #e879a8;">User-Friendly</span>
             <p class="text-neutral-400 text-sm">Simple and accessible for all.</p>
           </div>
         </div>
@@ -61,7 +61,7 @@ onMounted(() => {
 .welcome-text {
   font-size: 2.25rem;
   font-weight: bold;
-  color: #A90B3C;
+  color: #e879a8;
   animation: fade-in 1s ease-in;
 }
 
@@ -80,14 +80,14 @@ onMounted(() => {
 }
 
 .home-card:hover {
-  border-color: #A90B3C;
+  border-color: #e879a8;
   background: hsl(0, 0%, 6%);
 }
 
 .home-card-header {
   font-weight: 600;
   margin-bottom: 0.5rem;
-  color: #A90B3C;
+  color: #e879a8;
 }
 
 .home-card-text {

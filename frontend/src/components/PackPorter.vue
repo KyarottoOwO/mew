@@ -133,7 +133,7 @@ async function confirmPort() {
   font-size: 1.125rem;
   font-weight: 600;
   margin-bottom: 1rem;
-  color: #A90B3C;
+  color: #e879a8;
 }
 
 .card-desc {
@@ -155,8 +155,8 @@ async function confirmPort() {
 }
 
 .drop-zone:hover, .drop-zone.drag-over {
-  border-color: #A90B3C;
-  background: hsl(340, 85%, 5%);
+  border-color: #e879a8;
+  background: hsl(330, 60%, 5%);
 }
 
 .file-info-box {
@@ -179,7 +179,7 @@ async function confirmPort() {
 
 .btn-main {
   padding: 0.5rem 1rem;
-  background: #A90B3C;
+  background: #e879a8;
   color: white;
   border: none;
   border-radius: 4px;

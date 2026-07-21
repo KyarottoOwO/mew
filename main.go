@@ -31,7 +31,7 @@ func main() {
 	defer os.RemoveAll("./folder_port_temp")
 
 	err := wails.Run(&options.App{
-		Title:     "SRM",
+		Title:     "MEW",
 		Width:     1200,
 		Height:    800,
 		MinWidth:  800,

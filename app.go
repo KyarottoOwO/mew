@@ -402,9 +402,11 @@ func (a *App) GetImages(folder string) ([]FolderImage, error) {
 	re := regexp.MustCompile(`\\\s`)
 	folder = re.ReplaceAllString(folder, `\`)
 
+	fullPath := filepath.Join("temp_unzip", folder)
+
 	var images []FolderImage
 
-	err := filepath.Walk(folder, func(path string, info fs.FileInfo, err error) error {
+	err := filepath.Walk(fullPath, func(path string, info fs.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}

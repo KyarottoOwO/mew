@@ -193,7 +193,7 @@ async function cancelPorter() {
   font-size: 1.125rem;
   font-weight: 600;
   margin-bottom: 1rem;
-  color: #A90B3C;
+  color: #e879a8;
 }
 
 .card-desc {
@@ -214,7 +214,7 @@ async function cancelPorter() {
 }
 
 .url-input:focus {
-  border-color: #A90B3C;
+  border-color: #e879a8;
 }
 
 .progress-track {
@@ -228,7 +228,7 @@ async function cancelPorter() {
 
 .progress-bar {
   height: 100%;
-  background: #A90B3C;
+  background: #e879a8;
   border-radius: 999px;
   transition: width 0.3s ease;
 }
@@ -260,7 +260,7 @@ async function cancelPorter() {
   width: 12px;
   height: 12px;
   border: 2px solid hsl(0, 0%, 30%);
-  border-top-color: #A90B3C;
+  border-top-color: #e879a8;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -269,7 +269,7 @@ async function cancelPorter() {
   width: 20px;
   height: 20px;
   border: 3px solid hsl(0, 0%, 20%);
-  border-top-color: #A90B3C;
+  border-top-color: #e879a8;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
   flex-shrink: 0;
@@ -294,7 +294,7 @@ async function cancelPorter() {
 
 .btn-main {
   padding: 0.5rem 1rem;
-  background: #A90B3C;
+  background: #e879a8;
   color: white;
   border: none;
   border-radius: 4px;

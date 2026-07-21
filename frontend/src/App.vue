@@ -10,9 +10,23 @@ import InfoPage from './components/InfoPage.vue'
 
 const currentPage = ref('home')
 const showRecolorPage = ref(false)
+const checkResult = ref(null)
+const packName = ref('')
 
 function switchPage(page) {
   currentPage.value = page
+}
+
+function openDisplay(data) {
+  checkResult.value = data.folders
+  packName.value = data.packName
+  showRecolorPage.value = true
+}
+
+function closeDisplay() {
+  showRecolorPage.value = false
+  checkResult.value = null
+  packName.value = ''
 }
 </script>
 
@@ -22,8 +36,8 @@ function switchPage(page) {
     <HomePage v-show="currentPage === 'home'" @navigate="switchPage" />
     <PackPorter v-show="currentPage === 'packporter'" />
     <FolderPorter v-show="currentPage === 'packFolderPorter'" />
-    <RecolorTool v-show="currentPage === 'recolor'" @open-display="showRecolorPage = true" />
-    <FolderDisplay v-if="showRecolorPage" @close="showRecolorPage = false" />
+    <RecolorTool v-show="currentPage === 'recolor'" @open-display="openDisplay" />
+    <FolderDisplay v-if="showRecolorPage" :check-result="checkResult" :pack-name="packName" @close="closeDisplay" />
     <InfoPage v-show="currentPage === 'info'" />
   </div>
 </template>

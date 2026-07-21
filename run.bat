@@ -1,3 +1,3 @@
 @echo off
-build\bin\srm.exe
+build\bin\mew.exe
 pause

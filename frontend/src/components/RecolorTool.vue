@@ -61,19 +61,33 @@ async function confirmCheck() {
     return
   }
 
-  popup('Checking', 'Loading pack...', 'info')
+  Swal.mixin({
+    customClass: { popup: 'swal-custom-popup', confirmButton: 'custom-confirm-btn' },
+    buttonsStyling: false
+  }).fire({
+    title: 'Checking',
+    text: 'Loading pack...',
+    icon: 'info',
+    allowOutsideClick: false,
+    allowEscapeKey: false,
+    showConfirmButton: false,
+    didOpen: () => Swal.showLoading()
+  })
 
   try {
     const buffer = await file.value.arrayBuffer()
     const bytes = new Uint8Array(buffer)
-    const result = await CheckPack(Array.from(bytes), file.value.name)
+    const result = await CheckPack(Array.from(bytes))
+
+    Swal.close()
 
     if (result.valid) {
-      emit('openDisplay')
+      emit('openDisplay', { folders: result.folders, packName: file.value.name })
     } else {
       popup('Error', result.errorMsg || 'Invalid pack', 'error')
     }
   } catch (err) {
+    Swal.close()
     popup('Error', err.toString(), 'error')
   }
 }
@@ -138,7 +152,7 @@ async function confirmCheck() {
   font-size: 1.125rem;
   font-weight: 600;
   margin-bottom: 1rem;
-  color: #A90B3C;
+  color: #e879a8;
 }
 
 .card-desc {
@@ -160,8 +174,8 @@ async function confirmCheck() {
 }
 
 .drop-zone:hover, .drop-zone.drag-over {
-  border-color: #A90B3C;
-  background: hsl(340, 85%, 5%);
+  border-color: #e879a8;
+  background: hsl(330, 60%, 5%);
 }
 
 .btn-cancel {
@@ -176,7 +190,7 @@ async function confirmCheck() {
 
 .btn-main {
   padding: 0.5rem 1rem;
-  background: #A90B3C;
+  background: #e879a8;
   color: white;
   border: none;
   border-radius: 4px;
