@@ -49,3 +49,20 @@ export function applyHsvShift(imageData, hueShift, satShift, brightShift) {
   }
   return imageData
 }
+
+export function upscaleNearestNeighbor(dataURI, scale) {
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.crossOrigin = 'anonymous'
+    img.onload = () => {
+      const canvas = document.createElement('canvas')
+      canvas.width = img.naturalWidth * scale
+      canvas.height = img.naturalHeight * scale
+      const ctx = canvas.getContext('2d')
+      ctx.imageSmoothingEnabled = false
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+      resolve(canvas.toDataURL('image/png'))
+    }
+    img.src = dataURI
+  })
+}

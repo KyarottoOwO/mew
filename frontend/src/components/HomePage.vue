@@ -3,19 +3,23 @@ import { ref, onMounted } from 'vue'
 
 const emit = defineEmits(['navigate'])
 const showSuite = ref(false)
+const hasAnimated = ref(false)
 
 onMounted(() => {
   setTimeout(() => {
     showSuite.value = true
   }, 2500)
+  setTimeout(() => {
+    hasAnimated.value = true
+  }, 3500)
 })
 </script>
 
 <template>
   <div class="home-page">
-    <h1 v-if="!showSuite" class="welcome-text fade-in">Welcome to MEW</h1>
+    <h1 v-if="!showSuite" class="welcome-text" :class="{ 'fade-in': !hasAnimated }">Welcome to MEW</h1>
 
-    <div v-if="showSuite" class="suite-content fade-in">
+    <div v-if="showSuite" class="suite-content" :class="{ 'fade-in': !hasAnimated }">
       <h1 class="text-4xl font-bold mb-4" style="color: #e879a8;">Pack Tools Suite</h1>
       <p class="text-neutral-400 mb-10">All the tools you need to handle Minecraft Bedrock texture packs in one place.</p>
 

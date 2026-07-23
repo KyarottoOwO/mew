@@ -1,11 +1,15 @@
 <script setup>
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { GetImages, SaveImage, ExportPack, DeleteTemp } from '../../wailsjs/go/main/App'
-import { applyHsvShift } from '../utils/hue'
+import { applyHsvShift, upscaleNearestNeighbor } from '../utils/hue'
 
 const props = defineProps({
   checkResult: Array,
-  packName: String
+  packName: String,
+  sidebarWidth: {
+    type: Number,
+    default: 64
+  }
 })
 const emit = defineEmits(['close'])
 
@@ -30,12 +34,16 @@ const allImages = ref([])
 
 async function loadAllFolders() {
   const collected = []
+  const seen = new Set()
   for (const folder of folders.value) {
     try {
-      const imgs = await GetImages(folder)
-      for (const img of imgs) {
+      const raw = await GetImages(folder)
+      for (const img of raw) {
+        if (seen.has(img.relPath)) continue
+        seen.add(img.relPath)
         originalDataURIs.value[img.relPath] = img.dataURI
-        collected.push({ ...img, folder })
+        const scaled = await upscaleNearestNeighbor(img.dataURI, 8)
+        collected.push({ ...img, dataURI: scaled, folder })
       }
     } catch (_) {}
   }
@@ -60,10 +68,15 @@ async function loadFolder(folder) {
   selectedImage.value = null
   loading.value = true
   try {
-    images.value = await GetImages(folder)
-    for (const img of images.value) {
+    const raw = await GetImages(folder)
+    for (const img of raw) {
       originalDataURIs.value[img.relPath] = img.dataURI
     }
+    const upscaled = await Promise.all(raw.map(async (img) => {
+      const scaled = await upscaleNearestNeighbor(img.dataURI, 8)
+      return { ...img, dataURI: scaled }
+    }))
+    images.value = upscaled
     if (allImages.value.length === 0) {
       await loadAllFolders()
     }
@@ -110,7 +123,8 @@ async function paintImage(img) {
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
   const shifted = applyHsvShift(imageData, hue.value, sat.value, bright.value)
   ctx.putImageData(shifted, 0, 0)
-  const dataURL = canvas.toDataURL('image/png')
+  const rawDataURL = canvas.toDataURL('image/png')
+  const dataURL = await upscaleNearestNeighbor(rawDataURL, 8)
   modifiedImages.value[img.relPath] = {
     dataURI: dataURL,
     filename: img.filename,
@@ -121,6 +135,23 @@ async function paintImage(img) {
   const idx = images.value.findIndex(i => i.relPath === img.relPath)
   if (idx !== -1) {
     images.value[idx] = { ...images.value[idx], dataURI: dataURL }
+  }
+  syncAllImages(img.relPath, dataURL)
+}
+
+function syncAllImages(relPath, dataURL) {
+  const idx = allImages.value.findIndex(i => i.relPath === relPath)
+  if (idx !== -1) {
+    allImages.value[idx] = { ...allImages.value[idx], dataURI: dataURL }
+  }
+}
+
+function restoreAllImages(relPath) {
+  const orig = originalDataURIs.value[relPath]
+  if (!orig) return
+  const idx = allImages.value.findIndex(i => i.relPath === relPath)
+  if (idx !== -1) {
+    allImages.value[idx] = { ...allImages.value[idx], dataURI: orig }
   }
 }
 
@@ -161,9 +192,10 @@ watch([hue, sat, bright], () => {
   drawPreview()
 })
 
-function applyChanges() {
+async function applyChanges() {
   if (!previewCanvas.value || !selectedImage.value) return
-  const dataURL = previewCanvas.value.toDataURL('image/png')
+  const rawDataURL = previewCanvas.value.toDataURL('image/png')
+  const dataURL = await upscaleNearestNeighbor(rawDataURL, 8)
   const relPath = selectedImage.value.relPath
 
   modifiedImages.value[relPath] = {
@@ -178,6 +210,7 @@ function applyChanges() {
   if (idx !== -1) {
     images.value[idx] = { ...images.value[idx], dataURI: dataURL }
   }
+  syncAllImages(relPath, dataURL)
 
   closeEditor()
 }
@@ -197,8 +230,23 @@ function undoImage(relPath) {
       if (idx !== -1) {
         images.value[idx] = { ...images.value[idx], dataURI: orig }
       }
+      restoreAllImages(relPath)
     }
   }
+}
+
+function undoAll() {
+  for (const relPath of Object.keys(modifiedImages.value)) {
+    const orig = originalDataURIs.value[relPath]
+    if (orig) {
+      const idx = images.value.findIndex(i => i.relPath === relPath)
+      if (idx !== -1) {
+        images.value[idx] = { ...images.value[idx], dataURI: orig }
+      }
+      restoreAllImages(relPath)
+    }
+  }
+  modifiedImages.value = {}
 }
 
 function isModified(relPath) {
@@ -216,7 +264,6 @@ async function exportPack() {
         imagePath: '',
         relPath: relPath,
         imageData: base64,
-        hue: 0,
         done: false
       })
     }
@@ -244,17 +291,23 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="display-overlay">
+  <div class="display-overlay" :style="{ left: sidebarWidth + 'px' }">
     <div class="display-topbar">
       <button class="back-btn" @click="handleClose">
         <i class="fa fa-arrow-left"></i> Back
       </button>
       <div class="display-title">{{ packName || 'Recolor Tool' }}</div>
-      <button class="export-btn" @click="exportPack" :disabled="saving || Object.keys(modifiedImages).length === 0">
-        <i class="fa fa-download"></i>
-        {{ saving ? 'Exporting...' : 'Export Pack' }}
-        <span v-if="Object.keys(modifiedImages).length > 0" class="mod-badge">{{ Object.keys(modifiedImages).length }}</span>
-      </button>
+      <div class="topbar-right">
+        <button v-if="Object.keys(modifiedImages).length > 0" class="undo-all-btn" @click="undoAll" title="Undo all changes">
+          <i class="fa fa-rotate-left"></i>
+          Undo All
+        </button>
+        <button class="export-btn" @click="exportPack" :disabled="saving || Object.keys(modifiedImages).length === 0">
+          <i class="fa fa-download"></i>
+          {{ saving ? 'Exporting...' : 'Export Pack' }}
+          <span v-if="Object.keys(modifiedImages).length > 0" class="mod-badge">{{ Object.keys(modifiedImages).length }}</span>
+        </button>
+      </div>
     </div>
 
     <div class="paint-bar">
@@ -383,7 +436,6 @@ onMounted(() => {
 .display-overlay {
   position: fixed;
   top: 0;
-  left: 64px;
   right: 0;
   bottom: 0;
   background: hsl(0, 0%, 2%);
@@ -425,11 +477,35 @@ onMounted(() => {
   white-space: nowrap;
 }
 
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.undo-all-btn {
+  padding: 0.4rem 0.75rem;
+  background: hsl(0, 0%, 10%);
+  color: hsl(0, 0%, 55%);
+  border: 1px solid hsl(0, 0%, 18%);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.undo-all-btn:hover {
+  background: hsl(0, 0%, 14%);
+  color: hsl(0, 0%, 75%);
+}
+
 .export-btn {
   padding: 0.4rem 1rem;
-  background: #e879a8;
-  color: white;
-  border: none;
+  background: transparent;
+  color: #e879a8;
+  border: 1px solid #e879a8;
   border-radius: 4px;
   cursor: pointer;
   font-size: 0.875rem;
@@ -440,7 +516,7 @@ onMounted(() => {
 }
 
 .export-btn:hover:not(:disabled) {
-  background: #d66a96;
+  background: hsla(330, 60%, 65%, 0.1);
 }
 
 .export-btn:disabled {
@@ -705,8 +781,8 @@ onMounted(() => {
 }
 
 .image-folder {
-  font-size: 0.55rem;
-  color: hsl(330, 40%, 50%);
+  font-size: 0.65rem;
+  color: hsl(330, 50%, 60%);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -773,11 +849,12 @@ onMounted(() => {
 .reset-btn:hover { background: hsl(0, 0%, 16%); }
 
 .apply-btn {
-  background: #e879a8;
-  color: white;
+  background: transparent;
+  color: #e879a8;
+  border: 1px solid #e879a8;
 }
 
-.apply-btn:hover { background: #d66a96; }
+.apply-btn:hover { background: hsla(330, 60%, 65%, 0.1); }
 
 .close-btn {
   background: hsl(0, 0%, 8%);

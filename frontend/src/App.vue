@@ -12,9 +12,14 @@ const currentPage = ref('home')
 const showRecolorPage = ref(false)
 const checkResult = ref(null)
 const packName = ref('')
+const sidebarWidth = ref(64)
 
 function switchPage(page) {
   currentPage.value = page
+}
+
+function onSidebarWidthChange(w) {
+  sidebarWidth.value = w
 }
 
 function openDisplay(data) {
@@ -32,12 +37,12 @@ function closeDisplay() {
 
 <template>
   <div class="app-layout">
-    <Sidebar :current-page="currentPage" @navigate="switchPage" />
+    <Sidebar :current-page="currentPage" @navigate="switchPage" @width-change="onSidebarWidthChange" />
     <HomePage v-show="currentPage === 'home'" @navigate="switchPage" />
     <PackPorter v-show="currentPage === 'packporter'" />
     <FolderPorter v-show="currentPage === 'packFolderPorter'" />
     <RecolorTool v-show="currentPage === 'recolor'" @open-display="openDisplay" />
-    <FolderDisplay v-if="showRecolorPage" :check-result="checkResult" :pack-name="packName" @close="closeDisplay" />
+    <FolderDisplay v-if="showRecolorPage" :check-result="checkResult" :pack-name="packName" :sidebar-width="sidebarWidth" @close="closeDisplay" />
     <InfoPage v-show="currentPage === 'info'" />
   </div>
 </template>

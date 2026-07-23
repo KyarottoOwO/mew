@@ -1,16 +1,16 @@
 <template>
   <div class="page active-page info-page">
     <div class="info-content">
-      <h2 class="info-title">About MEW</h2>
+      <div class="info-hero">
+        <img src="/logo.png" alt="MEW" class="info-logo" />
+        <h2 class="info-title">MEW</h2>
+        <p class="info-tagline">Minecraft Bedrock Texture Pack Manager</p>
+      </div>
 
       <p class="info-text">
         MEW is a small, easy-to-use program made in Go that helps you manage Minecraft Bedrock texture packs.
         It can quickly convert Java texture packs to Bedrock and even lets you recolor textures with just a few clicks.
-      </p>
-
-      <p class="info-text">
-        Everything runs on your own computer, so your files stay private. MEW does a lot of the boring work for you,
-        making texture pack editing faster and easier.
+        Everything runs on your own computer, so your files stay private.
       </p>
 
       <div class="tool-cards">
@@ -45,13 +45,12 @@
           </div>
           <p>
             Upload a <code>.mcpack</code> file to open the recolor editor. Browse texture folders using the
-            tabs at the top, then click any texture to open the editor with Hue, Saturation, and Brightness sliders.
+            tabs, then click any texture to open the editor with Hue, Saturation, and Brightness sliders.
           </p>
           <p>
-            <strong>Paint Mode</strong> &mdash; Toggle the paintbrush icon, adjust the Hue, Saturation, and
-            Brightness sliders to pick your color, then click any texture to apply it. Each click paints
-            from the original image, so changing the sliders and clicking again replaces the color
-            instead of stacking on top of it.
+            <strong>Paint Mode</strong> &mdash; Toggle the paintbrush icon, adjust the sliders to pick your
+            color, then click any texture to apply it. Each click paints from the original image, so
+            changing the sliders and clicking again replaces the color instead of stacking.
           </p>
           <p>
             <strong>Export</strong> &mdash; When you're happy with your changes, click "Export Pack" to save a
@@ -66,49 +65,79 @@
 <style scoped>
 .info-page {
   justify-content: flex-start;
-  padding: 1rem 1rem 1rem 1rem;
+  align-items: center;
+  padding: 2rem 1rem;
+  overflow-y: auto;
 }
 
 .info-content {
-  padding-left: 1rem;
-  max-width: 700px;
+  max-width: 560px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.info-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.info-logo {
+  width: 64px;
+  height: 64px;
+  border-radius: 12px;
+  margin-bottom: 0.75rem;
+  object-fit: contain;
 }
 
 .info-title {
-  font-size: 1.5rem;
-  margin-bottom: 1rem;
+  font-size: 1.75rem;
+  font-weight: 700;
   color: #e879a8;
+  margin: 0;
+}
+
+.info-tagline {
+  color: hsl(0, 0%, 40%);
+  font-size: 0.85rem;
+  margin-top: 0.3rem;
 }
 
 .info-text {
-  color: hsl(0, 0%, 55%);
-  margin-bottom: 1rem;
-  line-height: 1.6;
+  color: hsl(0, 0%, 50%);
+  line-height: 1.7;
+  text-align: center;
+  margin-bottom: 1.5rem;
+  font-size: 0.85rem;
+  max-width: 480px;
 }
 
 .tool-cards {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  margin-top: 1rem;
+  gap: 0.6rem;
+  width: 100%;
 }
 
 .tool-card {
   background: hsl(0, 0%, 5%);
-  border: 1px solid hsl(0, 0%, 12%);
-  border-radius: 6px;
+  border: 1px solid hsl(0, 0%, 10%);
+  border-radius: 8px;
   padding: 0.85rem 1rem;
 }
 
 .tool-card p {
-  color: hsl(0, 0%, 55%);
+  color: hsl(0, 0%, 50%);
   line-height: 1.6;
-  margin: 0.4rem 0 0 0;
+  margin: 0.35rem 0 0 0;
   font-size: 0.8rem;
 }
 
 .tool-card p:first-of-type {
-  margin-top: 0.5rem;
+  margin-top: 0.4rem;
 }
 
 .tool-card code {
@@ -120,7 +149,7 @@
 }
 
 .tool-card strong {
-  color: hsl(0, 0%, 75%);
+  color: hsl(0, 0%, 70%);
 }
 
 .tool-card-header {

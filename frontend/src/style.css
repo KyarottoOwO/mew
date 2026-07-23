@@ -20,16 +20,16 @@ html, body {
 }
 
 .custom-confirm-btn {
-  background: #e879a8 !important;
-  color: white !important;
-  border: none !important;
+  background: transparent !important;
+  color: #e879a8 !important;
+  border: 1px solid #e879a8 !important;
   border-radius: 4px !important;
   padding: 0.5rem 1.5rem !important;
   cursor: pointer !important;
 }
 
 .custom-confirm-btn:hover {
-  background: #c41048 !important;
+  background: hsla(330, 60%, 65%, 0.1) !important;
 }
 
 ::-webkit-scrollbar {

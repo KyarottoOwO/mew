@@ -294,9 +294,9 @@ async function cancelPorter() {
 
 .btn-main {
   padding: 0.5rem 1rem;
-  background: #e879a8;
-  color: white;
-  border: none;
+  background: transparent;
+  color: #e879a8;
+  border: 1px solid #e879a8;
   border-radius: 4px;
   cursor: pointer;
   font-size: 0.875rem;

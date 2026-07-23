@@ -460,7 +460,6 @@ type SaveImageRequest struct {
 	ImagePath string `json:"imagePath"`
 	RelPath   string `json:"relPath"`
 	ImageData string `json:"imageData"`
-	Hue       int    `json:"hue"`
 	Done      bool   `json:"done"`
 }
 
