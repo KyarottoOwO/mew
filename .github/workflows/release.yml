@@ -65,30 +65,24 @@ jobs:
         run: |
           TAG="${{ steps.release.outputs.tag }}"
           RELEASE_URL="https://github.com/KyarottoOwO/mew/releases/tag/$TAG"
-          curl -H "Content-Type: application/json" \
-            -d '{
-              "content": "<@&1530333141548404786>",
-              "embeds": [{
-                "title": "MEW $TAG Released!",
-                "url": "'"$RELEASE_URL"'",
-                "color": 15293772,
-                "description": "A new version of **MEW** is now available!\n\n**[Download '"'"'$TAG'"'"']("'"'"'$RELEASE_URL'"'"')**",
-                "fields": [
-                  {
-                    "name": "Version",
-                    "value": "'"$TAG"'",
-                    "inline": true
-                  },
-                  {
-                    "name": "Platform",
-                    "value": "Windows (x64)",
-                    "inline": true
-                  }
-                ],
-                "footer": {
-                  "text": "MEW — Minecraft Bedrock Texture Pack Manager"
-                },
-                "timestamp": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"
-              }]
-            }' \
-            "$DISCORD_WEBHOOK"
+          TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          python3 -c "
+          import json, sys
+          payload = {
+            'content': '<@&1530333141548404786>',
+            'embeds': [{
+              'title': 'MEW $TAG Released!',
+              'url': '$RELEASE_URL',
+              'color': 15293772,
+              'description': 'A new version of **MEW** is now available!\n\n[Download $TAG]($RELEASE_URL)',
+              'fields': [
+                {'name': 'Version', 'value': '$TAG', 'inline': True},
+                {'name': 'Platform', 'value': 'Windows (x64)', 'inline': True}
+              ],
+              'footer': {'text': 'MEW - Minecraft Bedrock Texture Pack Manager'},
+              'timestamp': '$TIMESTAMP'
+            }]
+          }
+          json.dump(payload, sys.stdout)
+          " > /tmp/payload.json
+          curl -H "Content-Type: application/json" -d @/tmp/payload.json "$DISCORD_WEBHOOK"
