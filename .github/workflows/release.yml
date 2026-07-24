@@ -31,23 +31,22 @@ jobs:
       - name: Build
         run: wails build
 
-      - name: Get tag
-        id: tag
+      - name: Delete accidental release on MEOWWWW (if exists)
+        continue-on-error: true
         shell: bash
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          repo: KyarottoOwO/mew
-          tag_name: ${{ steps.tag.outputs.VERSION }}
-          name: MEW ${{ steps.tag.outputs.VERSION }}
-          body: |
-            ## MEW ${{ steps.tag.outputs.VERSION }}
-
-            Download `mew.exe` below and run it to get started.
-          files: build/bin/mew.exe
-          draft: false
-          prerelease: false
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release delete "$TAG" --repo KyarottoOwO/MEOWWWW --yes --cleanup-tag || true
+
+      - name: Create Release on mew
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release create "$TAG" build/bin/mew.exe \
+            --repo KyarottoOwO/mew \
+            --title "MEW $TAG" \
+            --generate-notes
