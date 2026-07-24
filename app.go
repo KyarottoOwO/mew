@@ -25,7 +25,7 @@ import (
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-const currentVersion = "1.0"
+var currentVersion = "1.0.8"
 const githubReleasesURL = "https://api.github.com/repos/KyarottoOwO/mew/releases/latest"
 
 type UpdateInfo struct {

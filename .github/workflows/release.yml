@@ -29,7 +29,11 @@ jobs:
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
       - name: Build
-        run: wails build
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          wails build -ldflags "-X main.currentVersion=$VERSION"
 
       - name: Delete accidental release on MEOWWWW (if exists)
         continue-on-error: true
