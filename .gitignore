@@ -12,6 +12,7 @@
 !*.js
 !*.json
 !*.vue
+!*.png
 !go.sum
 !go.work
 !go.work.sum
