@@ -10,6 +10,7 @@
 !*.html
 !*.css
 !*.js
+!*.json
 !*.vue
 !go.sum
 !go.work
