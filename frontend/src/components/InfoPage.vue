@@ -20,21 +20,20 @@
             <h3>Pack Porter</h3>
           </div>
           <p>
-            Drag and drop a <code>.zip</code> Java texture pack onto the drop zone.
+            Upload a <code>.zip</code> or <code>.rar</code> Java texture pack, or paste a MediaFire link.
             MEW will automatically convert it to a Bedrock <code>.mcpack</code> file using SwimPorter.
-            The converted pack is saved to the <code>Bedrock/</code> folder and the original stays in <code>Java/</code>.
           </p>
         </div>
 
         <div class="tool-card">
           <div class="tool-card-header">
-            <i class="fa fa-cloud-arrow-down tool-icon"></i>
-            <h3>Folder Porter</h3>
+            <i class="fa fa-folder-open tool-icon"></i>
+            <h3>Multi-Pack Porter</h3>
           </div>
           <p>
-            Paste a MediaFire folder link and MEW will download and convert every pack in it one by one.
-            Each pack is downloaded, converted, and saved immediately so nothing is lost if you cancel halfway.
-            Progress is shown with a spinner and per-pack status for each file.
+            Paste a MediaFire folder link to download and convert every pack in it one by one,
+            or upload a <code>.zip</code> / <code>.rar</code> archive containing multiple packs.
+            Each pack is converted and saved immediately so nothing is lost if you cancel halfway.
           </p>
         </div>
 
@@ -55,6 +54,17 @@
           <p>
             <strong>Export</strong> &mdash; When you're happy with your changes, click "Export Pack" to save a
             new <code>.mcpack</code> file with all your recolored textures.
+          </p>
+        </div>
+
+        <div class="tool-card">
+          <div class="tool-card-header">
+            <i class="fa fa-gear tool-icon"></i>
+            <h3>Settings</h3>
+          </div>
+          <p>
+            Configure auto-import to directly inject ported packs into your Minecraft resource packs folder.
+            Set a custom output directory, enable auto-open on export, and inject a custom manifest description.
           </p>
         </div>
       </div>
@@ -96,18 +106,18 @@
 .info-title {
   font-size: 1.75rem;
   font-weight: 700;
-  color: #e879a8;
+  color: var(--accent);
   margin: 0;
 }
 
 .info-tagline {
-  color: hsl(0, 0%, 40%);
+  color: var(--text-dim);
   font-size: 0.85rem;
   margin-top: 0.3rem;
 }
 
 .info-text {
-  color: hsl(0, 0%, 50%);
+  color: var(--text-desc);
   line-height: 1.7;
   text-align: center;
   margin-bottom: 1.5rem;
@@ -123,14 +133,14 @@
 }
 
 .tool-card {
-  background: hsl(0, 0%, 5%);
-  border: 1px solid hsl(0, 0%, 10%);
+  background: var(--bg-hover-1);
+  border: 1px solid var(--border-default);
   border-radius: 8px;
   padding: 0.85rem 1rem;
 }
 
 .tool-card p {
-  color: hsl(0, 0%, 50%);
+  color: var(--text-desc);
   line-height: 1.6;
   margin: 0.35rem 0 0 0;
   font-size: 0.8rem;
@@ -141,15 +151,15 @@
 }
 
 .tool-card code {
-  background: hsl(0, 0%, 12%);
-  color: #e879a8;
+  background: var(--bg-hover-3);
+  color: var(--accent);
   padding: 0.1rem 0.3rem;
   border-radius: 3px;
   font-size: 0.75rem;
 }
 
 .tool-card strong {
-  color: hsl(0, 0%, 70%);
+  color: var(--text-secondary);
 }
 
 .tool-card-header {
@@ -161,11 +171,11 @@
 .tool-card-header h3 {
   margin: 0;
   font-size: 0.9rem;
-  color: hsl(0, 0%, 80%);
+  color: var(--text-secondary);
 }
 
 .tool-icon {
-  color: #e879a8;
+  color: var(--accent);
   font-size: 1rem;
   width: 20px;
   text-align: center;

@@ -1,8 +1,9 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
-import { PortFolder, CancelPortFolder } from '../../wailsjs/go/main/App'
+import { PortFolder, PortLocalArchive, CancelPortFolder } from '../../wailsjs/go/main/App'
 import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
 
+const mode = ref('url')
 const url = ref('')
 const showProgress = ref(false)
 const progressList = ref([])
@@ -12,6 +13,11 @@ const progressCount = ref('0 / 0 packs')
 const progressWidth = ref(0)
 const spinnerClass = ref('fp-spinner')
 const totalPacks = ref(0)
+
+const dropZone = ref(null)
+const archiveFile = ref(null)
+const archiveFileName = ref('')
+const archiveFileSize = ref('')
 
 function popup(title, text, icon) {
   Swal.mixin({
@@ -65,6 +71,9 @@ onMounted(() => {
         popup('All Done!', data.message, 'success')
         showProgress.value = false
         url.value = ''
+        archiveFile.value = null
+        archiveFileName.value = ''
+        archiveFileSize.value = ''
       }, 600)
     } else if (data.icon === 'error') {
       spinnerClass.value = 'fp-spinner fail'
@@ -94,21 +103,73 @@ onUnmounted(() => {
   if (progressHandler) EventsOff('progress')
 })
 
-async function confirmPort() {
-  const trimmedUrl = url.value.trim()
-  if (!trimmedUrl) {
-    popup('Error', 'Please paste a link first.', 'error')
+function onDrop(e) {
+  e.preventDefault()
+  dropZone.value?.classList.remove('drag-over')
+  const droppedFile = e.dataTransfer.files[0]
+  if (droppedFile) handleArchiveFile(droppedFile)
+}
+
+function onDragOver(e) {
+  e.preventDefault()
+  dropZone.value?.classList.add('drag-over')
+}
+
+function onDragLeave() {
+  dropZone.value?.classList.remove('drag-over')
+}
+
+function onFileChange(e) {
+  if (e.target.files[0]) handleArchiveFile(e.target.files[0])
+}
+
+function handleArchiveFile(f) {
+  const lower = f.name.toLowerCase()
+  if (!lower.endsWith('.zip') && !lower.endsWith('.rar')) {
+    popup('Error', 'Please provide a .zip or .rar file.', 'error')
     return
   }
+  archiveFile.value = f
+  archiveFileName.value = f.name
+  archiveFileSize.value = (f.size / 1024 / 1024).toFixed(2) + ' MB'
+}
 
-  showProgress.value = true
-  resetProgress()
+function clearArchive() {
+  archiveFile.value = null
+  archiveFileName.value = ''
+  archiveFileSize.value = ''
+}
 
-  try {
-    await PortFolder(trimmedUrl)
-  } catch (err) {
-    popup('Error', err.toString(), 'error')
-    showProgress.value = false
+async function confirmPort() {
+  if (mode.value === 'url') {
+    const trimmedUrl = url.value.trim()
+    if (!trimmedUrl) {
+      popup('Error', 'Please paste a link first.', 'error')
+      return
+    }
+    showProgress.value = true
+    resetProgress()
+    try {
+      await PortFolder(trimmedUrl)
+    } catch (err) {
+      popup('Error', err.toString(), 'error')
+      showProgress.value = false
+    }
+  } else {
+    if (!archiveFile.value) {
+      popup('Error', 'Please upload a file first.', 'error')
+      return
+    }
+    showProgress.value = true
+    resetProgress()
+    try {
+      const buffer = await archiveFile.value.arrayBuffer()
+      const bytes = new Uint8Array(buffer)
+      await PortLocalArchive(Array.from(bytes), archiveFile.value.name)
+    } catch (err) {
+      popup('Error', err.toString(), 'error')
+      showProgress.value = false
+    }
   }
 }
 
@@ -118,20 +179,59 @@ async function cancelPorter() {
   } catch (_) {}
   showProgress.value = false
   url.value = ''
+  clearArchive()
 }
 </script>
 
 <template>
   <div class="page active-page folderporter-page">
     <div class="porter-card">
-      <h2 class="card-title">Pack Folder Porter</h2>
-      <p class="card-desc">Paste a MediaFire link to a zip containing multiple packs. All packs inside will be ported at once.</p>
+      <h2 class="card-title">Multi-Pack Porter</h2>
+      <p class="card-desc">Port multiple packs at once from a MediaFire link or a local archive.</p>
 
       <div v-if="!showProgress">
-        <div class="mb-4">
-          <input v-model="url" type="text" placeholder="https://www.mediafire.com/file/..."
-                 class="url-input" />
+        <div class="mode-tabs">
+          <button :class="['mode-tab', mode === 'url' ? 'active' : '']" @click="mode = 'url'">
+            <i class="fa fa-link"></i> MediaFire Link
+          </button>
+          <button :class="['mode-tab', mode === 'file' ? 'active' : '']" @click="mode = 'file'">
+            <i class="fa fa-upload"></i> Upload Archive
+          </button>
         </div>
+
+        <div v-if="mode === 'url'">
+          <div class="mb-4">
+            <input v-model="url" type="text" placeholder="https://www.mediafire.com/file/... or /folder/..."
+                   class="url-input" />
+          </div>
+          <p class="card-desc">Paste a MediaFire link to a single pack or a folder of packs.</p>
+        </div>
+
+        <div v-if="mode === 'file'">
+          <label ref="dropZone" class="drop-zone"
+                 @drop="onDrop" @dragover="onDragOver" @dragleave="onDragLeave">
+            <input type="file" accept=".zip,.rar" class="hidden" @change="onFileChange" />
+
+            <div v-if="!archiveFile" class="drop-zone-inner">
+              <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24"
+                   stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="17 8 12 3 7 8"></polyline>
+                <line x1="12" x2="12" y1="3" y2="15"></line>
+              </svg>
+              <span class="drop-hint">Drop .zip or .rar containing packs</span>
+            </div>
+
+            <div v-else class="file-info-box">
+              <div class="flex w-full items-center justify-between gap-4">
+                <p class="max-w-xs truncate text-base" style="color: var(--text-secondary);">{{ archiveFileName }}</p>
+                <p class="w-fit flex-shrink-0 px-2 py-1 text-sm" style="background: var(--bg-input); color: var(--text-primary);">{{ archiveFileSize }}</p>
+              </div>
+            </div>
+          </label>
+          <p class="card-desc mt-4">Upload a .zip or .rar that contains one or more pack .zip files inside.</p>
+        </div>
+
         <div class="flex items-center gap-2 mt-6">
           <button class="btn-cancel" @click="cancelPorter">Cancel</button>
           <button class="btn-main" @click="confirmPort">Confirm</button>
@@ -141,14 +241,14 @@ async function cancelPorter() {
       <div v-else>
         <div class="flex items-center gap-3 mb-3">
           <div :class="spinnerClass"></div>
-          <div class="text-sm text-neutral-300">{{ progressStatus }}</div>
+          <div class="text-sm" style="color: var(--text-secondary);">{{ progressStatus }}</div>
         </div>
 
         <div class="progress-track">
           <div class="progress-bar" :style="{ width: progressWidth + '%' }"></div>
         </div>
 
-        <div class="flex justify-between text-xs text-neutral-500 mb-3">
+        <div class="flex justify-between text-xs mb-3" style="color: var(--text-dim);">
           <span>{{ progressPercent }}</span>
           <span>{{ progressCount }}</span>
         </div>
@@ -182,8 +282,8 @@ async function cancelPorter() {
 }
 
 .porter-card {
-  border: 1px solid hsl(0, 0%, 10%);
-  background: hsl(0, 0%, 2%);
+  border: 1px solid var(--border-default);
+  background: var(--bg-body);
   padding: 1.5rem;
   width: 100%;
   max-width: 480px;
@@ -193,20 +293,49 @@ async function cancelPorter() {
   font-size: 1.125rem;
   font-weight: 600;
   margin-bottom: 1rem;
-  color: #e879a8;
+  color: var(--accent);
 }
 
 .card-desc {
   font-size: 0.875rem;
-  color: hsl(0, 0%, 50%);
+  color: var(--text-desc);
   margin-bottom: 1rem;
+}
+
+.mode-tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: 1rem;
+  background: var(--bg-input);
+  border-radius: 6px;
+  padding: 3px;
+}
+
+.mode-tab {
+  flex: 1;
+  padding: 0.4rem 0.75rem;
+  background: transparent;
+  color: var(--text-dim);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+}
+
+.mode-tab.active {
+  background: var(--bg-hover-2);
+  color: var(--accent);
 }
 
 .url-input {
   width: 100%;
-  background: hsl(0, 0%, 5%);
-  border: 1px solid hsl(0, 0%, 25%);
-  color: hsl(0, 0%, 80%);
+  background: var(--bg-input);
+  border: 1px solid var(--border-focus);
+  color: var(--text-secondary);
   font-size: 0.875rem;
   padding: 0.5rem 0.75rem;
   border-radius: 4px;
@@ -214,12 +343,45 @@ async function cancelPorter() {
 }
 
 .url-input:focus {
-  border-color: #e879a8;
+  border-color: var(--accent);
+}
+
+.drop-zone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--border-strong);
+  border-radius: 8px;
+  padding: 2rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  min-height: 100px;
+}
+
+.drop-zone:hover, .drop-zone.drag-over {
+  border-color: var(--accent);
+  background: var(--accent-glow);
+}
+
+.drop-zone-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.drop-hint {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+.file-info-box {
+  width: 100%;
 }
 
 .progress-track {
   width: 100%;
-  background: hsl(0, 0%, 10%);
+  background: var(--bg-hover-2);
   border-radius: 999px;
   height: 8px;
   margin-bottom: 1rem;
@@ -228,7 +390,7 @@ async function cancelPorter() {
 
 .progress-bar {
   height: 100%;
-  background: #e879a8;
+  background: var(--accent);
   border-radius: 999px;
   transition: width 0.3s ease;
 }
@@ -236,7 +398,7 @@ async function cancelPorter() {
 .progress-list {
   max-height: 200px;
   overflow-y: auto;
-  border: 1px solid hsl(0, 0%, 10%);
+  border: 1px solid var(--border-default);
   border-radius: 4px;
   padding: 0.5rem;
 }
@@ -247,7 +409,7 @@ async function cancelPorter() {
   gap: 0.5rem;
   padding: 0.25rem 0;
   font-size: 0.75rem;
-  color: hsl(0, 0%, 60%);
+  color: var(--text-muted);
 }
 
 .fp-entry-icon {
@@ -259,8 +421,8 @@ async function cancelPorter() {
 .fp-mini-spinner {
   width: 12px;
   height: 12px;
-  border: 2px solid hsl(0, 0%, 30%);
-  border-top-color: #e879a8;
+  border: 2px solid var(--border-medium);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -268,8 +430,8 @@ async function cancelPorter() {
 .fp-spinner {
   width: 20px;
   height: 20px;
-  border: 3px solid hsl(0, 0%, 20%);
-  border-top-color: #e879a8;
+  border: 3px solid var(--border-strong);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
   flex-shrink: 0;
@@ -284,21 +446,31 @@ async function cancelPorter() {
 
 .btn-cancel {
   padding: 0.5rem 1rem;
-  background: hsl(0, 0%, 10%);
-  color: hsl(0, 0%, 60%);
-  border: 1px solid hsl(0, 0%, 20%);
+  background: var(--bg-hover-2);
+  color: var(--text-muted);
+  border: 1px solid var(--border-strong);
   border-radius: 4px;
   cursor: pointer;
   font-size: 0.875rem;
 }
 
+.btn-cancel:hover {
+  background: var(--bg-hover-5);
+}
+
 .btn-main {
   padding: 0.5rem 1rem;
   background: transparent;
-  color: #e879a8;
-  border: 1px solid #e879a8;
+  color: var(--accent);
+  border: 1px solid var(--accent);
   border-radius: 4px;
   cursor: pointer;
   font-size: 0.875rem;
 }
+
+.btn-main:hover {
+  background: var(--accent-glow);
+}
+
+.hidden { display: none; }
 </style>

@@ -7,7 +7,75 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	rar "github.com/nwaples/rardecode/v2"
 )
+
+func isRarFile(path string) bool {
+	lower := strings.ToLower(path)
+	return strings.HasSuffix(lower, ".rar")
+}
+
+func isZipFile(path string) bool {
+	lower := strings.ToLower(path)
+	return strings.HasSuffix(lower, ".zip")
+}
+
+func isArchive(path string) bool {
+	return isZipFile(path) || isRarFile(path)
+}
+
+func extractArchive(src, dest string) error {
+	if isRarFile(src) {
+		return unrar(src, dest)
+	}
+	return unzip(src, dest)
+}
+
+func unrar(src, dest string) error {
+	r, err := rar.OpenReader(src)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	for {
+		header, err := r.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		fpath := filepath.Join(dest, header.Name)
+
+		if !strings.HasPrefix(fpath, filepath.Clean(dest)+string(os.PathSeparator)) {
+			return &os.PathError{Op: "extract", Path: fpath, Err: os.ErrInvalid}
+		}
+
+		if header.IsDir {
+			os.MkdirAll(fpath, os.ModePerm)
+			continue
+		}
+
+		if err = os.MkdirAll(filepath.Dir(fpath), os.ModePerm); err != nil {
+			return err
+		}
+
+		outFile, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, header.Mode())
+		if err != nil {
+			return err
+		}
+
+		_, err = io.Copy(outFile, r)
+		outFile.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func unzip(src, dest string) error {
 	r, err := zip.OpenReader(src)

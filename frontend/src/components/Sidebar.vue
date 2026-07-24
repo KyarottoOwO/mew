@@ -10,9 +10,11 @@ const emit = defineEmits(['navigate', 'width-change'])
 const navItems = [
   { id: 'home', icon: 'fa-house', label: 'Home' },
   { id: 'packporter', icon: 'fa-box-open', label: 'Pack Porter' },
-  { id: 'packFolderPorter', icon: 'fa-folder-open', label: 'Folder Porter' },
+  { id: 'packFolderPorter', icon: 'fa-folder-open', label: 'Multi-Pack Porter' },
   { id: 'recolor', icon: 'fa-palette', label: 'Recolor Tool' },
   { id: 'info', icon: 'fa-circle-info', label: 'Info' },
+  { id: 'settings', icon: 'fa-gear', label: 'Settings' },
+  { id: 'contact', icon: 'fa-envelope', label: 'Contact' },
 ]
 
 const COLLAPSED_WIDTH = 64
@@ -82,14 +84,15 @@ function hideTooltip() {
 <style scoped>
 .sidebar {
   position: relative;
-  background: hsl(0, 0%, 3%);
-  border-right: 1px solid hsl(0, 0%, 8%);
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;
   align-items: center;
   padding: 12px 0;
   z-index: 10;
   overflow: hidden;
+  flex-shrink: 0;
 }
 
 .sidebar-logo {
@@ -130,7 +133,7 @@ function hideTooltip() {
   cursor: pointer;
   border-radius: 8px;
   border: 1px solid transparent;
-  color: hsl(0, 0%, 40%);
+  color: var(--text-dim);
   gap: 10px;
 }
 
@@ -147,18 +150,18 @@ function hideTooltip() {
 }
 
 .sidebar li:hover {
-  background: hsl(0, 0%, 8%);
-  color: hsl(0, 0%, 70%);
+  background: var(--bg-hover-1);
+  color: var(--text-secondary);
 }
 
 .sidebar li.active {
-  background: hsla(330, 60%, 65%, 0.08);
-  color: hsl(330, 60%, 70%);
-  border-color: hsl(330, 60%, 70%);
+  background: var(--accent-active-bg);
+  color: var(--accent-light);
+  border-color: var(--accent-light);
 }
 
 .sidebar li.active i {
-  color: #e879a8;
+  color: var(--accent);
 }
 
 .nav-label {
@@ -170,9 +173,9 @@ function hideTooltip() {
 .tooltip {
   position: fixed;
   transform: translateY(-50%);
-  background: hsl(0, 0%, 10%);
-  border: 1px solid hsl(0, 0%, 18%);
-  color: hsl(0, 0%, 85%);
+  background: var(--bg-hover-2);
+  border: 1px solid var(--border-medium);
+  color: var(--text-secondary);
   padding: 6px 12px;
   border-radius: 6px;
   font-size: 12px;
@@ -194,7 +197,7 @@ function hideTooltip() {
 
 .version {
   font-size: 10px;
-  color: hsl(0, 0%, 22%);
+  color: var(--text-version);
   letter-spacing: 0.5px;
   user-select: none;
 }
@@ -203,9 +206,9 @@ function hideTooltip() {
   width: 32px;
   height: 32px;
   border-radius: 6px;
-  border: 1px solid hsl(0, 0%, 20%);
-  background: hsl(0, 0%, 5%);
-  color: hsl(0, 0%, 40%);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-input);
+  color: var(--text-dim);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -214,8 +217,8 @@ function hideTooltip() {
 }
 
 .toggle-btn:hover {
-  background: hsl(0, 0%, 10%);
-  color: hsl(0, 0%, 70%);
-  border-color: hsl(0, 0%, 30%);
+  background: var(--bg-hover-2);
+  color: var(--text-secondary);
+  border-color: var(--border-focus);
 }
 </style>

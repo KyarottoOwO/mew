@@ -1,8 +1,10 @@
+@import './theme.css';
+
 html, body {
   margin: 0;
   padding: 0;
-  background-color: hsl(0, 0%, 2%);
-  color: white;
+  background-color: var(--bg-body);
+  color: var(--text-primary);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   overflow: hidden;
   height: 100vh;
@@ -14,22 +16,22 @@ html, body {
 }
 
 .swal-custom-popup {
-  background: hsl(0, 0%, 5%) !important;
-  border: 1px solid hsl(0, 0%, 15%) !important;
-  color: white !important;
+  background: var(--swal-bg) !important;
+  border: 1px solid var(--swal-border) !important;
+  color: var(--text-primary) !important;
 }
 
 .custom-confirm-btn {
   background: transparent !important;
-  color: #e879a8 !important;
-  border: 1px solid #e879a8 !important;
+  color: var(--accent) !important;
+  border: 1px solid var(--accent) !important;
   border-radius: 4px !important;
   padding: 0.5rem 1.5rem !important;
   cursor: pointer !important;
 }
 
 .custom-confirm-btn:hover {
-  background: hsla(330, 60%, 65%, 0.1) !important;
+  background: var(--accent-glow) !important;
 }
 
 ::-webkit-scrollbar {
@@ -37,14 +39,14 @@ html, body {
 }
 
 ::-webkit-scrollbar-track {
-  background: hsl(0, 0%, 5%);
+  background: var(--scrollbar-track);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: hsl(0, 0%, 20%);
+  background: var(--scrollbar-thumb);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: hsl(0, 0%, 30%);
+  background: var(--scrollbar-thumb-hover);
 }

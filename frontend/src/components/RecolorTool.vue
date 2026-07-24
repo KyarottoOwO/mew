@@ -105,7 +105,7 @@ async function confirmCheck() {
 
         <div v-if="!showFileInfo" class="drop-zone-inner">
           <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24"
-               stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 text-neutral-300">
+               stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
             <polyline points="17 8 12 3 7 8"></polyline>
             <line x1="12" x2="12" y1="3" y2="15"></line>
@@ -114,11 +114,11 @@ async function confirmCheck() {
 
         <div v-else class="file-info-box">
           <div class="flex w-full items-center justify-between gap-4">
-            <p class="max-w-xs truncate text-base text-neutral-300">{{ fileName }}</p>
-            <p class="w-fit flex-shrink-0 bg-neutral-800 px-2 py-1 text-sm text-white">{{ fileSize }}</p>
+            <p class="max-w-xs truncate text-base" style="color: var(--text-secondary);">{{ fileName }}</p>
+            <p class="w-fit flex-shrink-0 px-2 py-1 text-sm" style="background: var(--bg-input); color: var(--text-primary);">{{ fileSize }}</p>
           </div>
-          <div class="mt-2 flex w-full flex-col items-start justify-between text-sm text-neutral-400 md:flex-row md:items-center gap-2">
-            <p class="bg-neutral-800 px-1 py-0.5">{{ fileType }}</p>
+          <div class="mt-2 flex w-full flex-col items-start justify-between text-sm md:flex-row md:items-center gap-2" style="color: var(--text-dim);">
+            <p class="px-1 py-0.5" style="background: var(--bg-input);">{{ fileType }}</p>
             <p>{{ fileModified }}</p>
           </div>
         </div>
@@ -141,8 +141,8 @@ async function confirmCheck() {
 }
 
 .porter-card {
-  border: 1px solid hsl(0, 0%, 10%);
-  background: hsl(0, 0%, 2%);
+  border: 1px solid var(--border-default);
+  background: var(--bg-body);
   padding: 1.5rem;
   width: 100%;
   max-width: 480px;
@@ -152,12 +152,12 @@ async function confirmCheck() {
   font-size: 1.125rem;
   font-weight: 600;
   margin-bottom: 1rem;
-  color: #e879a8;
+  color: var(--accent);
 }
 
 .card-desc {
   font-size: 0.875rem;
-  color: hsl(0, 0%, 50%);
+  color: var(--text-desc);
   margin-bottom: 1rem;
 }
 
@@ -165,7 +165,7 @@ async function confirmCheck() {
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 2px dashed hsl(0, 0%, 20%);
+  border: 2px dashed var(--border-strong);
   border-radius: 8px;
   padding: 2rem;
   cursor: pointer;
@@ -174,15 +174,15 @@ async function confirmCheck() {
 }
 
 .drop-zone:hover, .drop-zone.drag-over {
-  border-color: #e879a8;
-  background: hsl(330, 60%, 5%);
+  border-color: var(--accent);
+  background: var(--accent-glow);
 }
 
 .btn-cancel {
   padding: 0.5rem 1rem;
-  background: hsl(0, 0%, 10%);
-  color: hsl(0, 0%, 60%);
-  border: 1px solid hsl(0, 0%, 20%);
+  background: var(--bg-hover-2);
+  color: var(--text-muted);
+  border: 1px solid var(--border-strong);
   border-radius: 4px;
   cursor: pointer;
   font-size: 0.875rem;
@@ -191,8 +191,8 @@ async function confirmCheck() {
 .btn-main {
   padding: 0.5rem 1rem;
   background: transparent;
-  color: #e879a8;
-  border: 1px solid #e879a8;
+  color: var(--accent);
+  border: 1px solid var(--accent);
   border-radius: 4px;
   cursor: pointer;
   font-size: 0.875rem;
