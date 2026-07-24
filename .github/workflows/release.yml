@@ -31,12 +31,6 @@ jobs:
       - name: Build
         run: wails build
 
-      - name: Install UPX
-        run: choco install upx -y
-
-      - name: Compress with UPX
-        run: upx --best --lzma build/bin/mew.exe
-
       - name: Delete accidental release on MEOWWWW (if exists)
         continue-on-error: true
         shell: bash
