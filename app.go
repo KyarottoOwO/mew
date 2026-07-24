@@ -1029,6 +1029,10 @@ func (a *App) CheckForUpdate() UpdateInfo {
 	}
 }
 
+func (a *App) GetVersion() string {
+	return currentVersion
+}
+
 func (a *App) getRecentPacksPath() string {
 	exePath, err := os.Executable()
 	if err != nil {

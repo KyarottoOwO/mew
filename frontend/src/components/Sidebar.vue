@@ -1,11 +1,18 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { GetVersion } from '../../wailsjs/go/main/App'
 
 defineProps({
   currentPage: String
 })
 
 const emit = defineEmits(['navigate', 'width-change'])
+
+const version = ref('')
+
+onMounted(async () => {
+  version.value = await GetVersion()
+})
 
 const navItems = [
   { id: 'home', icon: 'fa-house', label: 'Home' },
@@ -71,7 +78,7 @@ function hideTooltip() {
     </ul>
 
     <div class="sidebar-bottom">
-      <span class="version">v1.0.8</span>
+      <span class="version">v{{ version }}</span>
       <button class="toggle-btn" @click="toggleSidebar" :title="isExpanded ? 'Collapse sidebar' : 'Expand sidebar'">
         <i class="fa" :class="isExpanded ? 'fa-chevron-left' : 'fa-chevron-right'"></i>
       </button>
