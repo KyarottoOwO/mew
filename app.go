@@ -26,7 +26,7 @@ import (
 )
 
 const currentVersion = "1.0"
-const versionJSONURL = "https://raw.githubusercontent.com/KyarottoOwO/mew/main/version.json"
+const githubReleasesURL = "https://api.github.com/repos/KyarottoOwO/mew/releases/latest"
 
 type UpdateInfo struct {
 	NeedsUpdate    bool   `json:"needsUpdate"`
@@ -981,7 +981,13 @@ func (a *App) OpenDownloadLink(url string) {
 
 func (a *App) CheckForUpdate() UpdateInfo {
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(versionJSONURL)
+	req, err := http.NewRequest("GET", githubReleasesURL, nil)
+	if err != nil {
+		return UpdateInfo{NeedsUpdate: false}
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return UpdateInfo{NeedsUpdate: false}
 	}
@@ -992,23 +998,35 @@ func (a *App) CheckForUpdate() UpdateInfo {
 		return UpdateInfo{NeedsUpdate: false}
 	}
 
-	var versionData struct {
-		Version string `json:"version"`
-		URL     string `json:"url"`
+	var release struct {
+		TagName string `json:"tag_name"`
+		Assets  []struct {
+			Name               string `json:"name"`
+			BrowserDownloadURL string `json:"browser_download_url"`
+		} `json:"assets"`
 	}
-	if err := json.Unmarshal(body, &versionData); err != nil {
+	if err := json.Unmarshal(body, &release); err != nil {
 		return UpdateInfo{NeedsUpdate: false}
 	}
 
-	if versionData.Version != currentVersion {
-		return UpdateInfo{
-			NeedsUpdate:   true,
-			LatestVersion: versionData.Version,
-			DownloadURL:   versionData.URL,
+	latestVersion := strings.TrimPrefix(release.TagName, "v")
+	if latestVersion == "" || latestVersion == currentVersion {
+		return UpdateInfo{NeedsUpdate: false}
+	}
+
+	downloadURL := ""
+	for _, asset := range release.Assets {
+		if strings.HasSuffix(strings.ToLower(asset.Name), ".exe") {
+			downloadURL = asset.BrowserDownloadURL
+			break
 		}
 	}
 
-	return UpdateInfo{NeedsUpdate: false}
+	return UpdateInfo{
+		NeedsUpdate:   true,
+		LatestVersion: latestVersion,
+		DownloadURL:   downloadURL,
+	}
 }
 
 func (a *App) getRecentPacksPath() string {

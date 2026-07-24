@@ -18,6 +18,7 @@
 
 !*.ps1
 !*.bat
+!*.yml
 
 !*.md
 
@@ -28,6 +29,9 @@ rsrc.exe
 .idea/
 folder_port_temp/
 temp_unzip/
+rar_port_temp/
+import_temp/
+recent_packs.json
 Java/
 Bedrock/
 
