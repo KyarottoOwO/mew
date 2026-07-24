@@ -64,6 +64,31 @@ jobs:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           TAG="${{ steps.release.outputs.tag }}"
+          RELEASE_URL="https://github.com/KyarottoOwO/mew/releases/tag/$TAG"
           curl -H "Content-Type: application/json" \
-            -d "{\"embeds\":[{\"title\":\"MEW $TAG released!\",\"url\":\"https://github.com/KyarottoOwO/mew/releases/tag/$TAG\",\"color\":15293772,\"description\":\"Download the latest version from [GitHub Releases](https://github.com/KyarottoOwO/mew/releases/tag/$TAG).\"}]}" \
+            -d '{
+              "content": "<@&1530333141548404786>",
+              "embeds": [{
+                "title": "📦 MEW '"'"'$TAG'"'"' Released!",
+                "url": "'"$RELEASE_URL"'",
+                "color": 15293772,
+                "description": "A new version of **MEW** is now available!\n\n⬇️ **[Download '"'"'$TAG'"'"']("'"'"'$RELEASE_URL'"'"')**",
+                "fields": [
+                  {
+                    "name": "Version",
+                    "value": "'"$TAG"'",
+                    "inline": true
+                  },
+                  {
+                    "name": "Platform",
+                    "value": "Windows (x64)",
+                    "inline": true
+                  }
+                ],
+                "footer": {
+                  "text": "MEW — Minecraft Bedrock Texture Pack Manager"
+                },
+                "timestamp": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"
+              }]
+            }' \
             "$DISCORD_WEBHOOK"
