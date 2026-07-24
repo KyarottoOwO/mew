@@ -71,7 +71,7 @@ function hideTooltip() {
     </ul>
 
     <div class="sidebar-bottom">
-      <span class="version">v1.0.6</span>
+      <span class="version">v1.0.8</span>
       <button class="toggle-btn" @click="toggleSidebar" :title="isExpanded ? 'Collapse sidebar' : 'Expand sidebar'">
         <i class="fa" :class="isExpanded ? 'fa-chevron-left' : 'fa-chevron-right'"></i>
       </button>

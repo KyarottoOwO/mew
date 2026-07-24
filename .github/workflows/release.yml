@@ -41,6 +41,7 @@ jobs:
           gh release delete "$TAG" --repo KyarottoOwO/MEOWWWW --yes --cleanup-tag || true
 
       - name: Create Release on mew
+        id: release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
@@ -50,3 +51,15 @@ jobs:
             --repo KyarottoOwO/mew \
             --title "MEW $TAG" \
             --generate-notes
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Notify Discord
+        if: steps.release.outputs.tag != ''
+        shell: bash
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          TAG="${{ steps.release.outputs.tag }}"
+          curl -H "Content-Type: application/json" \
+            -d "{\"embeds\":[{\"title\":\"MEW $TAG released!\",\"url\":\"https://github.com/KyarottoOwO/mew/releases/tag/$TAG\",\"color\":15293772,\"description\":\"Download the latest version from [GitHub Releases](https://github.com/KyarottoOwO/mew/releases/tag/$TAG).\"}]}" \
+            "$DISCORD_WEBHOOK"
