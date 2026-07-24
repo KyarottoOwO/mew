@@ -1,6 +1,6 @@
 # MEW
 
-![MEW Logo](frontend/public/logo.png)
+![MEW Logo](https://files.catbox.moe/cyc8j0.png)
 
 **Minecraft Bedrock Texture Pack Manager**
 
