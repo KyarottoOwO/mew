@@ -26,7 +26,6 @@
 
 *.exe
 *.syso
-*.ico
 rsrc.exe
 .idea/
 folder_port_temp/
@@ -40,4 +39,4 @@ Bedrock/
 frontend/node_modules/
 frontend/dist/
 frontend/wailsjs/
-build/
+build/bin/
