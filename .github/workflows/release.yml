@@ -67,11 +67,11 @@ jobs:
         shell: bash
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_URL: https://github.com/KyarottoOwO/mew/releases/tag/${{ steps.release.outputs.tag }}
+          COMMIT_MSG: ${{ steps.commit.outputs.msg }}
         run: |
-          TAG="${{ steps.release.outputs.tag }}"
-          RELEASE_URL="https://github.com/KyarottoOwO/mew/releases/tag/$TAG"
           TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          COMMIT_MSG="${{ steps.commit.outputs.msg }}"
           python3 -c "
           import json, sys, os
           commit_msg = os.environ['COMMIT_MSG']

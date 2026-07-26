@@ -1,8 +1,12 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { GetChangelog } from '../../wailsjs/go/main/App'
+import { GetChangelog, OpenDownloadLink } from '../../wailsjs/go/main/App'
 
 const changelog = ref([])
+
+function openGitHub(url) {
+  OpenDownloadLink(url)
+}
 
 onMounted(async () => {
   try {
@@ -93,7 +97,7 @@ onMounted(async () => {
             <span class="changelog-date">{{ entry.date }}</span>
           </div>
           <p class="changelog-body">{{ entry.body }}</p>
-          <a :href="entry.url" target="_blank" class="changelog-link">View on GitHub</a>
+          <a @click.prevent="openGitHub(entry.url)" class="changelog-link">View on GitHub</a>
         </div>
       </div>
     </div>
