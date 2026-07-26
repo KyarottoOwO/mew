@@ -44,11 +44,6 @@ jobs:
           TAG="${GITHUB_REF#refs/tags/}"
           gh release delete "$TAG" --repo KyarottoOwO/MEOWWWW --yes --cleanup-tag || true
 
-      - name: Get commit message
-        id: commit
-        shell: bash
-        run: echo "msg=$(git log -1 --format=%s)" >> "$GITHUB_OUTPUT"
-
       - name: Create Release on mew
         id: release
         shell: bash
@@ -59,7 +54,7 @@ jobs:
           gh release create "$TAG" build/bin/mew.exe \
             --repo KyarottoOwO/mew \
             --title "MEW $TAG" \
-            --notes "${{ steps.commit.outputs.msg }}"
+            --generate-notes
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Notify Discord
@@ -69,12 +64,10 @@ jobs:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
           TAG: ${{ steps.release.outputs.tag }}
           RELEASE_URL: https://github.com/KyarottoOwO/mew/releases/tag/${{ steps.release.outputs.tag }}
-          COMMIT_MSG: ${{ steps.commit.outputs.msg }}
         run: |
-          TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           python3 -c "
           import json, sys, os
-          commit_msg = os.environ['COMMIT_MSG']
           payload = {
             'content': '<@&1530333141548404786>',
             'embeds': [{
@@ -84,8 +77,7 @@ jobs:
               'description': 'A new version of **MEW** is now available!\n\n[Download ' + os.environ['TAG'] + '](' + os.environ['RELEASE_URL'] + ')',
               'fields': [
                 {'name': 'Version', 'value': os.environ['TAG'], 'inline': True},
-                {'name': 'Platform', 'value': 'Windows (x64)', 'inline': True},
-                {'name': 'Changelog', 'value': commit_msg, 'inline': False}
+                {'name': 'Platform', 'value': 'Windows (x64)', 'inline': True}
               ],
               'footer': {'text': 'MEW - Minecraft Bedrock Texture Pack Manager'},
               'timestamp': os.environ['TIMESTAMP']
