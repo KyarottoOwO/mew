@@ -25,7 +25,7 @@ import (
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-var currentVersion = "1.0.8"
+var currentVersion = "1.1.0"
 const githubReleasesURL = "https://api.github.com/repos/KyarottoOwO/mew/releases/latest"
 
 type UpdateInfo struct {
@@ -1031,6 +1031,58 @@ func (a *App) CheckForUpdate() UpdateInfo {
 
 func (a *App) GetVersion() string {
 	return currentVersion
+}
+
+type ChangelogEntry struct {
+	Tag  string `json:"tag"`
+	URL  string `json:"url"`
+	Date string `json:"date"`
+	Body string `json:"body"`
+}
+
+func (a *App) GetChangelog() []ChangelogEntry {
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequest("GET", "https://api.github.com/repos/KyarottoOwO/mew/releases", nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+
+	var releases []struct {
+		TagName   string `json:"tag_name"`
+		HTMLURL   string `json:"html_url"`
+		Published string `json:"published_at"`
+		Body      string `json:"body"`
+	}
+	if err := json.Unmarshal(body, &releases); err != nil {
+		return nil
+	}
+
+	var entries []ChangelogEntry
+	for _, r := range releases {
+		date := ""
+		if t, err := time.Parse(time.RFC3339, r.Published); err == nil {
+			date = t.Format("Jan 02, 2006")
+		}
+		entries = append(entries, ChangelogEntry{
+			Tag:  strings.TrimPrefix(r.TagName, "v"),
+			URL:  r.HTMLURL,
+			Date: date,
+			Body: r.Body,
+		})
+	}
+	return entries
 }
 
 func (a *App) getRecentPacksPath() string {

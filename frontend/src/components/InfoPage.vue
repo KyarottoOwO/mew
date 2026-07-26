@@ -1,3 +1,19 @@
+<script setup>
+import { ref, onMounted } from 'vue'
+import { GetChangelog } from '../../wailsjs/go/main/App'
+
+const changelog = ref([])
+
+onMounted(async () => {
+  try {
+    const entries = await GetChangelog()
+    if (entries) changelog.value = entries
+  } catch (e) {
+    console.error('Failed to load changelog:', e)
+  }
+})
+</script>
+
 <template>
   <div class="page active-page info-page">
     <div class="info-content">
@@ -66,6 +82,18 @@
             Configure auto-import to directly inject ported packs into your Minecraft resource packs folder.
             Set a custom output directory, enable auto-open on export, and inject a custom manifest description.
           </p>
+        </div>
+      </div>
+
+      <div v-if="changelog.length > 0" class="changelog-section">
+        <h2 class="changelog-title">Changelog</h2>
+        <div v-for="entry in changelog" :key="entry.tag" class="changelog-entry">
+          <div class="changelog-header">
+            <span class="changelog-tag">v{{ entry.tag }}</span>
+            <span class="changelog-date">{{ entry.date }}</span>
+          </div>
+          <p class="changelog-body">{{ entry.body }}</p>
+          <a :href="entry.url" target="_blank" class="changelog-link">View on GitHub</a>
         </div>
       </div>
     </div>
@@ -179,5 +207,62 @@
   font-size: 1rem;
   width: 20px;
   text-align: center;
+}
+
+.changelog-section {
+  margin-top: 1.5rem;
+  width: 100%;
+}
+
+.changelog-title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 0.75rem;
+  text-align: center;
+}
+
+.changelog-entry {
+  background: var(--bg-hover-1);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+  margin-bottom: 0.6rem;
+}
+
+.changelog-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.changelog-tag {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--accent);
+}
+
+.changelog-date {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.changelog-body {
+  font-size: 0.8rem;
+  color: var(--text-desc);
+  line-height: 1.6;
+  margin: 0.25rem 0;
+  white-space: pre-wrap;
+}
+
+.changelog-link {
+  font-size: 0.75rem;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.changelog-link:hover {
+  text-decoration: underline;
 }
 </style>
