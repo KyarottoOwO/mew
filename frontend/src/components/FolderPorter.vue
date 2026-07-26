@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import { PortFolder, PortLocalArchive, CancelPortFolder } from '../../wailsjs/go/main/App'
-import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
+import { EventsOn } from '../../wailsjs/runtime/runtime'
 
 const mode = ref('url')
 const url = ref('')
@@ -52,9 +52,17 @@ function resetProgress() {
 }
 
 let progressHandler = null
+const isMounted = ref(false)
 
 onMounted(() => {
+  isMounted.value = true
+  console.log('[FolderPorter] mounted, registering progress listener')
   progressHandler = EventsOn('progress', (data) => {
+    if (!isMounted.value) {
+      console.log('[FolderPorter] progress event received but component unmounted, ignoring')
+      return
+    }
+    console.log('[FolderPorter] progress event:', data.title, data.message, data.icon)
     const t = parseInt(data.total) || 0
     const c = parseInt(data.completed) || 0
 
@@ -100,7 +108,8 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  if (progressHandler) EventsOff('progress')
+  isMounted.value = false
+  console.log('[FolderPorter] unmounted')
 })
 
 function onDrop(e) {
@@ -141,6 +150,7 @@ function clearArchive() {
 }
 
 async function confirmPort() {
+  console.log('[FolderPorter] confirmPort called, mode:', mode.value)
   if (mode.value === 'url') {
     const trimmedUrl = url.value.trim()
     if (!trimmedUrl) {
@@ -149,9 +159,12 @@ async function confirmPort() {
     }
     showProgress.value = true
     resetProgress()
+    console.log('[FolderPorter] calling PortFolder')
     try {
       await PortFolder(trimmedUrl)
+      console.log('[FolderPorter] PortFolder resolved')
     } catch (err) {
+      console.error('[FolderPorter] PortFolder error:', err)
       popup('Error', err.toString(), 'error')
       showProgress.value = false
     }
@@ -162,11 +175,14 @@ async function confirmPort() {
     }
     showProgress.value = true
     resetProgress()
+    console.log('[FolderPorter] calling PortLocalArchive')
     try {
       const buffer = await archiveFile.value.arrayBuffer()
       const bytes = new Uint8Array(buffer)
       await PortLocalArchive(Array.from(bytes), archiveFile.value.name)
+      console.log('[FolderPorter] PortLocalArchive resolved')
     } catch (err) {
+      console.error('[FolderPorter] PortLocalArchive error:', err)
       popup('Error', err.toString(), 'error')
       showProgress.value = false
     }
@@ -174,9 +190,13 @@ async function confirmPort() {
 }
 
 async function cancelPorter() {
+  console.log('[FolderPorter] cancelPorter called')
   try {
     await CancelPortFolder()
-  } catch (_) {}
+    console.log('[FolderPorter] CancelPortFolder resolved')
+  } catch (e) {
+    console.error('[FolderPorter] CancelPortFolder error:', e)
+  }
   showProgress.value = false
   url.value = ''
   clearArchive()

@@ -24,7 +24,7 @@
   --text-desc: hsl(0, 0%, 50%);
   --text-dim: hsl(0, 0%, 40%);
   --text-faint: hsl(0, 0%, 30%);
-  --text-version: hsl(0, 0%, 22%);
+  --text-version: hsl(330, 50%, 65%);
   --accent: #e879a8;
   --accent-glow: hsla(330, 60%, 65%, 0.1);
   --accent-glow2: hsla(330, 60%, 65%, 0.15);
@@ -68,7 +68,7 @@
   --text-desc: hsl(0, 0%, 52%);
   --text-dim: hsl(0, 0%, 58%);
   --text-faint: hsl(0, 0%, 65%);
-  --text-version: hsl(0, 0%, 70%);
+  --text-version: hsl(330, 40%, 55%);
   --accent: #d4608e;
   --accent-glow: hsla(330, 60%, 65%, 0.12);
   --accent-glow2: hsla(330, 60%, 65%, 0.18);

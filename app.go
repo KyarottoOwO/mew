@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/swim-services/swim_porter/port"
@@ -25,7 +26,7 @@ import (
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-var currentVersion = "1.1.0"
+var currentVersion = "1.1.1"
 const githubReleasesURL = "https://api.github.com/repos/KyarottoOwO/mew/releases/latest"
 
 type UpdateInfo struct {
@@ -44,10 +45,14 @@ type App struct {
 	ctx          context.Context
 	cancelFolder context.CancelFunc
 	settings     map[string]interface{}
+	debug        bool
+	portMu       sync.Mutex
+	activePort   bool
 }
 
-func NewApp() *App {
+func NewApp(debug bool) *App {
 	return &App{
+		debug: debug,
 		settings: map[string]interface{}{
 			"autoImport":            false,
 			"autoOpenFolder":        false,
@@ -61,6 +66,35 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	if a.debug {
+		log.Println("[startup] App context initialized")
+	}
+}
+
+func (a *App) logDebug(msg string) {
+	if a.debug {
+		log.Println("[DEBUG]", msg)
+	}
+}
+
+func (a *App) acquirePort() error {
+	a.portMu.Lock()
+	if a.activePort {
+		a.portMu.Unlock()
+		a.logDebug("acquirePort: BLOCKED - another porting operation is in progress")
+		return fmt.Errorf("another porting operation is in progress. Please wait for it to finish.")
+	}
+	a.activePort = true
+	a.portMu.Unlock()
+	a.logDebug("acquirePort: acquired")
+	return nil
+}
+
+func (a *App) releasePort() {
+	a.portMu.Lock()
+	a.activePort = false
+	a.portMu.Unlock()
+	a.logDebug("releasePort: released")
 }
 
 func (a *App) GetSettings() map[string]interface{} {
@@ -165,6 +199,7 @@ func (a *App) OpenFolder(dir string) {
 }
 
 func (a *App) emitProgress(title, message, icon, fileName string, total, completed int) {
+	a.logDebug(fmt.Sprintf("emitProgress: title=%q msg=%q icon=%q file=%q total=%d done=%d", title, message, icon, fileName, total, completed))
 	wailsRuntime.EventsEmit(a.ctx, "progress", map[string]interface{}{
 		"title":     title,
 		"message":   message,
@@ -257,21 +292,33 @@ func writeMcpack(zipBytes []byte, fileName string, outDir string, manifestDesc s
 }
 
 func (a *App) PortPack(bytes []byte, fileName string) (string, error) {
+	a.logDebug(fmt.Sprintf("PortPack: called, file=%s, size=%d", fileName, len(bytes)))
+	if err := a.acquirePort(); err != nil {
+		a.logDebug(fmt.Sprintf("PortPack: acquirePort FAILED: %v", err))
+		return "", err
+	}
+	defer a.releasePort()
+
+	a.logDebug(fmt.Sprintf("PortPack: starting port for %s", fileName))
+
 	lower := strings.ToLower(fileName)
 	if !strings.HasSuffix(lower, ".zip") && !strings.HasSuffix(lower, ".rar") {
 		return "", fmt.Errorf("please provide a .zip or .rar file")
 	}
 
 	if strings.HasSuffix(lower, ".rar") {
+		a.logDebug("Delegating to portRarPack")
 		return a.portRarPack(bytes, fileName)
 	}
 
 	a.emitProgress("Porting", "Porting pack...", "info", fileName, 0, 0)
+	a.logDebug("Starting port with swim_porter...")
 
 	skyboxOverride := ""
 	out, err := port.Port(bytes, fileName, port.PortOptions{ShowCredits: false, SkyboxOverride: skyboxOverride})
 	if err != nil {
 		errMsg := err.Error()
+		a.logDebug(fmt.Sprintf("port.Port failed: %s", errMsg))
 		log.Println(errMsg)
 
 		var portError *porterror.PortError
@@ -284,24 +331,33 @@ func (a *App) PortPack(bytes []byte, fileName string) (string, error) {
 		return "", err
 	}
 
+	a.logDebug(fmt.Sprintf("port.Port succeeded, output size: %d bytes", len(out)))
+
 	outFile, err := writeMcpack(out, fileName, a.getOutputDir(), a.getStringSetting("manifestDescription"))
 	if err != nil {
+		a.logDebug(fmt.Sprintf("writeMcpack failed: %v", err))
 		return "", fmt.Errorf("failed to write mcpack: %v", err)
 	}
 
+	a.logDebug(fmt.Sprintf("writeMcpack succeeded: %s", outFile))
+
 	if a.getBoolSetting("autoImport") {
+		a.logDebug("Auto-import enabled, importing to Bedrock...")
 		a.importToBedrock(outFile)
 	}
 	if a.getBoolSetting("autoOpenFolder") {
+		a.logDebug("Auto-open enabled, opening output folder...")
 		a.OpenFolder(a.getOutputDir())
 	}
 
-	a.emitFinished("Porting finished", outFile, "success")
+	a.emitProgress("Done", outFile, "success", fileName, 0, 0)
 	a.AddRecentPack(fileName, outFile)
+	a.logDebug("PortPack completed successfully")
 	return outFile, nil
 }
 
 func (a *App) portRarPack(rarBytes []byte, fileName string) (string, error) {
+	a.logDebug(fmt.Sprintf("portRarPack called: file=%s, size=%d bytes", fileName, len(rarBytes)))
 	a.emitProgress("Porting", "Extracting RAR archive...", "info", fileName, 0, 0)
 
 	tempDir := filepath.Join(".", "rar_port_temp")
@@ -310,11 +366,14 @@ func (a *App) portRarPack(rarBytes []byte, fileName string) (string, error) {
 
 	rarPath := filepath.Join(tempDir, fileName)
 	if err := os.WriteFile(rarPath, rarBytes, 0644); err != nil {
+		a.logDebug(fmt.Sprintf("Failed to write RAR to temp: %v", err))
 		return "", fmt.Errorf("failed to write rar file: %v", err)
 	}
 
+	a.logDebug("Extracting RAR archive...")
 	extractDir := filepath.Join(tempDir, "extracted")
 	if err := unrar(rarPath, extractDir); err != nil {
+		a.logDebug(fmt.Sprintf("RAR extraction failed: %v", err))
 		return "", fmt.Errorf("failed to extract rar: %v", err)
 	}
 
@@ -329,25 +388,32 @@ func (a *App) portRarPack(rarBytes []byte, fileName string) (string, error) {
 		return nil
 	})
 
+	a.logDebug(fmt.Sprintf("Found %d inner zip(s) in RAR", len(innerZips)))
+
 	if len(innerZips) == 0 {
 		return "", fmt.Errorf("no .zip packs found inside the rar archive")
 	}
 
 	var results []string
 	for _, zPath := range innerZips {
+		a.logDebug(fmt.Sprintf("Porting inner zip: %s", filepath.Base(zPath)))
 		zipData, err := os.ReadFile(zPath)
 		if err != nil {
+			a.logDebug(fmt.Sprintf("Failed to read %s: %v", zPath, err))
 			continue
 		}
 		out, err := port.Port(zipData, filepath.Base(zPath), port.PortOptions{ShowCredits: false})
 		if err != nil {
+			a.logDebug(fmt.Sprintf("Failed to port %s: %v", filepath.Base(zPath), err))
 			log.Printf("Failed to port %s: %v", filepath.Base(zPath), err)
 			continue
 		}
 		outFile, err := writeMcpack(out, filepath.Base(zPath), a.getOutputDir(), a.getStringSetting("manifestDescription"))
 		if err != nil {
+			a.logDebug(fmt.Sprintf("Failed to write mcpack for %s: %v", filepath.Base(zPath), err))
 			continue
 		}
+		a.logDebug(fmt.Sprintf("Successfully ported: %s", outFile))
 		if a.getBoolSetting("autoImport") {
 			a.importToBedrock(outFile)
 		}
@@ -359,30 +425,38 @@ func (a *App) portRarPack(rarBytes []byte, fileName string) (string, error) {
 	}
 
 	if len(results) == 0 {
+		a.logDebug("No packs were successfully ported from RAR")
 		return "", fmt.Errorf("failed to port any packs from the rar archive")
 	}
 
-	a.emitFinished("Porting finished", strings.Join(results, ", "), "success")
+	a.emitProgress("Done", strings.Join(results, ", "), "success", fileName, 0, 0)
 	a.AddRecentPack(fileName, strings.Join(results, ", "))
+	a.logDebug(fmt.Sprintf("portRarPack completed: %d pack(s) ported", len(results)))
 	return strings.Join(results, ", "), nil
 }
 
 func (a *App) PortPackFromURL(url string) (string, error) {
 	url = strings.TrimSpace(url)
+	a.logDebug(fmt.Sprintf("PortPackFromURL called: url=%s", url))
 	if url == "" {
 		return "", fmt.Errorf("no URL provided")
 	}
 
 	a.emitProgress("Downloading", "Fetching file from URL...", "info", "", 0, 0)
+	a.logDebug("Downloading from URL...")
 
 	data, filename, err := downloadFromURL(url)
 	if err != nil {
+		a.logDebug(fmt.Sprintf("Download failed: %v", err))
 		a.emitProgress("Error", fmt.Sprintf("Failed to download: %v", err), "error", "", 0, 0)
 		return "", fmt.Errorf("failed to download: %v", err)
 	}
 
+	a.logDebug(fmt.Sprintf("Downloaded: file=%s, size=%d bytes", filename, len(data)))
+
 	lower := strings.ToLower(filename)
 	if !isArchive(lower) {
+		a.logDebug(fmt.Sprintf("Rejected: downloaded file '%s' is not a supported archive", filename))
 		a.emitProgress("Error", "Downloaded file is not a .zip or .rar", "error", "", 0, 0)
 		return "", fmt.Errorf("downloaded file is not a supported archive")
 	}
@@ -395,6 +469,7 @@ func (a *App) PortPackFromURL(url string) (string, error) {
 		return "", err
 	}
 
+	a.logDebug("PortPackFromURL completed successfully")
 	return result, nil
 }
 
@@ -405,6 +480,14 @@ func (a *App) CancelPortFolder() {
 }
 
 func (a *App) PortLocalArchive(data []byte, fileName string) error {
+	a.logDebug(fmt.Sprintf("PortLocalArchive: called, file=%s, size=%d", fileName, len(data)))
+	if err := a.acquirePort(); err != nil {
+		a.logDebug(fmt.Sprintf("PortLocalArchive: acquirePort FAILED: %v", err))
+		a.emitProgress("Error", err.Error(), "error", "", 0, 0)
+		return err
+	}
+	defer a.releasePort()
+
 	if len(data) == 0 {
 		a.emitProgress("Error", "No file data provided.", "error", "", 0, 0)
 		return fmt.Errorf("no file data provided")
@@ -544,6 +627,14 @@ func (a *App) PortLocalArchive(data []byte, fileName string) error {
 }
 
 func (a *App) PortFolder(url string) error {
+	a.logDebug(fmt.Sprintf("PortFolder: called, url=%s", url))
+	if err := a.acquirePort(); err != nil {
+		a.logDebug(fmt.Sprintf("PortFolder: acquirePort FAILED: %v", err))
+		a.emitProgress("Error", err.Error(), "error", "", 0, 0)
+		return err
+	}
+	defer a.releasePort()
+
 	url = strings.TrimSpace(url)
 	if url == "" {
 		a.emitProgress("Error", "No URL provided.", "error", "", 0, 0)

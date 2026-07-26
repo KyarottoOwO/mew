@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -16,7 +17,22 @@ import (
 var assets embed.FS
 
 func main() {
-	app := NewApp()
+	debug := false
+	for _, arg := range os.Args[1:] {
+		if arg == "--debug" {
+			debug = true
+			break
+		}
+	}
+
+	if debug {
+		allocConsole()
+		log.SetOutput(os.Stderr)
+		log.SetFlags(log.Ltime | log.Lshortfile)
+		log.Println("Debug mode enabled")
+	}
+
+	app := NewApp(debug)
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)

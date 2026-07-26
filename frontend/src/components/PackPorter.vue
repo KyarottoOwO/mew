@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import { PortPack, PortPackFromURL } from '../../wailsjs/go/main/App'
-import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
+import { EventsOn } from '../../wailsjs/runtime/runtime'
 
 const mode = ref('file')
 const file = ref(null)
@@ -74,9 +74,17 @@ function resetProgress() {
 }
 
 let progressHandler = null
+const isMounted = ref(false)
 
 onMounted(() => {
+  isMounted.value = true
+  console.log('[PackPorter] mounted, registering progress listener')
   progressHandler = EventsOn('progress', (data) => {
+    if (!isMounted.value) {
+      console.log('[PackPorter] progress event received but component unmounted, ignoring')
+      return
+    }
+    console.log('[PackPorter] progress event:', data.title, data.message, data.icon)
     const t = parseInt(data.total) || 0
     const c = parseInt(data.completed) || 0
 
@@ -110,10 +118,12 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  if (progressHandler) EventsOff('progress')
+  isMounted.value = false
+  console.log('[PackPorter] unmounted')
 })
 
 async function confirmPort() {
+  console.log('[PackPorter] confirmPort called, mode:', mode.value)
   resetProgress()
   showProgress.value = true
 
@@ -124,9 +134,12 @@ async function confirmPort() {
       showProgress.value = false
       return
     }
+    console.log('[PackPorter] calling PortPackFromURL')
     try {
       await PortPackFromURL(trimmedUrl)
+      console.log('[PackPorter] PortPackFromURL resolved')
     } catch (err) {
+      console.error('[PackPorter] PortPackFromURL error:', err)
       popup('Error', err.toString(), 'error')
       showProgress.value = false
     }
@@ -136,11 +149,14 @@ async function confirmPort() {
       showProgress.value = false
       return
     }
+    console.log('[PackPorter] calling PortPack with file:', file.value.name)
     try {
       const buffer = await file.value.arrayBuffer()
       const bytes = new Uint8Array(buffer)
       await PortPack(Array.from(bytes), file.value.name)
+      console.log('[PackPorter] PortPack resolved')
     } catch (err) {
+      console.error('[PackPorter] PortPack error:', err)
       popup('Error', err.toString(), 'error')
       showProgress.value = false
     }
