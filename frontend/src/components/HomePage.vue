@@ -1,37 +1,38 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { GetRecentPacks, OpenFolder } from '../../wailsjs/go/main/App'
+import { GetRecentPacks } from '../../wailsjs/go/main/App'
+import { EventsOn } from '../../wailsjs/runtime/runtime'
 
-const emit = defineEmits(['navigate'])
+const props = defineProps({ homeAnimated: Boolean })
+const emit = defineEmits(['navigate', 'animated'])
 const showSuite = ref(false)
 const hasAnimated = ref(false)
+const isMounted = ref(false)
 const recentPacks = ref([])
 
 async function loadRecentPacks() {
   try {
     const packs = await GetRecentPacks()
-    recentPacks.value = packs || []
+    if (isMounted.value) recentPacks.value = packs || []
   } catch (e) {
     console.error('Failed to load recent packs:', e)
   }
 }
 
-async function openPackFolder(path) {
-  try {
-    await OpenFolder(path)
-  } catch (e) {
-    console.error('Failed to open folder:', e)
-  }
-}
-
 onMounted(() => {
-  setTimeout(() => {
+  isMounted.value = true
+  if (props.homeAnimated) {
     showSuite.value = true
-  }, 2500)
-  setTimeout(() => {
     hasAnimated.value = true
-  }, 3500)
+  } else {
+    emit('animated')
+    setTimeout(() => { showSuite.value = true }, 2500)
+    setTimeout(() => { hasAnimated.value = true }, 3500)
+  }
   loadRecentPacks()
+  EventsOn('recent-packs-changed', () => {
+    if (isMounted.value) loadRecentPacks()
+  })
 })
 </script>
 
@@ -72,12 +73,11 @@ onMounted(() => {
       <div v-if="recentPacks.length > 0" class="recent-box">
         <h3 class="recent-title">Recent Packs</h3>
         <div class="recent-list">
-          <div v-for="(pack, i) in recentPacks" :key="i" class="recent-item" @click="openPackFolder(pack.path)">
+          <div v-for="(pack, i) in recentPacks" :key="i" class="recent-item">
             <div class="recent-info">
               <i class="fa fa-box-open recent-icon"></i>
               <span class="recent-name">{{ pack.name }}</span>
             </div>
-            <i class="fa fa-folder-open recent-folder-icon" title="Open folder"></i>
           </div>
         </div>
       </div>
@@ -91,8 +91,9 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: safe center;
   padding: 2rem;
+  overflow-y: auto;
 }
 
 .welcome-text {
@@ -163,15 +164,8 @@ onMounted(() => {
 .recent-item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   padding: 0.4rem 0.5rem;
   border-radius: 4px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.recent-item:hover {
-  background: var(--bg-hover-1);
 }
 
 .recent-info {
@@ -193,18 +187,6 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.recent-folder-icon {
-  color: var(--text-dim);
-  font-size: 0.7rem;
-  flex-shrink: 0;
-  opacity: 0;
-  transition: opacity 0.15s;
-}
-
-.recent-item:hover .recent-folder-icon {
-  opacity: 1;
 }
 
 .fade-in {

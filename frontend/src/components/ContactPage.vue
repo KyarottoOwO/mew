@@ -43,7 +43,7 @@ import { OpenDiscordLink, OpenDonationLink } from '../../wailsjs/go/main/App'
 
 <style scoped>
 .contact-page {
-  justify-content: center;
+  justify-content: safe center;
   align-items: center;
 }
 

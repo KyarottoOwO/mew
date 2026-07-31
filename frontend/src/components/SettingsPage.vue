@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { GetSettings, SaveSettings, SelectDirectory, DetectMinecraftPaths } from '../../wailsjs/go/main/App'
+import { GetSettings, SaveSettings, SelectDirectory, DetectMinecraftPaths, ClearCache } from '../../wailsjs/go/main/App'
 
 const autoImport = ref(false)
 const autoOpenFolder = ref(false)
@@ -68,7 +68,6 @@ async function persistSettings() {
       resourcePacksPath: finalPath,
       theme: theme.value,
     }
-    localStorage.setItem('mew_settings', JSON.stringify(data))
     await SaveSettings(data)
 
     document.documentElement.dataset.theme = theme.value
@@ -119,6 +118,27 @@ async function pickOutputDir() {
 function clearOutputDir() {
   customOutputDir.value = ''
   persistSettings()
+}
+
+async function clearCache() {
+  const result = await Swal.fire({
+    title: 'Clear Cache?',
+    text: 'This will delete recent packs history and temporary files. Settings will not be affected.',
+    icon: 'warning',
+    showCancelButton: true,
+    confirmButtonText: 'Clear',
+    cancelButtonText: 'Cancel',
+    customClass: { popup: 'swal-custom-popup', confirmButton: 'custom-confirm-btn', cancelButton: 'custom-cancel-btn' },
+    buttonsStyling: false,
+  })
+  if (!result.isConfirmed) return
+  try {
+    await ClearCache()
+    await loadSettings()
+    Swal.fire({ title: 'Cleared', text: 'Cache cleared successfully.', icon: 'success', timer: 1500, showConfirmButton: false, customClass: { popup: 'swal-custom-popup' }, buttonsStyling: false })
+  } catch (e) {
+    console.error('Failed to clear cache:', e)
+  }
 }
 
 onMounted(loadSettings)
@@ -223,6 +243,16 @@ onMounted(loadSettings)
             @change="persistSettings"
           />
         </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Clear Cache</span>
+            <span class="setting-desc">Delete recent packs history and temporary files</span>
+          </div>
+          <button class="btn-sm btn-cancel" @click="clearCache" style="flex-shrink: 0;">
+            <i class="fa fa-trash-can"></i> Clear Cache
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -230,7 +260,7 @@ onMounted(loadSettings)
 
 <style scoped>
 .settings-page {
-  justify-content: center;
+  justify-content: safe center;
   align-items: center;
 }
 

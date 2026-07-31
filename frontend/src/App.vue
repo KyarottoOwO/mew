@@ -9,6 +9,8 @@ import FolderDisplay from './components/FolderDisplay.vue'
 import InfoPage from './components/InfoPage.vue'
 import SettingsPage from './components/SettingsPage.vue'
 import ContactPage from './components/ContactPage.vue'
+import RecentPacksPage from './components/RecentPacksPage.vue'
+import ProgressNotification from './components/ProgressNotification.vue'
 import { GetSettings, SaveSettings, CheckForUpdate, OpenDownloadLink } from '../wailsjs/go/main/App'
 
 const currentPage = ref('home')
@@ -17,10 +19,16 @@ const checkResult = ref(null)
 const packName = ref('')
 const sidebarWidth = ref(64)
 
+const homeAnimated = ref(localStorage.getItem('mew_home_animated') === '1')
 const updateAvailable = ref(false)
 const latestVersion = ref('')
 const downloadURL = ref('')
 const updateDismissed = ref(false)
+
+function onHomeAnimated() {
+  homeAnimated.value = true
+  localStorage.setItem('mew_home_animated', '1')
+}
 
 function switchPage(page) {
   currentPage.value = page
@@ -57,11 +65,8 @@ async function downloadUpdate() {
 async function syncSettingsToBackend() {
   try {
     const s = await GetSettings()
-    const ls = JSON.parse(localStorage.getItem('mew_settings') || '{}')
-    const merged = { ...s, ...ls }
-    await SaveSettings(merged)
-
-    const theme = merged.theme || 'dark'
+    await SaveSettings(s)
+    const theme = s.theme || 'dark'
     document.documentElement.dataset.theme = theme
   } catch (e) {
     console.error('Failed to sync settings:', e)
@@ -98,15 +103,18 @@ onMounted(() => {
 
     <div class="app-main">
       <Sidebar :current-page="currentPage" @navigate="switchPage" @width-change="onSidebarWidthChange" />
-      <HomePage v-show="currentPage === 'home'" @navigate="switchPage" />
-      <PackPorter v-if="currentPage === 'packporter'" />
-      <FolderPorter v-if="currentPage === 'packFolderPorter'" />
+      <HomePage v-if="currentPage === 'home'" :home-animated="homeAnimated" @navigate="switchPage" @animated="onHomeAnimated" />
+      <PackPorter v-show="currentPage === 'packporter'" :active="currentPage === 'packporter'" />
+      <FolderPorter v-show="currentPage === 'packFolderPorter'" :active="currentPage === 'packFolderPorter'" />
       <RecolorTool v-show="currentPage === 'recolor'" @open-display="openDisplay" />
       <FolderDisplay v-if="showRecolorPage" :check-result="checkResult" :pack-name="packName" :sidebar-width="sidebarWidth" @close="closeDisplay" />
+      <RecentPacksPage v-if="currentPage === 'recentpacks'" />
       <InfoPage v-show="currentPage === 'info'" />
       <SettingsPage v-show="currentPage === 'settings'" />
       <ContactPage v-show="currentPage === 'contact'" />
     </div>
+
+    <ProgressNotification :current-page="currentPage" @navigate="switchPage" />
   </div>
 </template>
 
@@ -147,6 +155,7 @@ body {
   display: flex;
   flex-direction: column;
   height: 100%;
+  overflow-y: auto;
 }
 
 .update-banner {

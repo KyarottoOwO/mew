@@ -97,12 +97,45 @@ func (a *App) releasePort() {
 	a.logDebug("releasePort: released")
 }
 
+func (a *App) getSettingsPath() string {
+	localAppData := os.Getenv("LOCALAPPDATA")
+	if localAppData == "" {
+		localAppData = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
+	}
+	dir := filepath.Join(localAppData, "mew", "Settings")
+	os.MkdirAll(dir, os.ModePerm)
+	return filepath.Join(dir, "settings.json")
+}
+
 func (a *App) GetSettings() map[string]interface{} {
+	data, err := os.ReadFile(a.getSettingsPath())
+	if err != nil {
+		return a.settings
+	}
+	var loaded map[string]interface{}
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		return a.settings
+	}
+	a.settings = loaded
 	return a.settings
 }
 
 func (a *App) SaveSettings(settings map[string]interface{}) {
 	a.settings = settings
+	jsonData, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return
+	}
+	os.WriteFile(a.getSettingsPath(), jsonData, 0644)
+}
+
+func (a *App) ClearCache() error {
+	os.Remove(a.getRecentPacksPath())
+	os.RemoveAll("./folder_port_temp")
+	os.RemoveAll("./temp_unzip")
+	os.RemoveAll("./rar_port_temp")
+	os.RemoveAll("./import_temp")
+	return nil
 }
 
 func (a *App) getOutputDir() string {
@@ -417,6 +450,7 @@ func (a *App) portRarPack(rarBytes []byte, fileName string) (string, error) {
 		if a.getBoolSetting("autoImport") {
 			a.importToBedrock(outFile)
 		}
+		a.AddRecentPack(filepath.Base(zPath), outFile)
 		results = append(results, outFile)
 	}
 
@@ -430,7 +464,6 @@ func (a *App) portRarPack(rarBytes []byte, fileName string) (string, error) {
 	}
 
 	a.emitProgress("Done", strings.Join(results, ", "), "success", fileName, 0, 0)
-	a.AddRecentPack(fileName, strings.Join(results, ", "))
 	a.logDebug(fmt.Sprintf("portRarPack completed: %d pack(s) ported", len(results)))
 	return strings.Join(results, ", "), nil
 }
@@ -585,9 +618,11 @@ func (a *App) PortLocalArchive(data []byte, fileName string) error {
 			continue
 		}
 
-		if _, err := writeMcpack(out, c.Name, bedrockDir, a.getStringSetting("manifestDescription")); err != nil {
+		if mcpackPath, err := writeMcpack(out, c.Name, bedrockDir, a.getStringSetting("manifestDescription")); err != nil {
 			failCount++
 			continue
+		} else {
+			a.AddRecentPack(c.Name, mcpackPath)
 		}
 
 		if !deleteOriginals {
@@ -617,10 +652,6 @@ func (a *App) PortLocalArchive(data []byte, fileName string) error {
 
 	if a.getBoolSetting("autoOpenFolder") && successCount > 0 {
 		a.OpenFolder(outputDir)
-	}
-
-	if successCount > 0 {
-		a.AddRecentPack(fmt.Sprintf("Multi-pack (%d packs)", successCount), outputDir)
 	}
 
 	return nil
@@ -744,10 +775,6 @@ func (a *App) PortFolder(url string) error {
 		a.OpenFolder(outputDir)
 	}
 
-	if successCount > 0 {
-		a.AddRecentPack(fmt.Sprintf("Multi-pack (%d packs)", successCount), outputDir)
-	}
-
 	return nil
 }
 
@@ -851,7 +878,7 @@ func (a *App) processPack(ctx context.Context, name string, data []byte, totalFi
 			a.importToBedrock(reportOut)
 		}
 
-		_ = reportOut
+		a.AddRecentPack(c.Name, reportOut)
 		a.emitProgress("Progress", c.Name, "done", c.Name, totalFiles, index+1)
 		packOk = true
 	}
@@ -1177,14 +1204,41 @@ func (a *App) GetChangelog() []ChangelogEntry {
 }
 
 func (a *App) getRecentPacksPath() string {
-	exePath, err := os.Executable()
-	if err != nil {
-		return "recent_packs.json"
+	localAppData := os.Getenv("LOCALAPPDATA")
+	if localAppData == "" {
+		localAppData = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local")
 	}
-	return filepath.Join(filepath.Dir(exePath), "recent_packs.json")
+	dir := filepath.Join(localAppData, "mew", "Recent_Packs")
+	os.MkdirAll(dir, os.ModePerm)
+	newPath := filepath.Join(dir, "recent_packs.json")
+
+	exePath, err := os.Executable()
+	if err == nil {
+		oldPath := filepath.Join(filepath.Dir(exePath), "recent_packs.json")
+		if _, statErr := os.Stat(oldPath); statErr == nil {
+			if _, statErr := os.Stat(newPath); os.IsNotExist(statErr) {
+				a.logDebug(fmt.Sprintf("Migrating recent_packs from %s to %s", oldPath, newPath))
+				data, readErr := os.ReadFile(oldPath)
+				if readErr == nil {
+					os.WriteFile(newPath, data, 0644)
+				}
+				os.Remove(oldPath)
+			}
+		}
+	}
+
+	return newPath
 }
 
 func (a *App) GetRecentPacks() []RecentPack {
+	return a.loadRecentPacks(5)
+}
+
+func (a *App) GetAllRecentPacks() []RecentPack {
+	return a.loadRecentPacks(50)
+}
+
+func (a *App) loadRecentPacks(max int) []RecentPack {
 	data, err := os.ReadFile(a.getRecentPacksPath())
 	if err != nil {
 		return []RecentPack{}
@@ -1195,8 +1249,8 @@ func (a *App) GetRecentPacks() []RecentPack {
 		return []RecentPack{}
 	}
 
-	if len(packs) > 5 {
-		packs = packs[:5]
+	if len(packs) > max {
+		packs = packs[:max]
 	}
 	return packs
 }
@@ -1224,4 +1278,5 @@ func (a *App) AddRecentPack(name, path string) {
 		return
 	}
 	os.WriteFile(a.getRecentPacksPath(), jsonData, 0644)
+	wailsRuntime.EventsEmit(a.ctx, "recent-packs-changed")
 }

@@ -1,8 +1,10 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { PortFolder, PortLocalArchive, CancelPortFolder } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
+import { progressStore, startPort, updateFromEvent, finish, clearProgress } from '../utils/progressStore'
 
+const props = defineProps({ active: Boolean })
 const mode = ref('url')
 const url = ref('')
 const showProgress = ref(false)
@@ -13,6 +15,7 @@ const progressCount = ref('0 / 0 packs')
 const progressWidth = ref(0)
 const spinnerClass = ref('fp-spinner')
 const totalPacks = ref(0)
+const startedPort = ref(false)
 
 const dropZone = ref(null)
 const archiveFile = ref(null)
@@ -49,6 +52,7 @@ function resetProgress() {
   progressCount.value = '0 / 0 packs'
   progressStatus.value = 'Connecting...'
   spinnerClass.value = 'fp-spinner'
+  totalPacks.value = 0
 }
 
 let progressHandler = null
@@ -58,13 +62,22 @@ onMounted(() => {
   isMounted.value = true
   console.log('[FolderPorter] mounted, registering progress listener')
   progressHandler = EventsOn('progress', (data) => {
-    if (!isMounted.value) {
-      console.log('[FolderPorter] progress event received but component unmounted, ignoring')
+    if (!isMounted.value || !startedPort.value) {
+      console.log('[FolderPorter] progress event received but not started or unmounted, ignoring')
       return
     }
     console.log('[FolderPorter] progress event:', data.title, data.message, data.icon)
     const t = parseInt(data.total) || 0
     const c = parseInt(data.completed) || 0
+
+    if (data.icon === 'success' || data.icon === 'error' || data.icon === 'warning') {
+      finish(data)
+      startedPort.value = false
+    } else {
+      updateFromEvent(data)
+    }
+
+    if (!props.active) return
 
     if (t > 0) totalPacks.value = t
 
@@ -110,6 +123,22 @@ onMounted(() => {
 onUnmounted(() => {
   isMounted.value = false
   console.log('[FolderPorter] unmounted')
+})
+
+watch(() => props.active, (active) => {
+  if (!active) return
+  if (startedPort.value && progressStore.active && progressStore.source === 'folderporter') {
+    showProgress.value = true
+    progressStatus.value = (progressStore.title || '') + (progressStore.message ? ': ' + progressStore.message : '')
+    progressWidth.value = progressStore.percent
+    progressPercent.value = progressStore.percent + '%'
+    progressList.value = progressStore.packList.slice()
+    totalPacks.value = progressStore.total || totalPacks.value
+    spinnerClass.value = 'fp-spinner'
+  } else {
+    showProgress.value = false
+    resetProgress()
+  }
 })
 
 function onDrop(e) {
@@ -159,6 +188,8 @@ async function confirmPort() {
     }
     showProgress.value = true
     resetProgress()
+    startedPort.value = true
+    startPort('folderporter', 'Connecting...')
     console.log('[FolderPorter] calling PortFolder')
     try {
       await PortFolder(trimmedUrl)
@@ -166,6 +197,8 @@ async function confirmPort() {
     } catch (err) {
       console.error('[FolderPorter] PortFolder error:', err)
       popup('Error', err.toString(), 'error')
+      startedPort.value = false
+      clearProgress()
       showProgress.value = false
     }
   } else {
@@ -175,6 +208,8 @@ async function confirmPort() {
     }
     showProgress.value = true
     resetProgress()
+    startedPort.value = true
+    startPort('folderporter', 'Connecting...')
     console.log('[FolderPorter] calling PortLocalArchive')
     try {
       const buffer = await archiveFile.value.arrayBuffer()
@@ -184,6 +219,8 @@ async function confirmPort() {
     } catch (err) {
       console.error('[FolderPorter] PortLocalArchive error:', err)
       popup('Error', err.toString(), 'error')
+      startedPort.value = false
+      clearProgress()
       showProgress.value = false
     }
   }
@@ -297,7 +334,7 @@ async function cancelPorter() {
 
 <style scoped>
 .folderporter-page {
-  justify-content: center;
+  justify-content: safe center;
   align-items: center;
 }
 

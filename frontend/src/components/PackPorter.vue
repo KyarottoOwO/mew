@@ -1,8 +1,10 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { PortPack, PortPackFromURL } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
+import { progressStore, startPort, updateFromEvent, finish, clearProgress } from '../utils/progressStore'
 
+const props = defineProps({ active: Boolean })
 const mode = ref('file')
 const file = ref(null)
 const fileName = ref('')
@@ -21,6 +23,7 @@ const progressWidth = ref(0)
 const progressPercent = ref('0%')
 const spinnerClass = ref('pp-spinner')
 const progressDone = ref(false)
+const startedPort = ref(false)
 
 function handleFile(selectedFile) {
   file.value = selectedFile
@@ -80,13 +83,22 @@ onMounted(() => {
   isMounted.value = true
   console.log('[PackPorter] mounted, registering progress listener')
   progressHandler = EventsOn('progress', (data) => {
-    if (!isMounted.value) {
-      console.log('[PackPorter] progress event received but component unmounted, ignoring')
+    if (!isMounted.value || !startedPort.value) {
+      console.log('[PackPorter] progress event received but not started or unmounted, ignoring')
       return
     }
     console.log('[PackPorter] progress event:', data.title, data.message, data.icon)
     const t = parseInt(data.total) || 0
     const c = parseInt(data.completed) || 0
+
+    if (data.icon === 'success' || data.icon === 'error') {
+      finish(data)
+      startedPort.value = false
+    } else {
+      updateFromEvent(data)
+    }
+
+    if (!props.active) return
 
     if (data.icon === 'success') {
       spinnerClass.value = 'pp-spinner done'
@@ -122,15 +134,34 @@ onUnmounted(() => {
   console.log('[PackPorter] unmounted')
 })
 
+watch(() => props.active, (active) => {
+  if (!active) return
+  if (startedPort.value && progressStore.active && progressStore.source === 'packporter') {
+    showProgress.value = true
+    progressStatus.value = (progressStore.title || '') + (progressStore.message ? ': ' + progressStore.message : '')
+    progressWidth.value = progressStore.percent
+    progressPercent.value = progressStore.percent + '%'
+    spinnerClass.value = 'pp-spinner'
+    progressDone.value = false
+  } else {
+    showProgress.value = false
+    resetProgress()
+  }
+})
+
 async function confirmPort() {
   console.log('[PackPorter] confirmPort called, mode:', mode.value)
   resetProgress()
   showProgress.value = true
+  startedPort.value = true
+  startPort('packporter', 'Starting...')
 
   if (mode.value === 'url') {
     const trimmedUrl = url.value.trim()
     if (!trimmedUrl) {
       popup('Error', 'Please paste a link first.', 'error')
+      startedPort.value = false
+      clearProgress()
       showProgress.value = false
       return
     }
@@ -141,11 +172,15 @@ async function confirmPort() {
     } catch (err) {
       console.error('[PackPorter] PortPackFromURL error:', err)
       popup('Error', err.toString(), 'error')
+      startedPort.value = false
+      clearProgress()
       showProgress.value = false
     }
   } else {
     if (!file.value) {
       popup('Error', 'Please upload a file first.', 'error')
+      startedPort.value = false
+      clearProgress()
       showProgress.value = false
       return
     }
@@ -158,6 +193,8 @@ async function confirmPort() {
     } catch (err) {
       console.error('[PackPorter] PortPack error:', err)
       popup('Error', err.toString(), 'error')
+      startedPort.value = false
+      clearProgress()
       showProgress.value = false
     }
   }
@@ -258,7 +295,7 @@ function cancelUrl() {
 
 <style scoped>
 .packporter-page {
-  justify-content: center;
+  justify-content: safe center;
   align-items: center;
 }
 

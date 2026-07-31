@@ -136,7 +136,7 @@ async function confirmCheck() {
 
 <style scoped>
 .recolor-page {
-  justify-content: center;
+  justify-content: safe center;
   align-items: center;
 }
 
