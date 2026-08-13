@@ -39,9 +39,9 @@ const spinnerClass = computed(() => {
     : 'pn-spinner done'
 })
 
-const showCancel = computed(() => progressStore.source === 'folderporter' && !progressStore.done)
+const showCancel = computed(() => progressStore.source === 'packFolderPorter' && !progressStore.done)
 
-const title = computed(() => progressStore.source === 'folderporter' ? 'Multi-Pack Porter' : 'Pack Porter')
+const title = computed(() => progressStore.source === 'packFolderPorter' ? 'Multi-Pack Porter' : 'Pack Porter')
 
 function goToPage() {
   emit('navigate', progressStore.source)
@@ -73,7 +73,7 @@ async function cancel() {
 
       <div class="pn-foot">
         <span>{{ progressStore.percent }}%</span>
-        <span v-if="progressStore.source === 'folderporter' && progressStore.total > 0">
+        <span v-if="progressStore.source === 'packFolderPorter' && progressStore.total > 0">
           {{ progressStore.completed }} / {{ progressStore.total }} packs
         </span>
       </div>

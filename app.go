@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -57,6 +58,7 @@ func NewApp(debug bool) *App {
 			"autoImport":            false,
 			"autoOpenFolder":        false,
 			"deleteOriginals":       false,
+			"deleteMcpack":          false,
 			"customOutputDir":       "",
 			"manifestDescription":   "",
 			"resourcePacksPath":     "",
@@ -135,6 +137,8 @@ func (a *App) ClearCache() error {
 	os.RemoveAll("./temp_unzip")
 	os.RemoveAll("./rar_port_temp")
 	os.RemoveAll("./import_temp")
+	os.RemoveAll("./anim_port_temp")
+	os.RemoveAll("./anim_merge_temp")
 	return nil
 }
 
@@ -167,11 +171,17 @@ type MinecraftPath struct {
 func (a *App) DetectMinecraftPaths() []MinecraftPath {
 	var paths []MinecraftPath
 	appData := os.Getenv("APPDATA")
+	localAppData := os.Getenv("LOCALAPPDATA")
 
-	thirdParty := filepath.Join(appData, "Minecraft Bedrock", "Users", "Shared", "games", "com.mojang", "resource_packs")
-	if info, err := os.Stat(thirdParty); err == nil && info.IsDir() {
-		paths = append(paths, MinecraftPath{Name: "Minecraft (Third-Party Launcher)", Path: thirdParty})
+	addIfExists := func(name, path string) {
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			paths = append(paths, MinecraftPath{Name: name, Path: path})
+		}
 	}
+
+	addIfExists("Minecraft (Windows)", filepath.Join(appData, "Minecraft Bedrock", "Users", "Shared", "games", "com.mojang", "resource_packs"))
+	addIfExists("Minecraft (Legacy UWP)", filepath.Join(localAppData, "Packages", "Microsoft.MinecraftUWP_8wekyb3d8bbwe", "LocalState", "games", "com.mojang", "resource_packs"))
+	addIfExists("Minecraft Preview", filepath.Join(appData, "Minecraft Bedrock Preview", "Users", "Shared", "games", "com.mojang", "resource_packs"))
 
 	return paths
 }
@@ -184,10 +194,54 @@ func (a *App) getDefaultResourcePacksPath() string {
 	return filepath.Join(os.Getenv("APPDATA"), "Minecraft Bedrock", "Users", "Shared", "games", "com.mojang", "resource_packs")
 }
 
+type ResourcePacksInfo struct {
+	Path  string   `json:"path"`
+	Found bool     `json:"found"`
+	Packs []string `json:"packs"`
+}
+
+func (a *App) GetInstalledPacks() ResourcePacksInfo {
+	path := a.getStringSetting("resourcePacksPath")
+	if path == "" {
+		path = a.getDefaultResourcePacksPath()
+	}
+	info := ResourcePacksInfo{Path: path}
+	if st, err := os.Stat(path); err != nil || !st.IsDir() {
+		return info
+	}
+	info.Found = true
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return info
+	}
+	for _, e := range entries {
+		if e.IsDir() || strings.HasSuffix(strings.ToLower(e.Name()), ".mcpack") {
+			info.Packs = append(info.Packs, e.Name())
+		}
+	}
+	sort.Strings(info.Packs)
+	return info
+}
+
+func (a *App) SetResourcePacksPath(path string) (ResourcePacksInfo, error) {
+	st, err := os.Stat(path)
+	if err != nil || !st.IsDir() {
+		return ResourcePacksInfo{}, fmt.Errorf("please choose a valid folder")
+	}
+	a.settings["resourcePacksPath"] = path
+	a.SaveSettings(a.settings)
+	return a.GetInstalledPacks(), nil
+}
+
 func (a *App) importToBedrock(mcpackPath string) {
 	bedrockPath := a.getStringSetting("resourcePacksPath")
 	if bedrockPath == "" {
 		bedrockPath = a.getDefaultResourcePacksPath()
+	}
+
+	if st, err := os.Stat(bedrockPath); err != nil || !st.IsDir() {
+		log.Printf("Skipping import: resource packs path not found: %s", bedrockPath)
+		return
 	}
 
 	packName := strings.TrimSuffix(filepath.Base(mcpackPath), filepath.Ext(mcpackPath))
@@ -218,6 +272,12 @@ func (a *App) importToBedrock(mcpackPath string) {
 	})
 
 	log.Printf("Imported pack to %s", destDir)
+
+	if a.getBoolSetting("deleteMcpack") {
+		if err := os.Remove(mcpackPath); err == nil {
+			log.Printf("Deleted mcpack after import: %s", mcpackPath)
+		}
+	}
 }
 
 func (a *App) OpenFolder(dir string) {

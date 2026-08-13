@@ -127,7 +127,7 @@ onUnmounted(() => {
 
 watch(() => props.active, (active) => {
   if (!active) return
-  if (startedPort.value && progressStore.active && progressStore.source === 'folderporter') {
+  if (startedPort.value && progressStore.active && progressStore.source === 'packFolderPorter') {
     showProgress.value = true
     progressStatus.value = (progressStore.title || '') + (progressStore.message ? ': ' + progressStore.message : '')
     progressWidth.value = progressStore.percent
@@ -189,7 +189,7 @@ async function confirmPort() {
     showProgress.value = true
     resetProgress()
     startedPort.value = true
-    startPort('folderporter', 'Connecting...')
+    startPort('packFolderPorter', 'Connecting...')
     console.log('[FolderPorter] calling PortFolder')
     try {
       await PortFolder(trimmedUrl)
@@ -209,7 +209,7 @@ async function confirmPort() {
     showProgress.value = true
     resetProgress()
     startedPort.value = true
-    startPort('folderporter', 'Connecting...')
+    startPort('packFolderPorter', 'Connecting...')
     console.log('[FolderPorter] calling PortLocalArchive')
     try {
       const buffer = await archiveFile.value.arrayBuffer()

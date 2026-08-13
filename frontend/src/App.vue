@@ -5,6 +5,7 @@ import HomePage from './components/HomePage.vue'
 import PackPorter from './components/PackPorter.vue'
 import FolderPorter from './components/FolderPorter.vue'
 import RecolorTool from './components/RecolorTool.vue'
+import AnimatedInventory from './components/AnimatedInventory.vue'
 import FolderDisplay from './components/FolderDisplay.vue'
 import InfoPage from './components/InfoPage.vue'
 import SettingsPage from './components/SettingsPage.vue'
@@ -107,6 +108,7 @@ onMounted(() => {
       <PackPorter v-show="currentPage === 'packporter'" :active="currentPage === 'packporter'" />
       <FolderPorter v-show="currentPage === 'packFolderPorter'" :active="currentPage === 'packFolderPorter'" />
       <RecolorTool v-show="currentPage === 'recolor'" @open-display="openDisplay" />
+      <AnimatedInventory v-show="currentPage === 'animator'" :active="currentPage === 'animator'" />
       <FolderDisplay v-if="showRecolorPage" :check-result="checkResult" :pack-name="packName" :sidebar-width="sidebarWidth" @close="closeDisplay" />
       <RecentPacksPage v-if="currentPage === 'recentpacks'" />
       <InfoPage v-show="currentPage === 'info'" />

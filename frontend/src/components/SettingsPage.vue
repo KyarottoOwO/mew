@@ -5,6 +5,7 @@ import { GetSettings, SaveSettings, SelectDirectory, DetectMinecraftPaths, Clear
 const autoImport = ref(false)
 const autoOpenFolder = ref(false)
 const deleteOriginals = ref(false)
+const deleteMcpack = ref(false)
 const customOutputDir = ref('')
 const manifestDescription = ref('')
 const resourcePacksPath = ref('')
@@ -23,6 +24,7 @@ async function loadSettings() {
     autoImport.value = s.autoImport || false
     autoOpenFolder.value = s.autoOpenFolder || false
     deleteOriginals.value = s.deleteOriginals || false
+    deleteMcpack.value = s.deleteMcpack || false
     customOutputDir.value = s.customOutputDir || ''
     manifestDescription.value = s.manifestDescription || ''
     resourcePacksPath.value = s.resourcePacksPath || ''
@@ -63,6 +65,7 @@ async function persistSettings() {
       autoImport: autoImport.value,
       autoOpenFolder: autoOpenFolder.value,
       deleteOriginals: deleteOriginals.value,
+      deleteMcpack: deleteMcpack.value,
       customOutputDir: customOutputDir.value,
       manifestDescription: manifestDescription.value,
       resourcePacksPath: finalPath,
@@ -191,6 +194,17 @@ onMounted(loadSettings)
               <button class="btn-sm btn-cancel" @click="isCustomPath = false; selectedMinecraftPath = detectedPaths.length > 0 ? detectedPaths[0].path : ''; persistSettings()">Back</button>
             </div>
           </div>
+        </div>
+
+        <div v-if="autoImport" class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Delete .mcpack</span>
+            <span class="setting-desc">Delete the .mcpack file after importing so it doesn't show up in the output</span>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" v-model="deleteMcpack" @change="persistSettings" />
+            <span class="toggle-slider"></span>
+          </label>
         </div>
 
         <div class="setting-row">

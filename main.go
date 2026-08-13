@@ -45,6 +45,8 @@ func main() {
 	}()
 	defer os.RemoveAll("./temp_unzip")
 	defer os.RemoveAll("./folder_port_temp")
+	defer os.RemoveAll("./anim_port_temp")
+	defer os.RemoveAll("./anim_merge_temp")
 
 	err := wails.Run(&options.App{
 		Title:     "MEW",

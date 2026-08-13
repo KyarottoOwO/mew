@@ -19,6 +19,7 @@ const navItems = [
   { id: 'packporter', icon: 'fa-box-open', label: 'Pack Porter' },
   { id: 'packFolderPorter', icon: 'fa-folder-open', label: 'Multi-Pack Porter' },
   { id: 'recolor', icon: 'fa-palette', label: 'Recolor Tool' },
+  { id: 'animator', icon: 'fa-video', label: 'Animated Inventory' },
   { id: 'recentpacks', icon: 'fa-clock', label: 'Recent Packs' },
   { id: 'info', icon: 'fa-circle-info', label: 'Info' },
   { id: 'settings', icon: 'fa-gear', label: 'Settings' },
