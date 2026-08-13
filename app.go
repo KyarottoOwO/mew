@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -20,6 +21,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/swim-services/swim_porter/port"
@@ -43,12 +45,21 @@ type RecentPack struct {
 }
 
 type App struct {
-	ctx          context.Context
-	cancelFolder context.CancelFunc
-	settings     map[string]interface{}
-	debug        bool
-	portMu       sync.Mutex
-	activePort   bool
+	ctx             context.Context
+	cancelFolder    context.CancelFunc
+	settings        map[string]interface{}
+	debug           bool
+	portMu          sync.Mutex
+	activePort      bool
+	discordStop      chan struct{}
+	discordConn      net.Conn
+	discordConnected atomic.Bool
+	discordDead      atomic.Bool
+	discordState     string
+	discordDetails   string
+	discordMu        sync.Mutex
+	discordIpcMu     sync.Mutex
+	discordStart     time.Time
 }
 
 func NewApp(debug bool) *App {
@@ -59,6 +70,7 @@ func NewApp(debug bool) *App {
 			"autoOpenFolder":        false,
 			"deleteOriginals":       false,
 			"deleteMcpack":          false,
+			"discordRPC":            true,
 			"customOutputDir":       "",
 			"manifestDescription":   "",
 			"resourcePacksPath":     "",
@@ -71,6 +83,7 @@ func (a *App) startup(ctx context.Context) {
 	if a.debug {
 		log.Println("[startup] App context initialized")
 	}
+	a.startDiscordRPC()
 }
 
 func (a *App) logDebug(msg string) {
@@ -118,7 +131,9 @@ func (a *App) GetSettings() map[string]interface{} {
 	if err := json.Unmarshal(data, &loaded); err != nil {
 		return a.settings
 	}
-	a.settings = loaded
+	for k, v := range loaded {
+		a.settings[k] = v
+	}
 	return a.settings
 }
 

@@ -6,6 +6,7 @@ const autoImport = ref(false)
 const autoOpenFolder = ref(false)
 const deleteOriginals = ref(false)
 const deleteMcpack = ref(false)
+const discordRPC = ref(true)
 const customOutputDir = ref('')
 const manifestDescription = ref('')
 const resourcePacksPath = ref('')
@@ -25,6 +26,7 @@ async function loadSettings() {
     autoOpenFolder.value = s.autoOpenFolder || false
     deleteOriginals.value = s.deleteOriginals || false
     deleteMcpack.value = s.deleteMcpack || false
+    discordRPC.value = s.discordRPC !== false
     customOutputDir.value = s.customOutputDir || ''
     manifestDescription.value = s.manifestDescription || ''
     resourcePacksPath.value = s.resourcePacksPath || ''
@@ -66,6 +68,7 @@ async function persistSettings() {
       autoOpenFolder: autoOpenFolder.value,
       deleteOriginals: deleteOriginals.value,
       deleteMcpack: deleteMcpack.value,
+      discordRPC: discordRPC.value,
       customOutputDir: customOutputDir.value,
       manifestDescription: manifestDescription.value,
       resourcePacksPath: finalPath,
@@ -203,6 +206,17 @@ onMounted(loadSettings)
           </div>
           <label class="toggle">
             <input type="checkbox" v-model="deleteMcpack" @change="persistSettings" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Discord Rich Presence</span>
+            <span class="setting-desc">Show what you're doing in MEW on your Discord profile</span>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" v-model="discordRPC" @change="persistSettings" />
             <span class="toggle-slider"></span>
           </label>
         </div>

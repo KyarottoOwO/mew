@@ -29,7 +29,7 @@ onMounted(async () => {
 
       <p class="info-text">
         MEW is a small, easy-to-use program made in Go that helps you manage Minecraft Bedrock texture packs.
-        It can quickly convert Java texture packs to Bedrock and even lets you recolor textures with just a few clicks.
+        It can quickly convert Java texture packs to Bedrock, recolor textures, and turn GIFs into animated inventories.
         Everything runs on your own computer, so your files stay private.
       </p>
 
@@ -54,6 +54,18 @@ onMounted(async () => {
             Paste a MediaFire folder link to download and convert every pack in it one by one,
             or upload a <code>.zip</code> / <code>.rar</code> archive containing multiple packs.
             Each pack is converted and saved immediately so nothing is lost if you cancel halfway.
+          </p>
+        </div>
+
+        <div class="tool-card">
+          <div class="tool-card-header">
+            <i class="fa fa-video tool-icon"></i>
+            <h3>Animated Inventory</h3>
+          </div>
+          <p>
+            Upload a <code>.gif</code> to turn it into an animated inventory for Minecraft Bedrock.
+            Pick a frame duration and empty-area fill, optionally add an overlay <code>.png</code>,
+            then create a <code>.mcpack</code> &mdash; or install it straight into an existing pack in Minecraft.
           </p>
         </div>
 

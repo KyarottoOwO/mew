@@ -12,7 +12,7 @@ import SettingsPage from './components/SettingsPage.vue'
 import ContactPage from './components/ContactPage.vue'
 import RecentPacksPage from './components/RecentPacksPage.vue'
 import ProgressNotification from './components/ProgressNotification.vue'
-import { GetSettings, SaveSettings, CheckForUpdate, OpenDownloadLink } from '../wailsjs/go/main/App'
+import { GetSettings, SaveSettings, CheckForUpdate, OpenDownloadLink, SetDiscordActivity } from '../wailsjs/go/main/App'
 
 const currentPage = ref('home')
 const showRecolorPage = ref(false)
@@ -90,6 +90,7 @@ async function checkForUpdates() {
 onMounted(() => {
   syncSettingsToBackend()
   checkForUpdates()
+  SetDiscordActivity('Browsing MEW', 'Minecraft Bedrock Texture Pack Manager')
 })
 </script>
 
