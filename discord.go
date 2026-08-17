@@ -9,17 +9,20 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
+	"golang.org/x/sys/windows"
 	"gopkg.in/natefinch/npipe.v2"
 )
 
 const (
-	discordClientID     = "1513804565366177882"
-	discordLargeImage   = "mew_logo"
-	discordGitHubURL    = "https://github.com/KyarottoOwO/mew"
-	discordInviteURL    = "https://discord.gg/AA8MSTDjB"
-	discordDialTimeout  = 2 * time.Second
+	discordClientID    = "1513804565366177882"
+	discordLargeImage  = "mew_logo"
+	discordGitHubURL   = "https://github.com/KyarottoOwO/mew"
+	discordInviteURL   = "https://discord.gg/AA8MSTDjB"
+	discordDialTimeout = 2 * time.Second
 )
 
 const (
@@ -38,9 +41,9 @@ type discordHandshake struct {
 }
 
 type discordFrame struct {
-	Cmd   string                `json:"cmd"`
-	Args  discordActivityArgs   `json:"args"`
-	Nonce string                `json:"nonce"`
+	Cmd   string               `json:"cmd"`
+	Args  discordActivityArgs  `json:"args"`
+	Nonce string               `json:"nonce"`
 }
 
 type discordActivityArgs struct {
@@ -91,6 +94,9 @@ func (a *App) stopDiscordRPC() {
 	a.discordClose()
 }
 
+// discordLoop keeps a connection to every running Discord client while the
+// discordRPC setting is enabled, reconciling every few seconds so newly
+// launched clients are picked up and dead connections are retried.
 func (a *App) discordLoop() {
 	for {
 		select {
@@ -105,73 +111,116 @@ func (a *App) discordLoop() {
 			continue
 		}
 
-		if !a.discordConnected.Load() {
-			err := a.discordConnect()
-			if err == nil {
-				a.discordConnected.Store(true)
-				a.refreshDiscordActivity()
-			} else {
-				log.Printf("Discord RPC connect failed: %v", err)
-			}
-			time.Sleep(5 * time.Second)
-			continue
-		}
-
-		if a.discordDead.Load() {
-			a.discordClose()
-			time.Sleep(5 * time.Second)
-			continue
-		}
+		a.discordReconcile()
+		a.refreshDiscordActivity()
 		time.Sleep(5 * time.Second)
 	}
 }
 
-// discordConnect dials the Discord IPC named pipe, sends the handshake and
-// starts a reader goroutine that drains all incoming frames. The reader also
-// detects CLOSE frames and read errors, flagging the connection as dead.
-func (a *App) discordConnect() error {
-	var conn net.Conn
-	var err error
-	for i := 0; i < 10; i++ {
-		addr := fmt.Sprintf(`\\.\pipe\discord-ipc-%d`, i)
-		conn, err = npipe.DialTimeout(addr, discordDialTimeout)
-		if err == nil {
-			break
-		}
-	}
-	if err != nil {
-		return err
+// discordReconcile dials any Discord client pipe we are not yet connected to,
+// sends the handshake, starts a reader goroutine, and drops connections whose
+// pipe no longer exists (the owning client quit).
+func (a *App) discordReconcile() {
+	want := discordClientPipes()
+	wantSet := make(map[string]bool, len(want))
+	for _, name := range want {
+		wantSet[name] = true
 	}
 
 	a.discordIpcMu.Lock()
-	a.discordConn = conn
+	have := make(map[string]bool, len(a.discordConns))
+	for name := range a.discordConns {
+		have[name] = true
+	}
 	a.discordIpcMu.Unlock()
-	a.discordDead.Store(false)
 
-	go a.discordReadLoop(conn)
+	for _, name := range want {
+		if have[name] {
+			continue
+		}
+		conn, err := npipe.DialTimeout(name, discordDialTimeout)
+		if err != nil {
+			continue
+		}
+		a.discordIpcMu.Lock()
+		a.discordConns[name] = conn
+		a.discordIpcMu.Unlock()
+		go a.discordReadLoop(name, conn)
+		if payload, err := json.Marshal(discordHandshake{V: "1", ClientID: discordClientID}); err == nil {
+			a.discordSend(conn, discordOpHandshake, payload)
+		}
+	}
 
-	payload, err := json.Marshal(discordHandshake{V: "1", ClientID: discordClientID})
-	if err != nil {
-		a.discordClose()
-		return err
+	a.discordIpcMu.Lock()
+	for name, conn := range a.discordConns {
+		if !wantSet[name] {
+			delete(a.discordConns, name)
+			conn.Close()
+		}
 	}
-	if err := a.discordSend(discordOpHandshake, payload); err != nil {
-		a.discordClose()
-		return err
+	a.discordIpcMu.Unlock()
+}
+
+// discordClientPipes enumerates every discord-ipc pipe whose server end is
+// owned by a Discord client process (Stable, PTB, Canary or Development).
+// All Discord flavours share the discord-ipc-0..9 range and the slot a client
+// lands on depends on launch order, so the owning process must be inspected to
+// tell them apart.
+func discordClientPipes() []string {
+	var pipes []string
+	for i := 0; i < 40; i++ {
+		name := fmt.Sprintf(`\\.\pipe\discord-ipc-%d`, i)
+		ptr, err := windows.UTF16PtrFromString(name)
+		if err != nil {
+			continue
+		}
+		h, err := windows.CreateFile(
+			ptr,
+			windows.GENERIC_READ,
+			windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+			nil,
+			windows.OPEN_EXISTING,
+			windows.FILE_FLAG_OVERLAPPED,
+			0,
+		)
+		if err != nil {
+			continue
+		}
+		var pid uint32
+		pe := windows.GetNamedPipeServerProcessId(h, &pid)
+		windows.CloseHandle(h)
+		if pe != nil || pid == 0 {
+			continue
+		}
+		p, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+		if err != nil {
+			continue
+		}
+		var buf [windows.MAX_PATH]uint16
+		var size uint32 = uint32(len(buf))
+		ie := windows.QueryFullProcessImageName(p, 0, &buf[0], &size)
+		windows.CloseHandle(p)
+		if ie != nil {
+			continue
+		}
+		base := filepath.Base(windows.UTF16ToString(buf[:size]))
+		if strings.HasPrefix(strings.ToLower(base), "discord") {
+			pipes = append(pipes, name)
+		}
 	}
-	return nil
+	return pipes
 }
 
 // discordReadLoop reads frames continuously from the IPC socket so no leftover
-// bytes ever accumulate in the pipe, and flags the connection as dead when
-// Discord closes it (opcode 2) or the pipe errors.
-func (a *App) discordReadLoop(conn net.Conn) {
+// bytes ever accumulate in the pipe, and removes the connection when Discord
+// closes it (opcode 2) or the pipe errors.
+func (a *App) discordReadLoop(name string, conn net.Conn) {
 	buf := make([]byte, 0, 4096)
 	tmp := make([]byte, 4096)
 	for {
 		n, err := conn.Read(tmp)
 		if err != nil {
-			a.discordDead.Store(true)
+			a.discordRemoveConn(name, conn)
 			return
 		}
 		buf = append(buf, tmp[:n]...)
@@ -179,7 +228,7 @@ func (a *App) discordReadLoop(conn net.Conn) {
 			opcode := int32(binary.LittleEndian.Uint32(buf[0:4]))
 			length := int32(binary.LittleEndian.Uint32(buf[4:8]))
 			if length < 0 || length > discordMaxFrame {
-				a.discordDead.Store(true)
+				a.discordRemoveConn(name, conn)
 				return
 			}
 			if int(length)+8 > len(buf) {
@@ -187,19 +236,32 @@ func (a *App) discordReadLoop(conn net.Conn) {
 			}
 			buf = buf[8+int(length):]
 			if opcode == discordOpClose {
-				a.discordDead.Store(true)
+				a.discordRemoveConn(name, conn)
 				return
 			}
 		}
 	}
 }
 
+// discordRemoveConn drops the connection for the given pipe, but only if the
+// map still holds this exact conn. A reader goroutine from a previous
+// connection may still be pending after a reconnect (closing a Windows named
+// pipe does not reliably cancel a blocked ReadFile), so without this guard a
+// stale reader could evict a freshly established connection.
+func (a *App) discordRemoveConn(name string, conn net.Conn) {
+	a.discordIpcMu.Lock()
+	if a.discordConns[name] == conn {
+		delete(a.discordConns, name)
+	}
+	a.discordIpcMu.Unlock()
+	conn.Close()
+}
+
 // discordSend writes a single framed payload (opcode + length + JSON) to the
-// IPC socket. All socket writes are serialized by discordIpcMu.
-func (a *App) discordSend(opcode int32, payload []byte) error {
+// given connection. All socket writes are serialized by discordIpcMu.
+func (a *App) discordSend(conn net.Conn, opcode int32, payload []byte) error {
 	a.discordIpcMu.Lock()
 	defer a.discordIpcMu.Unlock()
-	conn := a.discordConn
 	if conn == nil {
 		return fmt.Errorf("discord: not connected")
 	}
@@ -207,25 +269,26 @@ func (a *App) discordSend(opcode int32, payload []byte) error {
 	binary.LittleEndian.PutUint32(buf[0:4], uint32(opcode))
 	binary.LittleEndian.PutUint32(buf[4:8], uint32(len(payload)))
 	copy(buf[8:], payload)
-	_, err := conn.Write(buf)
-	if err != nil {
+	if _, err := conn.Write(buf); err != nil {
 		log.Printf("Discord RPC send error: %v", err)
+		return err
 	}
-	return err
+	return nil
 }
 
-// discordClose tears down the connection and clears any presence. It is
+// discordClose tears down every connection and clears any presence. It is
 // idempotent and safe to call from any goroutine.
 func (a *App) discordClose() {
 	a.discordIpcMu.Lock()
-	conn := a.discordConn
-	a.discordConn = nil
-	a.discordIpcMu.Unlock()
-	if conn != nil {
-		conn.Close()
+	conns := make([]net.Conn, 0, len(a.discordConns))
+	for _, c := range a.discordConns {
+		conns = append(conns, c)
 	}
-	a.discordDead.Store(false)
-	a.discordConnected.Store(false)
+	a.discordConns = map[string]net.Conn{}
+	a.discordIpcMu.Unlock()
+	for _, c := range conns {
+		c.Close()
+	}
 }
 
 func (a *App) SetDiscordActivity(details, state string) {
@@ -241,12 +304,16 @@ func (a *App) SetDiscordActivity(details, state string) {
 }
 
 func (a *App) refreshDiscordActivity() error {
-	if !a.discordConnected.Load() {
+	a.discordIpcMu.Lock()
+	conns := make([]net.Conn, 0, len(a.discordConns))
+	for _, c := range a.discordConns {
+		conns = append(conns, c)
+	}
+	a.discordIpcMu.Unlock()
+	if len(conns) == 0 {
 		return nil
 	}
-	if a.discordDead.Load() {
-		return fmt.Errorf("discord: connection lost")
-	}
+
 	a.discordMu.Lock()
 	details, state := a.discordDetails, a.discordState
 	a.discordMu.Unlock()
@@ -277,10 +344,8 @@ func (a *App) refreshDiscordActivity() error {
 	if err != nil {
 		return err
 	}
-	if err := a.discordSend(discordOpFrame, payload); err != nil {
-		a.discordDead.Store(true)
-		log.Printf("Discord RPC send error: %v", err)
-		return err
+	for _, c := range conns {
+		a.discordSend(c, discordOpFrame, payload)
 	}
 	return nil
 }

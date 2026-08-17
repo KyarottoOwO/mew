@@ -21,7 +21,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/swim-services/swim_porter/port"
@@ -52,9 +51,7 @@ type App struct {
 	portMu          sync.Mutex
 	activePort      bool
 	discordStop      chan struct{}
-	discordConn      net.Conn
-	discordConnected atomic.Bool
-	discordDead      atomic.Bool
+	discordConns     map[string]net.Conn
 	discordState     string
 	discordDetails   string
 	discordMu        sync.Mutex
@@ -75,6 +72,7 @@ func NewApp(debug bool) *App {
 			"manifestDescription":   "",
 			"resourcePacksPath":     "",
 		},
+		discordConns: map[string]net.Conn{},
 	}
 }
 
@@ -148,13 +146,16 @@ func (a *App) SaveSettings(settings map[string]interface{}) {
 
 func (a *App) ClearCache() error {
 	os.Remove(a.getRecentPacksPath())
-	os.RemoveAll("./folder_port_temp")
-	os.RemoveAll("./temp_unzip")
-	os.RemoveAll("./rar_port_temp")
-	os.RemoveAll("./import_temp")
-	os.RemoveAll("./anim_port_temp")
-	os.RemoveAll("./anim_merge_temp")
+	os.RemoveAll(filepath.Join(os.Getenv("LOCALAPPDATA"), "mew", "temp"))
 	return nil
+}
+
+func getMewTempDir(subdir string) string {
+	return filepath.Join(os.Getenv("LOCALAPPDATA"), "mew", "temp", subdir)
+}
+
+func (a *App) getTempDir(subdir string) string {
+	return getMewTempDir(subdir)
 }
 
 func (a *App) getOutputDir() string {
@@ -262,9 +263,9 @@ func (a *App) importToBedrock(mcpackPath string) {
 	packName := strings.TrimSuffix(filepath.Base(mcpackPath), filepath.Ext(mcpackPath))
 	destDir := filepath.Join(bedrockPath, packName)
 
-	extractDir := filepath.Join(".", "import_temp", packName)
+	extractDir := filepath.Join(a.getTempDir("import"), packName)
 	os.MkdirAll(extractDir, os.ModePerm)
-	defer os.RemoveAll(filepath.Join(".", "import_temp"))
+	defer os.RemoveAll(a.getTempDir("import"))
 
 	if err := unzip(mcpackPath, extractDir); err != nil {
 		log.Printf("Failed to unzip mcpack for import: %v", err)
@@ -293,6 +294,56 @@ func (a *App) importToBedrock(mcpackPath string) {
 			log.Printf("Deleted mcpack after import: %s", mcpackPath)
 		}
 	}
+}
+
+func (a *App) importFromBytes(mcpackBytes []byte, packName string) {
+	bedrockPath := a.getStringSetting("resourcePacksPath")
+	if bedrockPath == "" {
+		bedrockPath = a.getDefaultResourcePacksPath()
+	}
+
+	if st, err := os.Stat(bedrockPath); err != nil || !st.IsDir() {
+		log.Printf("Skipping import: resource packs path not found: %s", bedrockPath)
+		return
+	}
+
+	packName = strings.TrimSuffix(packName, filepath.Ext(packName))
+	destDir := filepath.Join(bedrockPath, packName)
+
+	extractDir := filepath.Join(a.getTempDir("import"), packName)
+	os.MkdirAll(extractDir, os.ModePerm)
+	defer os.RemoveAll(a.getTempDir("import"))
+
+	tmpFile := filepath.Join(extractDir, "pack.mcpack")
+	if err := os.WriteFile(tmpFile, mcpackBytes, 0644); err != nil {
+		log.Printf("Failed to write mcpack to temp for import: %v", err)
+		return
+	}
+
+	if err := unzip(tmpFile, extractDir); err != nil {
+		log.Printf("Failed to unzip mcpack for import: %v", err)
+		return
+	}
+
+	os.MkdirAll(destDir, os.ModePerm)
+	filepath.Walk(extractDir, func(path string, info fs.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		if path == tmpFile {
+			return nil
+		}
+		rel, err := filepath.Rel(extractDir, path)
+		if err != nil {
+			return nil
+		}
+		dst := filepath.Join(destDir, rel)
+		os.MkdirAll(filepath.Dir(dst), os.ModePerm)
+		copyFile(path, dst)
+		return nil
+	})
+
+	log.Printf("Imported pack to %s", destDir)
 }
 
 func (a *App) OpenFolder(dir string) {
@@ -326,10 +377,10 @@ func (a *App) emitFinished(title, message, icon string) {
 	})
 }
 
-func writeMcpack(zipBytes []byte, fileName string, outDir string, manifestDesc string) (string, error) {
+func buildMcpackBytes(zipBytes []byte, fileName string, manifestDesc string) ([]byte, error) {
 	reader, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
 	if err != nil {
-		return "", fmt.Errorf("failed to create zip reader: %v", err)
+		return nil, fmt.Errorf("failed to create zip reader: %v", err)
 	}
 
 	var buf bytes.Buffer
@@ -339,13 +390,13 @@ func writeMcpack(zipBytes []byte, fileName string, outDir string, manifestDesc s
 		rc, err := file.Open()
 		if err != nil {
 			writer.Close()
-			return "", fmt.Errorf("failed to open file in zip: %v", err)
+			return nil, fmt.Errorf("failed to open file in zip: %v", err)
 		}
 		data, err := io.ReadAll(rc)
 		rc.Close()
 		if err != nil {
 			writer.Close()
-			return "", fmt.Errorf("failed to read file data: %v", err)
+			return nil, fmt.Errorf("failed to read file data: %v", err)
 		}
 
 		newName := file.Name
@@ -356,7 +407,7 @@ func writeMcpack(zipBytes []byte, fileName string, outDir string, manifestDesc s
 		f, err := writer.Create(newName)
 		if err != nil {
 			writer.Close()
-			return "", fmt.Errorf("failed to create file in zip: %v", err)
+			return nil, fmt.Errorf("failed to create file in zip: %v", err)
 		}
 
 		if manifestDesc != "" && strings.EqualFold(file.Name, "manifest.json") {
@@ -379,19 +430,28 @@ func writeMcpack(zipBytes []byte, fileName string, outDir string, manifestDesc s
 
 		if _, err = f.Write(data); err != nil {
 			writer.Close()
-			return "", fmt.Errorf("failed to write to file in zip: %v", err)
+			return nil, fmt.Errorf("failed to write to file in zip: %v", err)
 		}
 	}
 
 	if err := writer.Close(); err != nil {
-		return "", fmt.Errorf("failed to close zip writer: %v", err)
+		return nil, fmt.Errorf("failed to close zip writer: %v", err)
+	}
+
+	return buf.Bytes(), nil
+}
+
+func writeMcpack(zipBytes []byte, fileName string, outDir string, manifestDesc string) (string, error) {
+	data, err := buildMcpackBytes(zipBytes, fileName, manifestDesc)
+	if err != nil {
+		return "", err
 	}
 
 	outFile := filepath.Join(outDir, strings.TrimSuffix(fileName, filepath.Ext(fileName))+".mcpack")
 	if err := os.MkdirAll(outDir, os.ModePerm); err != nil {
 		return "", fmt.Errorf("failed to create output directory: %v", err)
 	}
-	if err := os.WriteFile(outFile, buf.Bytes(), 0644); err != nil {
+	if err := os.WriteFile(outFile, data, 0644); err != nil {
 		return "", fmt.Errorf("failed to write output file: %v", err)
 	}
 
@@ -427,6 +487,7 @@ func (a *App) PortPack(bytes []byte, fileName string) (string, error) {
 	if err != nil {
 		errMsg := err.Error()
 		a.logDebug(fmt.Sprintf("port.Port failed: %s", errMsg))
+		logError(fmt.Sprintf("port.Port failed for %s: %s", fileName, errMsg))
 		log.Println(errMsg)
 
 		var portError *porterror.PortError
@@ -441,34 +502,51 @@ func (a *App) PortPack(bytes []byte, fileName string) (string, error) {
 
 	a.logDebug(fmt.Sprintf("port.Port succeeded, output size: %d bytes", len(out)))
 
-	outFile, err := writeMcpack(out, fileName, a.getOutputDir(), a.getStringSetting("manifestDescription"))
-	if err != nil {
-		a.logDebug(fmt.Sprintf("writeMcpack failed: %v", err))
-		return "", fmt.Errorf("failed to write mcpack: %v", err)
+	mcpackDesc := a.getStringSetting("manifestDescription")
+
+	if a.getBoolSetting("deleteMcpack") && a.getBoolSetting("autoImport") {
+		a.logDebug("deleteMcpack + autoImport: importing directly from memory, no .mcpack on disk")
+		mcpackBytes, err := buildMcpackBytes(out, fileName, mcpackDesc)
+		if err != nil {
+			logError(formatError(fmt.Sprintf("buildMcpackBytes failed for %s", fileName), err))
+			return "", fmt.Errorf("failed to build mcpack: %v", err)
+		}
+		a.importFromBytes(mcpackBytes, fileName)
+	} else {
+		mcpackDir := a.getOutputDir()
+		if a.getBoolSetting("deleteMcpack") {
+			mcpackDir = a.getTempDir("mcpack")
+			os.MkdirAll(mcpackDir, os.ModePerm)
+		}
+		outFile, err := writeMcpack(out, fileName, mcpackDir, mcpackDesc)
+		if err != nil {
+			a.logDebug(fmt.Sprintf("writeMcpack failed: %v", err))
+			logError(formatError(fmt.Sprintf("writeMcpack failed for %s", fileName), err))
+			return "", fmt.Errorf("failed to write mcpack: %v", err)
+		}
+		a.logDebug(fmt.Sprintf("writeMcpack succeeded: %s", outFile))
+		if a.getBoolSetting("autoImport") {
+			a.logDebug("Auto-import enabled, importing to Bedrock...")
+			a.importToBedrock(outFile)
+		}
 	}
 
-	a.logDebug(fmt.Sprintf("writeMcpack succeeded: %s", outFile))
-
-	if a.getBoolSetting("autoImport") {
-		a.logDebug("Auto-import enabled, importing to Bedrock...")
-		a.importToBedrock(outFile)
-	}
 	if a.getBoolSetting("autoOpenFolder") {
 		a.logDebug("Auto-open enabled, opening output folder...")
 		a.OpenFolder(a.getOutputDir())
 	}
 
-	a.emitProgress("Done", outFile, "success", fileName, 0, 0)
-	a.AddRecentPack(fileName, outFile)
+	a.emitProgress("Done", fileName, "success", fileName, 0, 0)
+	a.AddRecentPack(fileName, fileName)
 	a.logDebug("PortPack completed successfully")
-	return outFile, nil
+	return fileName, nil
 }
 
 func (a *App) portRarPack(rarBytes []byte, fileName string) (string, error) {
 	a.logDebug(fmt.Sprintf("portRarPack called: file=%s, size=%d bytes", fileName, len(rarBytes)))
 	a.emitProgress("Porting", "Extracting RAR archive...", "info", fileName, 0, 0)
 
-	tempDir := filepath.Join(".", "rar_port_temp")
+	tempDir := a.getTempDir("rar_port_temp")
 	os.MkdirAll(tempDir, os.ModePerm)
 	defer os.RemoveAll(tempDir)
 
@@ -482,6 +560,7 @@ func (a *App) portRarPack(rarBytes []byte, fileName string) (string, error) {
 	extractDir := filepath.Join(tempDir, "extracted")
 	if err := unrar(rarPath, extractDir); err != nil {
 		a.logDebug(fmt.Sprintf("RAR extraction failed: %v", err))
+		logError(formatError(fmt.Sprintf("RAR extraction failed for %s", fileName), err))
 		return "", fmt.Errorf("failed to extract rar: %v", err)
 	}
 
@@ -499,34 +578,56 @@ func (a *App) portRarPack(rarBytes []byte, fileName string) (string, error) {
 	a.logDebug(fmt.Sprintf("Found %d inner zip(s) in RAR", len(innerZips)))
 
 	if len(innerZips) == 0 {
+		logError(fmt.Sprintf("RAR archive %s contained no .zip packs", fileName))
 		return "", fmt.Errorf("no .zip packs found inside the rar archive")
 	}
 
 	var results []string
+
 	for _, zPath := range innerZips {
 		a.logDebug(fmt.Sprintf("Porting inner zip: %s", filepath.Base(zPath)))
 		zipData, err := os.ReadFile(zPath)
 		if err != nil {
 			a.logDebug(fmt.Sprintf("Failed to read %s: %v", zPath, err))
+			logError(formatError(fmt.Sprintf("read inner zip failed: %s", filepath.Base(zPath)), err))
 			continue
 		}
 		out, err := port.Port(zipData, filepath.Base(zPath), port.PortOptions{ShowCredits: false})
 		if err != nil {
 			a.logDebug(fmt.Sprintf("Failed to port %s: %v", filepath.Base(zPath), err))
+			logError(formatError(fmt.Sprintf("port inner zip failed: %s", filepath.Base(zPath)), err))
 			log.Printf("Failed to port %s: %v", filepath.Base(zPath), err)
 			continue
 		}
-		outFile, err := writeMcpack(out, filepath.Base(zPath), a.getOutputDir(), a.getStringSetting("manifestDescription"))
-		if err != nil {
-			a.logDebug(fmt.Sprintf("Failed to write mcpack for %s: %v", filepath.Base(zPath), err))
-			continue
+		zName := filepath.Base(zPath)
+		if a.getBoolSetting("deleteMcpack") && a.getBoolSetting("autoImport") {
+			mcpackBytes, err := buildMcpackBytes(out, zName, a.getStringSetting("manifestDescription"))
+			if err != nil {
+				logError(formatError(fmt.Sprintf("buildMcpackBytes failed: %s", zName), err))
+				continue
+			}
+			a.importFromBytes(mcpackBytes, zName)
+			a.AddRecentPack(zName, zName)
+			results = append(results, zName)
+		} else {
+			mcpackDir := a.getOutputDir()
+			if a.getBoolSetting("deleteMcpack") {
+				mcpackDir = a.getTempDir("mcpack")
+				os.MkdirAll(mcpackDir, os.ModePerm)
+			}
+			outFile, err := writeMcpack(out, zName, mcpackDir, a.getStringSetting("manifestDescription"))
+			if err != nil {
+				a.logDebug(fmt.Sprintf("Failed to write mcpack for %s: %v", zName, err))
+				logError(formatError(fmt.Sprintf("write mcpack failed: %s", zName), err))
+				continue
+			}
+			a.logDebug(fmt.Sprintf("Successfully ported: %s", outFile))
+			if a.getBoolSetting("autoImport") {
+				a.importToBedrock(outFile)
+			}
+			a.AddRecentPack(zName, outFile)
+			results = append(results, outFile)
 		}
-		a.logDebug(fmt.Sprintf("Successfully ported: %s", outFile))
-		if a.getBoolSetting("autoImport") {
-			a.importToBedrock(outFile)
-		}
-		a.AddRecentPack(filepath.Base(zPath), outFile)
-		results = append(results, outFile)
 	}
 
 	if a.getBoolSetting("autoOpenFolder") && len(results) > 0 {
@@ -565,6 +666,7 @@ func (a *App) PortPackFromURL(url string) (string, error) {
 	lower := strings.ToLower(filename)
 	if !isArchive(lower) {
 		a.logDebug(fmt.Sprintf("Rejected: downloaded file '%s' is not a supported archive", filename))
+		logError(fmt.Sprintf("downloaded file not an archive: %s (from %s)", filename, url))
 		a.emitProgress("Error", "Downloaded file is not a .zip or .rar", "error", "", 0, 0)
 		return "", fmt.Errorf("downloaded file is not a supported archive")
 	}
@@ -614,7 +716,7 @@ func (a *App) PortLocalArchive(data []byte, fileName string) error {
 		cancel()
 	}()
 
-	tempDir := filepath.Join(".", "folder_port_temp")
+	tempDir := a.getTempDir("folder_port_temp")
 	os.MkdirAll(tempDir, os.ModePerm)
 	defer os.RemoveAll(tempDir)
 
@@ -633,6 +735,7 @@ func (a *App) PortLocalArchive(data []byte, fileName string) error {
 
 	archivePath := filepath.Join(tempDir, fileName)
 	if err := os.WriteFile(archivePath, data, 0644); err != nil {
+		logError(formatError(fmt.Sprintf("write archive to temp failed: %s", fileName), err))
 		a.emitProgress("Error", fmt.Sprintf("Failed to write file: %v", err), "error", "", 0, 0)
 		return err
 	}
@@ -641,6 +744,7 @@ func (a *App) PortLocalArchive(data []byte, fileName string) error {
 
 	extractDir := filepath.Join(tempDir, "extracted")
 	if err := extractArchive(archivePath, extractDir); err != nil {
+		logError(formatError(fmt.Sprintf("extract archive failed: %s", fileName), err))
 		a.emitProgress("Error", fmt.Sprintf("Failed to extract: %v", err), "error", "", 0, 0)
 		return err
 	}
@@ -662,6 +766,7 @@ func (a *App) PortLocalArchive(data []byte, fileName string) error {
 	})
 
 	if len(candidates) == 0 {
+		logError(fmt.Sprintf("no pack archives found inside: %s", fileName))
 		a.emitProgress("Error", "No pack archives found inside the file.", "error", "", 0, 0)
 		return fmt.Errorf("no pack archives found")
 	}
@@ -682,18 +787,21 @@ func (a *App) PortLocalArchive(data []byte, fileName string) error {
 
 		rawData, err := os.ReadFile(c.ZipPath)
 		if err != nil {
+			logError(formatError(fmt.Sprintf("read pack failed: %s", c.Name), err))
 			failCount++
 			continue
 		}
 
 		out, err := port.Port(rawData, c.Name, port.PortOptions{ShowCredits: false})
 		if err != nil {
+			logError(formatError(fmt.Sprintf("port failed: %s", c.Name), err))
 			log.Printf("Failed to port %s: %v", c.Name, err)
 			failCount++
 			continue
 		}
 
 		if mcpackPath, err := writeMcpack(out, c.Name, bedrockDir, a.getStringSetting("manifestDescription")); err != nil {
+			logError(formatError(fmt.Sprintf("write mcpack failed: %s", c.Name), err))
 			failCount++
 			continue
 		} else {
@@ -779,11 +887,13 @@ func (a *App) PortFolder(url string) error {
 
 		fileLinks, err := extractMediaFireFolderLinks(client, url)
 		if err != nil {
+			logError(formatError(fmt.Sprintf("read folder failed: %s", url), err))
 			a.emitProgress("Error", fmt.Sprintf("Failed to read folder: %v", err), "error", "", 0, 0)
 			return err
 		}
 
 		if len(fileLinks) == 0 {
+			logError(fmt.Sprintf("no files found in MediaFire folder: %s", url))
 			a.emitProgress("Error", "No files found in the MediaFire folder.", "error", "", 0, 0)
 			return fmt.Errorf("no files found in folder")
 		}
@@ -801,6 +911,7 @@ func (a *App) PortFolder(url string) error {
 
 			data, _, err := downloadDirect(client, fl.URL)
 			if err != nil {
+				logError(formatError(fmt.Sprintf("[%d/%d] download failed: %s", i+1, totalFiles, fl.Name), err))
 				log.Printf("Failed to download %s: %v", fl.Name, err)
 				a.emitProgress("Skipping", fmt.Sprintf("[%d/%d] %s — download failed", i+1, totalFiles, fl.Name), "fail", fl.Name, totalFiles, i+1)
 				failCount++
@@ -866,7 +977,7 @@ func (a *App) processPack(ctx context.Context, name string, data []byte, totalFi
 		IsZip   bool
 	}
 
-	tempDir := filepath.Join(".", "folder_port_temp")
+	tempDir := a.getTempDir("process_pack_temp")
 	os.MkdirAll(tempDir, os.ModePerm)
 	defer os.RemoveAll(tempDir)
 
@@ -874,6 +985,7 @@ func (a *App) processPack(ctx context.Context, name string, data []byte, totalFi
 
 	lower := strings.ToLower(name)
 	if !isArchive(lower) {
+		logError(fmt.Sprintf("skipping %s: not a .zip or .rar file", name))
 		log.Printf("Skipping %s: not a .zip or .rar file", name)
 		a.emitProgress("Skipping", fmt.Sprintf("[%d/%d] %s — not a .zip or .rar", index+1, totalFiles, name), "fail", name, totalFiles, index+1)
 		return false
@@ -881,6 +993,7 @@ func (a *App) processPack(ctx context.Context, name string, data []byte, totalFi
 
 	zipPath := filepath.Join(tempDir, name)
 	if err := os.WriteFile(zipPath, data, 0644); err != nil {
+		logError(formatError(fmt.Sprintf("write temp file failed: %s", name), err))
 		log.Printf("Failed to write %s: %v", name, err)
 		a.emitProgress("Skipping", fmt.Sprintf("[%d/%d] %s — write failed", index+1, totalFiles, name), "fail", name, totalFiles, index+1)
 		return false
@@ -930,14 +1043,8 @@ func (a *App) processPack(ctx context.Context, name string, data []byte, totalFi
 
 		out, err := port.Port(rawData, c.Name, port.PortOptions{ShowCredits: false})
 		if err != nil {
+			logError(formatError(fmt.Sprintf("port failed: %s", c.Name), err))
 			log.Printf("Failed to port %s: %v", c.Name, err)
-			a.emitProgress("Progress", c.Name, "fail", c.Name, totalFiles, index+1)
-			continue
-		}
-
-		reportOut, reportErr := writeMcpack(out, c.Name, bedrockDir, a.getStringSetting("manifestDescription"))
-		if reportErr != nil {
-			log.Printf("Failed to write mcpack %s: %v", c.Name, reportErr)
 			a.emitProgress("Progress", c.Name, "fail", c.Name, totalFiles, index+1)
 			continue
 		}
@@ -949,11 +1056,34 @@ func (a *App) processPack(ctx context.Context, name string, data []byte, totalFi
 			}
 		}
 
-		if a.getBoolSetting("autoImport") {
-			a.importToBedrock(reportOut)
+		if a.getBoolSetting("deleteMcpack") && a.getBoolSetting("autoImport") {
+			mcpackBytes, err := buildMcpackBytes(out, c.Name, a.getStringSetting("manifestDescription"))
+			if err != nil {
+				logError(formatError(fmt.Sprintf("buildMcpackBytes failed: %s", c.Name), err))
+				a.emitProgress("Progress", c.Name, "fail", c.Name, totalFiles, index+1)
+				continue
+			}
+			a.importFromBytes(mcpackBytes, c.Name)
+			a.AddRecentPack(c.Name, c.Name)
+		} else {
+			mcpackDir := bedrockDir
+			if a.getBoolSetting("deleteMcpack") {
+				mcpackDir = a.getTempDir("mcpack")
+				os.MkdirAll(mcpackDir, os.ModePerm)
+			}
+			reportOut, reportErr := writeMcpack(out, c.Name, mcpackDir, a.getStringSetting("manifestDescription"))
+			if reportErr != nil {
+				logError(formatError(fmt.Sprintf("write mcpack failed: %s", c.Name), reportErr))
+				log.Printf("Failed to write mcpack %s: %v", c.Name, reportErr)
+				a.emitProgress("Progress", c.Name, "fail", c.Name, totalFiles, index+1)
+				continue
+			}
+			if a.getBoolSetting("autoImport") {
+				a.importToBedrock(reportOut)
+			}
+			a.AddRecentPack(c.Name, reportOut)
 		}
 
-		a.AddRecentPack(c.Name, reportOut)
 		a.emitProgress("Progress", c.Name, "done", c.Name, totalFiles, index+1)
 		packOk = true
 	}
@@ -984,23 +1114,25 @@ func (a *App) CheckPack(bytes []byte) (*CheckResult, error) {
 	tmpFile.Close()
 	defer os.Remove(tmpPath)
 
-	if err := unzip(tmpPath, "temp_unzip"); err != nil {
+	checkDir := a.getTempDir("check_unzip")
+	os.RemoveAll(checkDir)
+	if err := unzip(tmpPath, checkDir); err != nil {
 		return nil, fmt.Errorf("failed to unzip: %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join("temp_unzip", "manifest.json")); os.IsNotExist(err) {
-		os.RemoveAll("./temp_unzip")
+	if _, err := os.Stat(filepath.Join(checkDir, "manifest.json")); os.IsNotExist(err) {
+		os.RemoveAll(checkDir)
 		return &CheckResult{Valid: false, ErrorMsg: "Please provide a valid pack."}, nil
 	}
 
-	texturesPath := filepath.Join("temp_unzip", "textures")
+	texturesPath := filepath.Join(checkDir, "textures")
 	var folders []string
 	err = filepath.WalkDir(texturesPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() && path != texturesPath {
-			rel, err := filepath.Rel("temp_unzip", path)
+			rel, err := filepath.Rel(checkDir, path)
 			if err != nil {
 				return err
 			}
@@ -1022,7 +1154,7 @@ func (a *App) GetImages(folder string) ([]FolderImage, error) {
 	re := regexp.MustCompile(`\\\s`)
 	folder = re.ReplaceAllString(folder, `\`)
 
-	fullPath := filepath.Join("temp_unzip", folder)
+	fullPath := filepath.Join(a.getTempDir("check_unzip"), folder)
 
 	var images []FolderImage
 
@@ -1056,7 +1188,7 @@ func (a *App) GetImages(folder string) ([]FolderImage, error) {
 			encoded := base64.StdEncoding.EncodeToString(imageData)
 			dataURI := "data:" + mimeType + ";base64," + encoded
 
-			relPath, err := filepath.Rel("temp_unzip", path)
+			relPath, err := filepath.Rel(a.getTempDir("check_unzip"), path)
 			if err != nil {
 				relPath = path
 			}
@@ -1095,10 +1227,10 @@ func (a *App) SaveImage(msg SaveImageRequest) (string, error) {
 
 	var savePath string
 	if msg.RelPath != "" {
-		savePath = filepath.Join("temp_unzip", filepath.FromSlash(msg.RelPath))
+		savePath = filepath.Join(a.getTempDir("check_unzip"), filepath.FromSlash(msg.RelPath))
 	} else {
 		var foundPath string
-		filepath.Walk("temp_unzip", func(path string, info fs.FileInfo, err error) error {
+		filepath.Walk(a.getTempDir("check_unzip"), func(path string, info fs.FileInfo, err error) error {
 			if err != nil || info.IsDir() {
 				return nil
 			}
@@ -1112,7 +1244,7 @@ func (a *App) SaveImage(msg SaveImageRequest) (string, error) {
 		if foundPath != "" {
 			savePath = foundPath
 		} else {
-			savePath = filepath.Join("temp_unzip", "textures", msg.ImageName)
+			savePath = filepath.Join(a.getTempDir("check_unzip"), "textures", msg.ImageName)
 		}
 	}
 
@@ -1145,7 +1277,7 @@ func (a *App) ExportPack(name string) (string, error) {
 	exportName := baseName + "-recolored.mcpack"
 	zipName := baseName + "-recolored.zip"
 
-	if err := createZipFromFolder("temp_unzip", zipName); err != nil {
+	if err := createZipFromFolder(a.getTempDir("check_unzip"), zipName); err != nil {
 		return "", fmt.Errorf("failed to create export: %v", err)
 	}
 
@@ -1157,11 +1289,15 @@ func (a *App) ExportPack(name string) (string, error) {
 }
 
 func (a *App) DeleteTemp() {
-	os.RemoveAll("./temp_unzip")
+	os.RemoveAll(a.getTempDir("check_unzip"))
 }
 
 func (a *App) OpenDiscordLink() {
 	exec.Command("cmd", "/c", "start", "https://discord.gg/AA8MSTDjB").Start()
+}
+
+func (a *App) OpenMewDataDir() {
+	a.OpenFolder(filepath.Join(os.Getenv("LOCALAPPDATA"), "mew"))
 }
 
 func (a *App) OpenDonationLink() {

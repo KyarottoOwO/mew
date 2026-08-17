@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { GetSettings, SaveSettings, SelectDirectory, DetectMinecraftPaths, ClearCache } from '../../wailsjs/go/main/App'
+import { GetSettings, SaveSettings, SelectDirectory, DetectMinecraftPaths, ClearCache, OpenMewDataDir } from '../../wailsjs/go/main/App'
 
 const autoImport = ref(false)
 const autoOpenFolder = ref(false)
@@ -279,6 +279,16 @@ onMounted(loadSettings)
           </div>
           <button class="btn-sm btn-cancel" @click="clearCache" style="flex-shrink: 0;">
             <i class="fa fa-trash-can"></i> Clear Cache
+          </button>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">App Data Location</span>
+            <span class="setting-desc">Open the MEW data folder in Explorer (%LOCALAPPDATA%/mew)</span>
+          </div>
+          <button class="btn-sm btn-main" @click="OpenMewDataDir" style="flex-shrink: 0;">
+            <i class="fa fa-folder-open"></i> Open Folder
           </button>
         </div>
       </div>

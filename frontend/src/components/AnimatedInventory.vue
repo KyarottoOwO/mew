@@ -418,7 +418,7 @@ async function createPack() {
 
         <div v-else class="ai-modal-body">
           <p class="ai-modal-path">{{ installInfo.path }}</p>
-          <p class="ai-label">Pick packs to install into ({{ draftPacks.length }} selected)</p>
+          <p class="ai-label">Pick packs to install into ({{ draftPacks.length }} selected) <button v-if="draftPacks.length" class="ai-unselect-all" @click="draftPacks = []">Unselect All</button></p>
           <div v-if="installInfo.packs.length > 0" class="ai-pack-list">
             <label v-for="p in installInfo.packs" :key="p" class="ai-pack-item" :class="{ checked: draftPacks.includes(p) }">
               <input type="checkbox" :checked="draftPacks.includes(p)" @change="togglePack(p)" />
@@ -430,7 +430,7 @@ async function createPack() {
 
         <div class="ai-actions">
           <button class="btn-cancel" @click="closeInstallMenu">Cancel</button>
-          <button class="btn-main" :disabled="draftPacks.length === 0" @click="confirmMerge">Install on Create</button>
+          <button class="btn-main" @click="confirmMerge">Confirm</button>
         </div>
       </div>
     </div>
@@ -558,6 +558,20 @@ async function createPack() {
 .ai-label {
   font-size: 0.8rem;
   color: var(--text-desc);
+}
+
+.ai-unselect-all {
+  background: none;
+  border: none;
+  color: #aaa;
+  cursor: pointer;
+  font-size: 0.8rem;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.ai-unselect-all:hover {
+  color: #ddd;
 }
 
 .ai-checkbox {

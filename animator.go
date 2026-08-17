@@ -29,7 +29,6 @@ const (
 	animFrameWidth  = 352
 	animFrameHeight = 332
 	maxAnimFrames   = 40
-	animTempDir     = "anim_port_temp"
 )
 
 const animManifestDescription = "Made with MEW"
@@ -187,7 +186,7 @@ func buildAnimatedPack(gifBytes []byte, fileName string, frameDuration string, o
 
 	fill := parseHexColor(fillColor)
 	packName := strings.TrimSuffix(fileName, filepath.Ext(fileName))
-	tempDir := filepath.Join(".", animTempDir)
+	tempDir := getMewTempDir("anim_port_temp")
 	os.RemoveAll(tempDir)
 	os.MkdirAll(tempDir, os.ModePerm)
 	defer os.RemoveAll(tempDir)
@@ -298,6 +297,10 @@ func (a *App) CreateAnimatedInventory(gifBytes []byte, fileName string, frameDur
 	}
 
 	outDir := a.getOutputDir()
+	if a.getBoolSetting("deleteMcpack") {
+		outDir = a.getTempDir("mcpack")
+		os.MkdirAll(outDir, os.ModePerm)
+	}
 	a.emitProgress("Animating", "Processing GIF frames...", "info", fileName, 0, 0)
 
 	mcpackPath, err := buildAnimatedPack(gifBytes, fileName, frameDuration, overlayBytes, useOverlay, transparentFill, fillColor, outDir, desc, func(completed, total int) {
@@ -333,7 +336,7 @@ func (a *App) mergeAnimatedPack(mcpackPath string, packNames []string) error {
 		return fmt.Errorf("resource packs path not found: %s", bedrockPath)
 	}
 
-	extractDir := filepath.Join(".", "anim_merge_temp")
+	extractDir := filepath.Join(getMewTempDir("anim_merge_temp"))
 	os.RemoveAll(extractDir)
 	os.MkdirAll(extractDir, os.ModePerm)
 	defer os.RemoveAll(extractDir)
@@ -351,16 +354,19 @@ func (a *App) mergeAnimatedPack(mcpackPath string, packNames []string) error {
 		if st, err := os.Stat(destDir); err != nil || !st.IsDir() {
 			continue
 		}
+
+	stripTargetUIDX(destDir)
+
 		filepath.Walk(extractDir, func(path string, info fs.FileInfo, err error) error {
 			if err != nil || info.IsDir() {
 				return nil
 			}
-			base := strings.ToLower(info.Name())
-			if base == "manifest.json" || base == "pack_icon.png" {
-				return nil
-			}
 			rel, err := filepath.Rel(extractDir, path)
 			if err != nil {
+				return nil
+			}
+			base := strings.ToLower(info.Name())
+			if base == "manifest.json" || base == "pack_icon.png" {
 				return nil
 			}
 			dst := filepath.Join(destDir, rel)
@@ -376,4 +382,43 @@ func (a *App) mergeAnimatedPack(mcpackPath string, packNames []string) error {
 		return fmt.Errorf("none of the selected packs were found in Minecraft")
 	}
 	return nil
+}
+
+func stripTargetUIDX(destDir string) {
+	filepath.Walk(destDir, func(path string, info fs.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		lower := strings.ToLower(info.Name())
+		rel, relErr := filepath.Rel(destDir, path)
+		if relErr != nil {
+			return nil
+		}
+		relLower := strings.ToLower(filepath.ToSlash(rel))
+
+		if strings.HasSuffix(lower, ".uidx") {
+			os.Remove(path)
+			return nil
+		}
+		if strings.HasPrefix(relLower, "ui/") && strings.HasSuffix(lower, "_screen.json") {
+			os.Remove(path)
+			return nil
+		}
+		if relLower == "ui/_global_variables.json" {
+			os.Remove(path)
+			return nil
+		}
+		if relLower == "ui/_ui_defs.json" {
+			os.WriteFile(path, []byte("{\n  \"ui_defs\": []\n}\n"), 0644)
+			return nil
+		}
+		if strings.Contains(relLower, "textures/uidx/") {
+			os.Remove(path)
+			return nil
+		}
+		return nil
+	})
+
+	texturesUIDX := filepath.Join(destDir, "textures", "uidx")
+	os.RemoveAll(texturesUIDX)
 }

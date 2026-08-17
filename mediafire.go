@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -12,7 +13,7 @@ import (
 
 func createHTTPClient() *http.Client {
 	return &http.Client{
-		Timeout: 60 * time.Second,
+		Timeout: 10 * time.Minute,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return fmt.Errorf("too many redirects")
@@ -28,6 +29,7 @@ func downloadFromURL(url string) ([]byte, string, error) {
 	if isMediaFireURL(url) {
 		directURL, err := extractMediaFireDownloadURL(client, url)
 		if err != nil {
+			logError(formatError("extractMediaFireDownloadURL failed", err))
 			return nil, "", fmt.Errorf("failed to extract MediaFire download URL: %v", err)
 		}
 		url = directURL
@@ -35,22 +37,26 @@ func downloadFromURL(url string) ([]byte, string, error) {
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
+		logError(formatError("create request failed", err))
 		return nil, "", fmt.Errorf("failed to create request: %v", err)
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
 	resp, err := client.Do(req)
 	if err != nil {
+		logError(formatError(fmt.Sprintf("download failed for %s", url), err))
 		return nil, "", fmt.Errorf("failed to download: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		logError(fmt.Sprintf("download failed for %s: HTTP %d", url, resp.StatusCode))
 		return nil, "", fmt.Errorf("download failed with status %d", resp.StatusCode)
 	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
+		logError(formatError(fmt.Sprintf("read response failed for %s", url), err))
 		return nil, "", fmt.Errorf("failed to read response body: %v", err)
 	}
 
@@ -72,15 +78,20 @@ type mediaFireFileEntry struct {
 	URL  string
 }
 
-func extractMediaFireFolderLinks(client *http.Client, folderURL string) ([]mediaFireFileEntry, error) {
-	folderKey := ""
+func extractMediaFireFolderKey(folderURL string) string {
 	parts := strings.Split(folderURL, "/")
 	for i, p := range parts {
 		if p == "folder" && i+1 < len(parts) {
-			folderKey = parts[i+1]
-			break
+			return parts[i+1]
 		}
 	}
+	return ""
+}
+
+var mediaFireAPIBase = "https://www.mediafire.com/api/1.5"
+
+func extractMediaFireFolderLinks(client *http.Client, folderURL string) ([]mediaFireFileEntry, error) {
+	folderKey := extractMediaFireFolderKey(folderURL)
 	if folderKey == "" {
 		return nil, fmt.Errorf("could not extract folder key from URL")
 	}
@@ -94,10 +105,13 @@ func extractMediaFireFolderLinks(client *http.Client, folderURL string) ([]media
 		Links    mfFileLink `json:"links"`
 	}
 	type mfFolderContent struct {
-		Files []mfFile `json:"files"`
+		Files      []mfFile `json:"files"`
+		MoreChunks string   `json:"more_chunks"`
 	}
 	type mfResponse struct {
 		FolderContent mfFolderContent `json:"folder_content"`
+		Result        string          `json:"result"`
+		Message       string          `json:"message"`
 	}
 	type mfAPIResponse struct {
 		Response mfResponse `json:"response"`
@@ -106,7 +120,7 @@ func extractMediaFireFolderLinks(client *http.Client, folderURL string) ([]media
 	var allFiles []mediaFireFileEntry
 	chunk := 1
 	for {
-		apiURL := fmt.Sprintf("https://www.mediafire.com/api/1.5/folder/get_content.php?folder_key=%s&content_type=files&response_format=json&chunk=%d&first_item=1&last_item=100", folderKey, chunk)
+		apiURL := fmt.Sprintf("%s/folder/get_content.php?folder_key=%s&content_type=files&response_format=json&chunk=%d&first_item=1&last_item=100", mediaFireAPIBase, folderKey, chunk)
 
 		req, err := http.NewRequest("GET", apiURL, nil)
 		if err != nil {
@@ -116,18 +130,30 @@ func extractMediaFireFolderLinks(client *http.Client, folderURL string) ([]media
 
 		resp, err := client.Do(req)
 		if err != nil {
+			logError(formatError(fmt.Sprintf("MediaFire API request failed (key=%s, chunk=%d)", folderKey, chunk), err))
 			return nil, fmt.Errorf("failed to fetch MediaFire API: %v", err)
 		}
 
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
+			logError(formatError("read MediaFire API response failed", err))
 			return nil, fmt.Errorf("failed to read API response: %v", err)
 		}
 
 		var apiResp mfAPIResponse
 		if err := json.Unmarshal(body, &apiResp); err != nil {
+			logError(formatError("parse MediaFire API JSON failed", err))
 			return nil, fmt.Errorf("failed to parse API response: %v", err)
+		}
+
+		if !strings.EqualFold(apiResp.Response.Result, "Success") {
+			msg := apiResp.Response.Message
+			if msg == "" {
+				msg = "MediaFire API returned an error"
+			}
+			logError(fmt.Sprintf("MediaFire API error (key=%s): %s", folderKey, msg))
+			return nil, fmt.Errorf("MediaFire API error: %s", msg)
 		}
 
 		files := apiResp.Response.FolderContent.Files
@@ -147,7 +173,7 @@ func extractMediaFireFolderLinks(client *http.Client, folderURL string) ([]media
 			})
 		}
 
-		if len(files) < 100 {
+		if len(files) < 100 || strings.EqualFold(apiResp.Response.FolderContent.MoreChunks, "no") {
 			break
 		}
 		chunk++
@@ -161,6 +187,7 @@ func downloadDirect(client *http.Client, url string) ([]byte, string, error) {
 	if isMediaFireURL(url) && !isMediaFireFolderURL(url) {
 		extracted, err := extractMediaFireDownloadURL(client, url)
 		if err != nil {
+			logError(formatError(fmt.Sprintf("extractMediaFireDownloadURL failed for %s", url), err))
 			return nil, "", fmt.Errorf("failed to get MediaFire download link: %v", err)
 		}
 		dlURL = extracted
@@ -168,48 +195,88 @@ func downloadDirect(client *http.Client, url string) ([]byte, string, error) {
 
 	req, err := http.NewRequest("GET", dlURL, nil)
 	if err != nil {
+		logError(formatError("create download request failed", err))
 		return nil, "", err
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
 	resp, err := client.Do(req)
 	if err != nil {
+		logError(formatError(fmt.Sprintf("download failed for %s", dlURL), err))
 		return nil, "", fmt.Errorf("failed to download: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		logError(fmt.Sprintf("download failed for %s: HTTP %d", dlURL, resp.StatusCode))
 		return nil, "", fmt.Errorf("status %d", resp.StatusCode)
 	}
 
 	ct := resp.Header.Get("Content-Type")
 	if strings.Contains(ct, "text/html") {
+		logError(fmt.Sprintf("download failed for %s: got HTML (Content-Type: %s)", dlURL, ct))
 		return nil, "", fmt.Errorf("got HTML instead of file (likely a bad download link)")
 	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
+		logError(formatError(fmt.Sprintf("read download body failed for %s", dlURL), err))
 		return nil, "", err
 	}
 
 	return data, extractFilename(resp, dlURL), nil
 }
 
+func resolveDownloadURL(base *url.URL, loc string) string {
+	if strings.HasPrefix(loc, "//") {
+		return "https:" + loc
+	}
+	ref, err := url.Parse(loc)
+	if err != nil {
+		return loc
+	}
+	return base.ResolveReference(ref).String()
+}
+
 func extractMediaFireDownloadURL(client *http.Client, pageURL string) (string, error) {
+	noRedirect := &http.Client{
+		Timeout:   client.Timeout,
+		Transport: client.Transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
 	req, err := http.NewRequest("GET", pageURL, nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
-	resp, err := client.Do(req)
+	resp, err := noRedirect.Do(req)
 	if err != nil {
+		logError(formatError(fmt.Sprintf("fetch MediaFire page failed: %s", pageURL), err))
 		return "", fmt.Errorf("failed to fetch MediaFire page: %v", err)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	// MediaFire currently redirects file pages straight to the download
+	// server, so the Location header is already the direct download link.
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		loc := resp.Header.Get("Location")
+		if loc != "" {
+			return resolveDownloadURL(resp.Request.URL, loc), nil
+		}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		logError(fmt.Sprintf("MediaFire page returned status %d for %s", resp.StatusCode, pageURL))
+		return "", fmt.Errorf("unexpected status %d from MediaFire", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
+		logError(formatError(fmt.Sprintf("read MediaFire page failed: %s", pageURL), err))
 		return "", fmt.Errorf("failed to read MediaFire page: %v", err)
 	}
 
@@ -247,6 +314,7 @@ func extractMediaFireDownloadURL(client *http.Client, pageURL string) (string, e
 		}
 	}
 
+	logError(fmt.Sprintf("could not find download link on MediaFire page: %s", pageURL))
 	return "", fmt.Errorf("could not find download link on MediaFire page")
 }
 
