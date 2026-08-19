@@ -6,6 +6,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/nwaples/rardecode/v2 v2.2.5
 	github.com/swim-services/swim_porter v0.16.3
+	github.com/trapcodeio/go-strip-json-comments v1.0.11
 	github.com/wailsapp/wails/v2 v2.13.0
 	github.com/woozymasta/tga v1.3.2
 	golang.org/x/image v0.40.0
@@ -40,7 +41,6 @@ require (
 	github.com/samber/lo v1.49.1 // indirect
 	github.com/sandertv/gophertunnel v1.43.1 // indirect
 	github.com/tkrajina/go-reflector v0.5.8 // indirect
-	github.com/trapcodeio/go-strip-json-comments v1.0.11 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasttemplate v1.2.2 // indirect
 	github.com/wailsapp/go-webview2 v1.0.22 // indirect
