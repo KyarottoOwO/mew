@@ -348,16 +348,19 @@ func (a *App) mergeAnimatedPack(mcpackPath string, packNames []string) error {
 	merged := 0
 	for _, name := range packNames {
 		if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `\/`) {
+			a.logDebug(fmt.Sprintf("mergeAnimatedPack: skipping invalid name: %q", name))
 			continue
 		}
 		destDir := filepath.Join(bedrockPath, name)
 		if st, err := os.Stat(destDir); err != nil || !st.IsDir() {
+			a.logDebug(fmt.Sprintf("mergeAnimatedPack: pack dir NOT found, skipping: %s (err=%v)", destDir, err))
 			continue
 		}
 
 	stripTargetUIDX(destDir)
 		a.logDebug(fmt.Sprintf("mergeAnimatedPack: stripped uidx from %s", destDir))
 
+		copied := 0
 		filepath.Walk(extractDir, func(path string, info fs.FileInfo, err error) error {
 			if err != nil || info.IsDir() {
 				return nil
@@ -373,10 +376,11 @@ func (a *App) mergeAnimatedPack(mcpackPath string, packNames []string) error {
 			dst := filepath.Join(destDir, rel)
 			os.MkdirAll(filepath.Dir(dst), os.ModePerm)
 			copyFile(path, dst)
+			copied++
 			return nil
 		})
 		merged++
-		a.logDebug(fmt.Sprintf("Merged animated inventory into %s", destDir))
+		a.logDebug(fmt.Sprintf("mergeAnimatedPack: copied %d files into %s", copied, destDir))
 	}
 
 	if merged == 0 {
@@ -386,6 +390,8 @@ func (a *App) mergeAnimatedPack(mcpackPath string, packNames []string) error {
 }
 
 func stripTargetUIDX(destDir string) {
+	stripped := 0
+	skipped := 0
 	filepath.Walk(destDir, func(path string, info fs.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return nil
@@ -398,38 +404,57 @@ func stripTargetUIDX(destDir string) {
 		relLower := strings.ToLower(filepath.ToSlash(rel))
 
 		if strings.HasSuffix(lower, ".uidx") {
+			debugLog(fmt.Sprintf("stripTargetUIDX: removing .uidx: %s", rel))
 			if removeErr := os.Remove(path); removeErr != nil {
-				debugLog(fmt.Sprintf("stripTargetUIDX: failed to remove %s: %v", path, removeErr))
+				debugLog(fmt.Sprintf("stripTargetUIDX: FAILED to remove %s: %v", rel, removeErr))
+			} else {
+				stripped++
 			}
 			return nil
 		}
 		if strings.HasPrefix(relLower, "ui/") && strings.HasSuffix(lower, "_screen.json") {
+			debugLog(fmt.Sprintf("stripTargetUIDX: removing screen json: %s", rel))
 			if removeErr := os.Remove(path); removeErr != nil {
-				debugLog(fmt.Sprintf("stripTargetUIDX: failed to remove %s: %v", path, removeErr))
+				debugLog(fmt.Sprintf("stripTargetUIDX: FAILED to remove %s: %v", rel, removeErr))
+			} else {
+				stripped++
 			}
 			return nil
 		}
 		if relLower == "ui/_global_variables.json" {
+			debugLog(fmt.Sprintf("stripTargetUIDX: removing _global_variables.json: %s", rel))
 			if removeErr := os.Remove(path); removeErr != nil {
-				debugLog(fmt.Sprintf("stripTargetUIDX: failed to remove %s: %v", path, removeErr))
+				debugLog(fmt.Sprintf("stripTargetUIDX: FAILED to remove %s: %v", rel, removeErr))
+			} else {
+				stripped++
 			}
 			return nil
 		}
 		if relLower == "ui/_ui_defs.json" {
+			debugLog(fmt.Sprintf("stripTargetUIDX: emptying _ui_defs.json: %s", rel))
 			if writeErr := os.WriteFile(path, []byte("{\n  \"ui_defs\": []\n}\n"), 0644); writeErr != nil {
-				debugLog(fmt.Sprintf("stripTargetUIDX: failed to write %s: %v", path, writeErr))
+				debugLog(fmt.Sprintf("stripTargetUIDX: FAILED to write %s: %v", rel, writeErr))
+			} else {
+				stripped++
 			}
 			return nil
 		}
 		if strings.Contains(relLower, "textures/uidx/") {
+			debugLog(fmt.Sprintf("stripTargetUIDX: removing textures/uidx: %s", rel))
 			if removeErr := os.Remove(path); removeErr != nil {
-				debugLog(fmt.Sprintf("stripTargetUIDX: failed to remove %s: %v", path, removeErr))
+				debugLog(fmt.Sprintf("stripTargetUIDX: FAILED to remove %s: %v", rel, removeErr))
+			} else {
+				stripped++
 			}
 			return nil
 		}
+		skipped++
 		return nil
 	})
 
 	texturesUIDX := filepath.Join(destDir, "textures", "uidx")
-	os.RemoveAll(texturesUIDX)
+	if err := os.RemoveAll(texturesUIDX); err != nil {
+		debugLog(fmt.Sprintf("stripTargetUIDX: Failed to remove textures/uidx dir: %v", err))
+	}
+	debugLog(fmt.Sprintf("stripTargetUIDX: done — stripped=%d skipped=%d", stripped, skipped))
 }
