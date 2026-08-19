@@ -229,6 +229,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   isMounted.value = false
+  if (progressHandler) progressHandler()
 })
 
 watch(() => props.active, (active) => {
@@ -251,11 +252,6 @@ async function createPack() {
     popup('Error', 'Please choose a .gif file first.', 'error')
     return
   }
-  if (includeOverlay.value && !overlayFile.value) {
-    popup('Error', 'Include overlay is on, but no overlay .png is selected.', 'error')
-    return
-  }
-
   resetProgress()
   showProgress.value = true
   startedPort.value = true

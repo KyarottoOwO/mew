@@ -127,8 +127,8 @@ func writeGlobalVariables(destDir string, frames int, frameDuration string) erro
 	if frames < 10 {
 		framesString = "0" + framesString
 	}
-	content = strings.ReplaceAll(content, "num", framesString)
-	content = strings.ReplaceAll(content, "fum_frames", frameDuration)
+	content = strings.ReplaceAll(content, "$num", framesString)
+	content = strings.ReplaceAll(content, "$fum_frames", frameDuration)
 	dest := filepath.Join(destDir, "ui", "_global_variables.json")
 	if err := os.MkdirAll(filepath.Dir(dest), os.ModePerm); err != nil {
 		return err

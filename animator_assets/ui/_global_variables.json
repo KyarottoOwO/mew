@@ -21,7 +21,7 @@
 
   /*//// Inventory BG ////*/
 
-  "$total_inventory_frames": "num_frames",
-  "$inventory_duration_per_frame": fum_frames,
+  "$total_inventory_frames": "$num_frames",
+  "$inventory_duration_per_frame": $fum_frames,
   "$inventory_base_resolution": [ 352, 332 ]
 }
