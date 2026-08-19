@@ -68,3 +68,25 @@ func formatError(prefix string, err error) string {
 func logErrorf(format string, args ...interface{}) {
 	logError(fmt.Sprintf(format, args...))
 }
+
+func debugLog(msg string) {
+	errLogMu.Lock()
+	defer errLogMu.Unlock()
+
+	path := filepath.Join(getErrLogDir(), "debug.log")
+
+	rotateIfTooLarge(path)
+
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	ts := time.Now().Format(errLogDateFmt)
+	fmt.Fprintf(f, "[%s] %s\n", ts, msg)
+}
+
+func debugLogf(format string, args ...interface{}) {
+	debugLog(fmt.Sprintf(format, args...))
+}

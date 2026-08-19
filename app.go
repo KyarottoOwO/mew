@@ -91,6 +91,7 @@ func (a *App) logDebug(msg string) {
 	if a.debug {
 		log.Println("[DEBUG]", msg)
 	}
+	debugLog("[DEBUG] " + msg)
 }
 
 func (a *App) acquirePort() error {
