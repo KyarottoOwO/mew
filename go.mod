@@ -7,8 +7,9 @@ require (
 	github.com/nwaples/rardecode/v2 v2.2.5
 	github.com/swim-services/swim_porter v0.16.3
 	github.com/wailsapp/wails/v2 v2.13.0
+	github.com/woozymasta/tga v1.3.2
 	golang.org/x/image v0.40.0
-	golang.org/x/sys v0.44.0
+	golang.org/x/sys v0.47.0
 	gopkg.in/natefinch/npipe.v2 v2.0.0-20160621034901-c1b8fa8bdcce
 )
 

@@ -11,6 +11,7 @@ import InfoPage from './components/InfoPage.vue'
 import SettingsPage from './components/SettingsPage.vue'
 import ContactPage from './components/ContactPage.vue'
 import RecentPacksPage from './components/RecentPacksPage.vue'
+import PackViewer from './components/PackViewer.vue'
 import ProgressNotification from './components/ProgressNotification.vue'
 import { GetSettings, SaveSettings, CheckForUpdate, OpenDownloadLink, SetDiscordActivity } from '../wailsjs/go/main/App'
 
@@ -112,6 +113,7 @@ onMounted(() => {
       <AnimatedInventory v-show="currentPage === 'animator'" :active="currentPage === 'animator'" />
       <FolderDisplay v-if="showRecolorPage" :check-result="checkResult" :pack-name="packName" :sidebar-width="sidebarWidth" @close="closeDisplay" />
       <RecentPacksPage v-if="currentPage === 'recentpacks'" />
+      <PackViewer v-show="currentPage === 'packviewer'" :active="currentPage === 'packviewer'" />
       <InfoPage v-show="currentPage === 'info'" />
       <SettingsPage v-show="currentPage === 'settings'" />
       <ContactPage v-show="currentPage === 'contact'" />

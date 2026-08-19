@@ -91,6 +91,17 @@ onMounted(async () => {
 
         <div class="tool-card">
           <div class="tool-card-header">
+            <i class="fa fa-eye tool-icon"></i>
+            <h3>Pack Viewer</h3>
+          </div>
+          <p>
+            Browse installed resource packs and preview armor, tools, and items in 3D on a full player model.
+            Supports custom skins, material tier switching, idle and walk animations, and orbit camera controls.
+          </p>
+        </div>
+
+        <div class="tool-card">
+          <div class="tool-card-header">
             <i class="fa fa-gear tool-icon"></i>
             <h3>Settings</h3>
           </div>

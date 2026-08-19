@@ -59,6 +59,9 @@ func main() {
 		Bind: []interface{}{
 			app,
 		},
+		Debug: options.Debug{
+			OpenInspectorOnStartup: debug,
+		},
 	})
 
 	if err != nil {
