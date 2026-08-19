@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	stripjsoncomments "github.com/trapcodeio/go-strip-json-comments"
 	xdraw "golang.org/x/image/draw"
 )
 
@@ -360,6 +361,9 @@ func (a *App) mergeAnimatedPack(mcpackPath string, packNames []string) error {
 	stripInventoryFiles(destDir)
 		a.logDebug(fmt.Sprintf("mergeAnimatedPack: stripped inventory files from %s", destDir))
 
+		originalUIDefs := readUIDefs(filepath.Join(destDir, "ui", "_ui_defs.json"))
+		originalGlobals := readGlobalVars(filepath.Join(destDir, "ui", "_global_variables.json"))
+
 		copied := 0
 		filepath.Walk(extractDir, func(path string, info fs.FileInfo, err error) error {
 			if err != nil || info.IsDir() {
@@ -379,8 +383,11 @@ func (a *App) mergeAnimatedPack(mcpackPath string, packNames []string) error {
 			copied++
 			return nil
 		})
-		if mergeErr := mergeUIDefs(destDir, extractDir); mergeErr != nil {
+		if mergeErr := mergeUIDefs(filepath.Join(destDir, "ui", "_ui_defs.json"), originalUIDefs); mergeErr != nil {
 			a.logDebug(fmt.Sprintf("mergeAnimatedPack: _ui_defs merge warning: %v", mergeErr))
+		}
+		if mergeErr := mergeGlobalVars(filepath.Join(destDir, "ui", "_global_variables.json"), originalGlobals); mergeErr != nil {
+			a.logDebug(fmt.Sprintf("mergeAnimatedPack: _global_variables merge warning: %v", mergeErr))
 		}
 		merged++
 		a.logDebug(fmt.Sprintf("mergeAnimatedPack: copied %d files into %s", copied, destDir))
@@ -437,59 +444,106 @@ func stripInventoryFiles(destDir string) {
 	debugLog(fmt.Sprintf("stripInventoryFiles: done — stripped=%d", stripped))
 }
 
-func mergeUIDefs(targetDir string, sourceDir string) error {
-	targetDefsPath := filepath.Join(targetDir, "ui", "_ui_defs.json")
-	sourceDefsPath := filepath.Join(sourceDir, "ui", "_ui_defs.json")
-
-	sourceData, err := os.ReadFile(sourceDefsPath)
+func readUIDefs(path string) []string {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("failed to read source _ui_defs.json: %w", err)
-	}
-
-	var sourceDefs map[string]interface{}
-	if err := json.Unmarshal(sourceData, &sourceDefs); err != nil {
-		return fmt.Errorf("failed to parse source _ui_defs.json: %w", err)
-	}
-
-	sourceEntries, ok := sourceDefs["ui_defs"].([]interface{})
-	if !ok || len(sourceEntries) == 0 {
 		return nil
 	}
-
-	var targetEntries []interface{}
-	targetData, err := os.ReadFile(targetDefsPath)
-	if err == nil {
-		var targetDefs map[string]interface{}
-		if json.Unmarshal(targetData, &targetDefs) == nil {
-			if existing, ok := targetDefs["ui_defs"].([]interface{}); ok {
-				targetEntries = existing
-			}
+	stripped := stripjsoncomments.Strip(string(data))
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(stripped), &parsed); err != nil {
+		return nil
+	}
+	entries, ok := parsed["ui_defs"].([]interface{})
+	if !ok {
+		return nil
+	}
+	var result []string
+	for _, e := range entries {
+		if s, ok := e.(string); ok {
+			result = append(result, s)
 		}
 	}
+	return result
+}
 
-	for _, entry := range sourceEntries {
-		entryStr, ok := entry.(string)
-		if !ok {
-			continue
-		}
+func readGlobalVars(path string) map[string]interface{} {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	stripped := stripjsoncomments.Strip(string(data))
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(stripped), &parsed); err != nil {
+		return nil
+	}
+	return parsed
+}
+
+func mergeUIDefs(defsPath string, originalEntries []string) error {
+	if len(originalEntries) == 0 {
+		return nil
+	}
+	data, err := os.ReadFile(defsPath)
+	if err != nil {
+		return fmt.Errorf("failed to read _ui_defs.json for merge: %w", err)
+	}
+	var current map[string]interface{}
+	if err := json.Unmarshal(data, &current); err != nil {
+		return fmt.Errorf("failed to parse _ui_defs.json for merge: %w", err)
+	}
+	currentEntries, _ := current["ui_defs"].([]interface{})
+
+	for _, orig := range originalEntries {
 		found := false
-		for _, existing := range targetEntries {
-			if existingStr, ok := existing.(string); ok && existingStr == entryStr {
+		for _, existing := range currentEntries {
+			if s, ok := existing.(string); ok && s == orig {
 				found = true
 				break
 			}
 		}
 		if !found {
-			targetEntries = append(targetEntries, entry)
+			currentEntries = append(currentEntries, orig)
 		}
 	}
 
-	merged := map[string]interface{}{"ui_defs": targetEntries}
-	mergedData, err := json.MarshalIndent(merged, "", "  ")
+	current["ui_defs"] = currentEntries
+	merged, err := json.MarshalIndent(current, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal merged _ui_defs.json: %w", err)
 	}
+	return os.WriteFile(defsPath, append(merged, '\n'), 0644)
+}
 
-	os.MkdirAll(filepath.Dir(targetDefsPath), os.ModePerm)
-	return os.WriteFile(targetDefsPath, append(mergedData, '\n'), 0644)
+func mergeGlobalVars(varsPath string, originalVars map[string]interface{}) error {
+	if len(originalVars) == 0 {
+		return nil
+	}
+	data, err := os.ReadFile(varsPath)
+	if err != nil {
+		return fmt.Errorf("failed to read _global_variables.json for merge: %w", err)
+	}
+	var current map[string]interface{}
+	if err := json.Unmarshal(data, &current); err != nil {
+		return fmt.Errorf("failed to parse _global_variables.json for merge: %w", err)
+	}
+
+	inventoryKeys := map[string]bool{
+		"$total_inventory_frames":       true,
+		"$inventory_duration_per_frame": true,
+		"$inventory_base_resolution":    true,
+	}
+
+	for key, val := range originalVars {
+		if inventoryKeys[key] {
+			continue
+		}
+		current[key] = val
+	}
+
+	merged, err := json.MarshalIndent(current, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal merged _global_variables.json: %w", err)
+	}
+	return os.WriteFile(varsPath, append(merged, '\n'), 0644)
 }
