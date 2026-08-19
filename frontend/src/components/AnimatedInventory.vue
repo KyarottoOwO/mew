@@ -1,6 +1,6 @@
 <script setup>
 import { ref, watch, onMounted, onUnmounted } from 'vue'
-import { CreateAnimatedInventory, GetInstalledPacks, SetResourcePacksPath, SelectDirectory } from '../../wailsjs/go/main/App'
+import { CreateAnimatedInventory, GetInstalledPacksDetailed, SetResourcePacksPath, SelectDirectory } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
 import { progressStore, startPort, updateFromEvent, finish, clearProgress } from '../utils/progressStore'
 
@@ -23,7 +23,7 @@ const fillColor = ref('#000000')
 
 const selectedPacks = ref([])
 const draftPacks = ref([])
-const showInstallModal = ref(false)
+const showDrawer = ref(false)
 const installInfo = ref({ path: '', found: false, packs: [] })
 const pickingDir = ref(false)
 
@@ -122,21 +122,21 @@ function popup(title, text, icon) {
 
 async function loadInstalledPacks() {
   try {
-    installInfo.value = await GetInstalledPacks()
+    installInfo.value = await GetInstalledPacksDetailed()
   } catch (err) {
-    console.error('[AnimatedInventory] GetInstalledPacks error:', err)
+    console.error('[AnimatedInventory] GetInstalledPacksDetailed error:', err)
     installInfo.value = { path: '', found: false, packs: [] }
   }
 }
 
 async function openInstallMenu() {
   draftPacks.value = [...selectedPacks.value]
-  showInstallModal.value = true
+  showDrawer.value = true
   await loadInstalledPacks()
 }
 
 function closeInstallMenu() {
-  showInstallModal.value = false
+  showDrawer.value = false
 }
 
 function togglePack(name) {
@@ -147,7 +147,7 @@ function togglePack(name) {
 
 function confirmMerge() {
   selectedPacks.value = [...draftPacks.value]
-  showInstallModal.value = false
+  showDrawer.value = false
 }
 
 async function chooseResourcePacksDir() {
@@ -157,7 +157,8 @@ async function chooseResourcePacksDir() {
     const dir = await SelectDirectory()
     if (dir) {
       try {
-        installInfo.value = await SetResourcePacksPath(dir)
+        await SetResourcePacksPath(dir)
+        await loadInstalledPacks()
       } catch (err) {
         popup('Error', err.toString(), 'error')
       }
@@ -368,7 +369,7 @@ async function createPack() {
         <div class="ai-actions">
           <button class="btn-cancel" @click="cancelGif">Clear</button>
           <button class="btn-main" :class="{ installed: selectedPacks.length }" @click="openInstallMenu">
-            {{ selectedPacks.length ? 'Install in ' + selectedPacks.length + ' pack' + (selectedPacks.length > 1 ? 's' : '') + ' ✓' : 'Install in a pack' }}
+            {{ selectedPacks.length ? 'Merge into ' + selectedPacks.length + ' pack' + (selectedPacks.length > 1 ? 's' : '') + ' ✓' : 'Merge into Pack' }}
           </button>
           <button class="btn-main" @click="createPack">Create Pack</button>
         </div>
@@ -396,13 +397,14 @@ async function createPack() {
       </div>
     </div>
 
-    <div v-if="showInstallModal" class="ai-modal-overlay" @click.self="closeInstallMenu">
-      <div class="ai-modal">
-        <div class="ai-modal-head">
-          <h3 class="ai-modal-title">Install into Minecraft</h3>
+    <div v-if="showDrawer" class="ai-drawer-overlay" @click.self="closeInstallMenu">
+      <div class="ai-drawer">
+        <div class="ai-drawer-head">
+          <h3 class="ai-drawer-title">Merge into Pack</h3>
+          <button class="ai-drawer-close" @click="closeInstallMenu">&times;</button>
         </div>
 
-        <div v-if="!installInfo.found" class="ai-modal-body">
+        <div v-if="!installInfo.found" class="ai-drawer-body">
           <p class="ai-modal-warn">Couldn't find Minecraft's resource packs folder.</p>
           <p class="ai-modal-path">{{ installInfo.path || 'No path detected' }}</p>
           <div class="ai-actions">
@@ -412,19 +414,35 @@ async function createPack() {
           </div>
         </div>
 
-        <div v-else class="ai-modal-body">
-          <p class="ai-modal-path">{{ installInfo.path }}</p>
-          <p class="ai-label">Pick packs to install into ({{ draftPacks.length }} selected) <button v-if="draftPacks.length" class="ai-unselect-all" @click="draftPacks = []">Unselect All</button></p>
-          <div v-if="installInfo.packs.length > 0" class="ai-pack-list">
-            <label v-for="p in installInfo.packs" :key="p" class="ai-pack-item" :class="{ checked: draftPacks.includes(p) }">
-              <input type="checkbox" :checked="draftPacks.includes(p)" @change="togglePack(p)" />
-              <span class="ai-pack-name">{{ p }}</span>
-            </label>
+        <div v-else class="ai-drawer-body">
+          <p class="ai-drawer-path">{{ installInfo.path }}</p>
+          <div class="ai-drawer-header">
+            <span class="ai-drawer-count">{{ draftPacks.length }} selected</span>
+            <button v-if="draftPacks.length" class="ai-unselect-all" @click="draftPacks = []">Unselect All</button>
           </div>
-          <p v-else class="ai-label">No packs found yet.</p>
+          <div v-if="installInfo.packs.length > 0" class="ai-pack-grid">
+            <div
+              v-for="p in installInfo.packs"
+              :key="p.name"
+              class="ai-pack-card"
+              :class="{ selected: draftPacks.includes(p.name) }"
+              @click="togglePack(p.name)"
+            >
+              <div class="ai-pack-card-icon">
+                <img v-if="p.icon" :src="p.icon" alt="" />
+                <div v-else class="ai-pack-card-placeholder"></div>
+                <div v-if="draftPacks.includes(p.name)" class="ai-pack-card-check">&#10003;</div>
+              </div>
+              <div class="ai-pack-card-info">
+                <div class="ai-pack-card-name">{{ p.name }}</div>
+                <div v-if="p.description" class="ai-pack-card-desc">{{ p.description }}</div>
+              </div>
+            </div>
+          </div>
+          <p v-else class="ai-drawer-empty">No packs found.</p>
         </div>
 
-        <div class="ai-actions">
+        <div class="ai-drawer-foot">
           <button class="btn-cancel" @click="closeInstallMenu">Cancel</button>
           <button class="btn-main" @click="confirmMerge">Confirm</button>
         </div>
@@ -694,50 +712,71 @@ async function createPack() {
   color: #22c55e;
 }
 
-.ai-modal-overlay {
+.ai-drawer-overlay {
   position: fixed;
   inset: 0;
   z-index: 50;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.6);
+  justify-content: flex-end;
+  background: rgba(0, 0, 0, 0.5);
 }
 
-.ai-modal {
-  width: 100%;
-  max-width: 460px;
-  max-height: 80vh;
+.ai-drawer {
+  width: 380px;
+  max-width: 90vw;
+  height: 100%;
   display: flex;
   flex-direction: column;
   background: var(--bg-surface);
-  border: 1px solid var(--border-default);
-  padding: 1.25rem;
+  border-left: 1px solid var(--border-default);
+  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.4);
+  animation: drawerSlideIn 0.2s ease-out;
 }
 
-.ai-modal-head {
-  margin-bottom: 0.75rem;
+@keyframes drawerSlideIn {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
 }
 
-.ai-modal-title {
+.ai-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border-default);
+}
+
+.ai-drawer-title {
   font-size: 1rem;
   font-weight: 600;
   color: var(--accent);
+  margin: 0;
 }
 
-.ai-modal-body {
+.ai-drawer-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1.5rem;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 0.25rem;
+}
+
+.ai-drawer-close:hover {
+  color: var(--text-primary);
+}
+
+.ai-drawer-body {
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  padding: 1rem 1.25rem;
   overflow: hidden;
 }
 
-.ai-modal-warn {
-  font-size: 0.875rem;
-  color: #ef4444;
-}
-
-.ai-modal-path {
+.ai-drawer-path {
   font-size: 0.75rem;
   color: var(--text-dim);
   word-break: break-all;
@@ -745,45 +784,131 @@ async function createPack() {
   padding: 0.35rem 0.5rem;
 }
 
-.ai-pack-list {
-  overflow-y: auto;
-  border: 1px solid var(--border-strong);
-  background: var(--bg-input);
-  max-height: 180px;
-}
-
-.ai-pack-item {
+.ai-drawer-header {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.4rem 0.5rem;
+  justify-content: space-between;
+  margin-bottom: 0.25rem;
+}
+
+.ai-drawer-count {
   font-size: 0.8rem;
   color: var(--text-secondary);
-  border-bottom: 1px solid var(--bg-hover-2);
+}
+
+.ai-drawer-empty {
+  font-size: 0.875rem;
+  color: var(--text-dim);
+  text-align: center;
+  padding: 2rem 0;
+}
+
+.ai-pack-grid {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-right: 0.25rem;
+}
+
+.ai-pack-grid::-webkit-scrollbar {
+  width: 6px;
+}
+
+.ai-pack-grid::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+.ai-pack-grid::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+
+.ai-pack-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
   cursor: pointer;
+  transition: all 0.15s;
 }
 
-.ai-pack-item:hover {
-  background: var(--bg-hover-2);
+.ai-pack-card:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover-1);
 }
 
-.ai-pack-item.checked {
+.ai-pack-card.selected {
+  border-color: var(--accent);
   background: var(--accent-glow);
 }
 
-.ai-pack-item input {
-  accent-color: var(--accent);
+.ai-pack-card-icon {
+  position: relative;
+  width: 40px;
+  height: 40px;
   flex-shrink: 0;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--bg-hover-2);
 }
 
-.ai-pack-name {
+.ai-pack-card-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.ai-pack-card-placeholder {
+  width: 100%;
+  height: 100%;
+  background: var(--bg-hover-3);
+}
+
+.ai-pack-card-check {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  color: var(--accent);
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.ai-pack-card-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.ai-pack-card-name {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.ai-pack-item:last-child {
-  border-bottom: none;
+.ai-pack-card-desc {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 0.15rem;
+}
+
+.ai-drawer-foot {
+  display: flex;
+  gap: 0.5rem;
+  padding: 1rem 1.25rem;
+  border-top: 1px solid var(--border-default);
 }
 
 .hidden { display: none; }

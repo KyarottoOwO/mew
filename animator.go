@@ -357,8 +357,8 @@ func (a *App) mergeAnimatedPack(mcpackPath string, packNames []string) error {
 			continue
 		}
 
-	stripTargetUIDX(destDir)
-		a.logDebug(fmt.Sprintf("mergeAnimatedPack: stripped uidx from %s", destDir))
+	stripInventoryFiles(destDir)
+		a.logDebug(fmt.Sprintf("mergeAnimatedPack: stripped inventory files from %s", destDir))
 
 		copied := 0
 		filepath.Walk(extractDir, func(path string, info fs.FileInfo, err error) error {
@@ -379,6 +379,9 @@ func (a *App) mergeAnimatedPack(mcpackPath string, packNames []string) error {
 			copied++
 			return nil
 		})
+		if mergeErr := mergeUIDefs(destDir, extractDir); mergeErr != nil {
+			a.logDebug(fmt.Sprintf("mergeAnimatedPack: _ui_defs merge warning: %v", mergeErr))
+		}
 		merged++
 		a.logDebug(fmt.Sprintf("mergeAnimatedPack: copied %d files into %s", copied, destDir))
 	}
@@ -389,9 +392,8 @@ func (a *App) mergeAnimatedPack(mcpackPath string, packNames []string) error {
 	return nil
 }
 
-func stripTargetUIDX(destDir string) {
+func stripInventoryFiles(destDir string) {
 	stripped := 0
-	skipped := 0
 	filepath.Walk(destDir, func(path string, info fs.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return nil
@@ -403,58 +405,91 @@ func stripTargetUIDX(destDir string) {
 		}
 		relLower := strings.ToLower(filepath.ToSlash(rel))
 
-		if strings.HasSuffix(lower, ".uidx") {
-			debugLog(fmt.Sprintf("stripTargetUIDX: removing .uidx: %s", rel))
+		if strings.Contains(lower, "inventory") && strings.HasSuffix(lower, ".uidx") {
+			debugLog(fmt.Sprintf("stripInventoryFiles: removing uidx: %s", rel))
 			if removeErr := os.Remove(path); removeErr != nil {
-				debugLog(fmt.Sprintf("stripTargetUIDX: FAILED to remove %s: %v", rel, removeErr))
+				debugLog(fmt.Sprintf("stripInventoryFiles: FAILED to remove %s: %v", rel, removeErr))
 			} else {
 				stripped++
 			}
 			return nil
 		}
-		if strings.HasPrefix(relLower, "ui/") && strings.HasSuffix(lower, "_screen.json") {
-			debugLog(fmt.Sprintf("stripTargetUIDX: removing screen json: %s", rel))
+		if strings.HasPrefix(relLower, "ui/") && strings.Contains(lower, "inventory") && strings.HasSuffix(lower, "_screen.json") {
+			debugLog(fmt.Sprintf("stripInventoryFiles: removing screen json: %s", rel))
 			if removeErr := os.Remove(path); removeErr != nil {
-				debugLog(fmt.Sprintf("stripTargetUIDX: FAILED to remove %s: %v", rel, removeErr))
+				debugLog(fmt.Sprintf("stripInventoryFiles: FAILED to remove %s: %v", rel, removeErr))
 			} else {
 				stripped++
 			}
 			return nil
 		}
-		if relLower == "ui/_global_variables.json" {
-			debugLog(fmt.Sprintf("stripTargetUIDX: removing _global_variables.json: %s", rel))
+		if strings.HasPrefix(relLower, "textures/uidx/") && strings.Contains(lower, "inventory") {
+			debugLog(fmt.Sprintf("stripInventoryFiles: removing textures/uidx: %s", rel))
 			if removeErr := os.Remove(path); removeErr != nil {
-				debugLog(fmt.Sprintf("stripTargetUIDX: FAILED to remove %s: %v", rel, removeErr))
+				debugLog(fmt.Sprintf("stripInventoryFiles: FAILED to remove %s: %v", rel, removeErr))
 			} else {
 				stripped++
 			}
 			return nil
 		}
-		if relLower == "ui/_ui_defs.json" {
-			debugLog(fmt.Sprintf("stripTargetUIDX: emptying _ui_defs.json: %s", rel))
-			if writeErr := os.WriteFile(path, []byte("{\n  \"ui_defs\": []\n}\n"), 0644); writeErr != nil {
-				debugLog(fmt.Sprintf("stripTargetUIDX: FAILED to write %s: %v", rel, writeErr))
-			} else {
-				stripped++
-			}
-			return nil
-		}
-		if strings.Contains(relLower, "textures/uidx/") {
-			debugLog(fmt.Sprintf("stripTargetUIDX: removing textures/uidx: %s", rel))
-			if removeErr := os.Remove(path); removeErr != nil {
-				debugLog(fmt.Sprintf("stripTargetUIDX: FAILED to remove %s: %v", rel, removeErr))
-			} else {
-				stripped++
-			}
-			return nil
-		}
-		skipped++
 		return nil
 	})
+	debugLog(fmt.Sprintf("stripInventoryFiles: done — stripped=%d", stripped))
+}
 
-	texturesUIDX := filepath.Join(destDir, "textures", "uidx")
-	if err := os.RemoveAll(texturesUIDX); err != nil {
-		debugLog(fmt.Sprintf("stripTargetUIDX: Failed to remove textures/uidx dir: %v", err))
+func mergeUIDefs(targetDir string, sourceDir string) error {
+	targetDefsPath := filepath.Join(targetDir, "ui", "_ui_defs.json")
+	sourceDefsPath := filepath.Join(sourceDir, "ui", "_ui_defs.json")
+
+	sourceData, err := os.ReadFile(sourceDefsPath)
+	if err != nil {
+		return fmt.Errorf("failed to read source _ui_defs.json: %w", err)
 	}
-	debugLog(fmt.Sprintf("stripTargetUIDX: done — stripped=%d skipped=%d", stripped, skipped))
+
+	var sourceDefs map[string]interface{}
+	if err := json.Unmarshal(sourceData, &sourceDefs); err != nil {
+		return fmt.Errorf("failed to parse source _ui_defs.json: %w", err)
+	}
+
+	sourceEntries, ok := sourceDefs["ui_defs"].([]interface{})
+	if !ok || len(sourceEntries) == 0 {
+		return nil
+	}
+
+	var targetEntries []interface{}
+	targetData, err := os.ReadFile(targetDefsPath)
+	if err == nil {
+		var targetDefs map[string]interface{}
+		if json.Unmarshal(targetData, &targetDefs) == nil {
+			if existing, ok := targetDefs["ui_defs"].([]interface{}); ok {
+				targetEntries = existing
+			}
+		}
+	}
+
+	for _, entry := range sourceEntries {
+		entryStr, ok := entry.(string)
+		if !ok {
+			continue
+		}
+		found := false
+		for _, existing := range targetEntries {
+			if existingStr, ok := existing.(string); ok && existingStr == entryStr {
+				found = true
+				break
+			}
+		}
+		if !found {
+			targetEntries = append(targetEntries, entry)
+		}
+	}
+
+	merged := map[string]interface{}{"ui_defs": targetEntries}
+	mergedData, err := json.MarshalIndent(merged, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal merged _ui_defs.json: %w", err)
+	}
+
+	os.MkdirAll(filepath.Dir(targetDefsPath), os.ModePerm)
+	return os.WriteFile(targetDefsPath, append(mergedData, '\n'), 0644)
 }

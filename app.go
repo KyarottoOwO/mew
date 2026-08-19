@@ -220,6 +220,18 @@ type ResourcePacksInfo struct {
 	Packs []string `json:"packs"`
 }
 
+type PackInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Icon        string `json:"icon"`
+}
+
+type DetailedPacksInfo struct {
+	Path  string     `json:"path"`
+	Found bool       `json:"found"`
+	Packs []PackInfo `json:"packs"`
+}
+
 func (a *App) GetInstalledPacks() ResourcePacksInfo {
 	path := a.getStringSetting("resourcePacksPath")
 	if path == "" {
@@ -240,6 +252,55 @@ func (a *App) GetInstalledPacks() ResourcePacksInfo {
 		}
 	}
 	sort.Strings(info.Packs)
+	return info
+}
+
+func (a *App) GetInstalledPacksDetailed() DetailedPacksInfo {
+	path := a.getStringSetting("resourcePacksPath")
+	if path == "" {
+		path = a.getDefaultResourcePacksPath()
+	}
+	info := DetailedPacksInfo{Path: path}
+	if st, err := os.Stat(path); err != nil || !st.IsDir() {
+		return info
+	}
+	info.Found = true
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return info
+	}
+	for _, e := range entries {
+		if !e.IsDir() && !strings.HasSuffix(strings.ToLower(e.Name()), ".mcpack") {
+			continue
+		}
+		packDir := filepath.Join(path, e.Name())
+		pi := PackInfo{Name: e.Name()}
+
+		manifestPath := filepath.Join(packDir, "manifest.json")
+		if mData, mErr := os.ReadFile(manifestPath); mErr == nil {
+			var manifest map[string]interface{}
+			if json.Unmarshal(mData, &manifest) == nil {
+				if header, ok := manifest["header"].(map[string]interface{}); ok {
+					if desc, ok := header["description"].(string); ok {
+						pi.Description = desc
+					}
+				}
+			}
+		}
+
+		for _, iconBase := range []string{"pack_icon.png", "pack_icon.jpeg", "pack_icon.jpg"} {
+			iconPath := filepath.Join(packDir, iconBase)
+			if iconData, iErr := os.ReadFile(iconPath); iErr == nil {
+				pi.Icon = "data:image/png;base64," + base64.StdEncoding.EncodeToString(iconData)
+				break
+			}
+		}
+
+		info.Packs = append(info.Packs, pi)
+	}
+	sort.Slice(info.Packs, func(i, j int) bool {
+		return info.Packs[i].Name < info.Packs[j].Name
+	})
 	return info
 }
 
