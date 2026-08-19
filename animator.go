@@ -346,6 +346,17 @@ func (a *App) mergeAnimatedPack(mcpackPath string, packNames []string) error {
 		return fmt.Errorf("failed to extract pack for merge: %w", err)
 	}
 
+	extractCount := 0
+	filepath.Walk(extractDir, func(path string, info fs.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			rel, _ := filepath.Rel(extractDir, path)
+			a.logDebug(fmt.Sprintf("mergeAnimatedPack: extract file: %s (%d bytes)", rel, info.Size()))
+			extractCount++
+		}
+		return nil
+	})
+	a.logDebug(fmt.Sprintf("mergeAnimatedPack: extracted %d files from mcpack", extractCount))
+
 	merged := 0
 	for _, name := range packNames {
 		if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `\/`) {
@@ -371,6 +382,7 @@ func (a *App) mergeAnimatedPack(mcpackPath string, packNames []string) error {
 			}
 			rel, err := filepath.Rel(extractDir, path)
 			if err != nil {
+				a.logDebug(fmt.Sprintf("mergeAnimatedPack: Rel error: %v", err))
 				return nil
 			}
 			base := strings.ToLower(info.Name())
@@ -378,8 +390,13 @@ func (a *App) mergeAnimatedPack(mcpackPath string, packNames []string) error {
 				return nil
 			}
 			dst := filepath.Join(destDir, rel)
-			os.MkdirAll(filepath.Dir(dst), os.ModePerm)
-			copyFile(path, dst)
+			if mkErr := os.MkdirAll(filepath.Dir(dst), os.ModePerm); mkErr != nil {
+				a.logDebug(fmt.Sprintf("mergeAnimatedPack: MkdirAll failed for %s: %v", filepath.Dir(dst), mkErr))
+				return nil
+			}
+			if cpErr := copyFile(path, dst); cpErr != nil {
+				a.logDebug(fmt.Sprintf("mergeAnimatedPack: copyFile FAILED %s -> %s: %v", rel, dst, cpErr))
+			}
 			copied++
 			return nil
 		})
