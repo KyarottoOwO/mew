@@ -332,6 +332,8 @@ func (a *App) mergeAnimatedPack(mcpackPath string, packNames []string) error {
 	if bedrockPath == "" {
 		bedrockPath = a.getDefaultResourcePacksPath()
 	}
+	a.logDebug(fmt.Sprintf("mergeAnimatedPack: bedrockPath=%s, packs=%v", bedrockPath, packNames))
+	log.Printf("mergeAnimatedPack: bedrockPath=%s, packs=%v", bedrockPath, packNames)
 	if st, err := os.Stat(bedrockPath); err != nil || !st.IsDir() {
 		return fmt.Errorf("resource packs path not found: %s", bedrockPath)
 	}
@@ -356,6 +358,7 @@ func (a *App) mergeAnimatedPack(mcpackPath string, packNames []string) error {
 		}
 
 	stripTargetUIDX(destDir)
+		log.Printf("mergeAnimatedPack: stripped uidx from %s", destDir)
 
 		filepath.Walk(extractDir, func(path string, info fs.FileInfo, err error) error {
 			if err != nil || info.IsDir() {
@@ -397,23 +400,33 @@ func stripTargetUIDX(destDir string) {
 		relLower := strings.ToLower(filepath.ToSlash(rel))
 
 		if strings.HasSuffix(lower, ".uidx") {
-			os.Remove(path)
+			if removeErr := os.Remove(path); removeErr != nil {
+				log.Printf("stripTargetUIDX: failed to remove %s: %v", path, removeErr)
+			}
 			return nil
 		}
 		if strings.HasPrefix(relLower, "ui/") && strings.HasSuffix(lower, "_screen.json") {
-			os.Remove(path)
+			if removeErr := os.Remove(path); removeErr != nil {
+				log.Printf("stripTargetUIDX: failed to remove %s: %v", path, removeErr)
+			}
 			return nil
 		}
 		if relLower == "ui/_global_variables.json" {
-			os.Remove(path)
+			if removeErr := os.Remove(path); removeErr != nil {
+				log.Printf("stripTargetUIDX: failed to remove %s: %v", path, removeErr)
+			}
 			return nil
 		}
 		if relLower == "ui/_ui_defs.json" {
-			os.WriteFile(path, []byte("{\n  \"ui_defs\": []\n}\n"), 0644)
+			if writeErr := os.WriteFile(path, []byte("{\n  \"ui_defs\": []\n}\n"), 0644); writeErr != nil {
+				log.Printf("stripTargetUIDX: failed to write %s: %v", path, writeErr)
+			}
 			return nil
 		}
 		if strings.Contains(relLower, "textures/uidx/") {
-			os.Remove(path)
+			if removeErr := os.Remove(path); removeErr != nil {
+				log.Printf("stripTargetUIDX: failed to remove %s: %v", path, removeErr)
+			}
 			return nil
 		}
 		return nil
