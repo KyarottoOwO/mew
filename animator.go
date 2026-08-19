@@ -488,8 +488,9 @@ func mergeUIDefs(defsPath string, originalEntries []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to read _ui_defs.json for merge: %w", err)
 	}
+	stripped := stripjsoncomments.Strip(string(data))
 	var current map[string]interface{}
-	if err := json.Unmarshal(data, &current); err != nil {
+	if err := json.Unmarshal([]byte(stripped), &current); err != nil {
 		return fmt.Errorf("failed to parse _ui_defs.json for merge: %w", err)
 	}
 	currentEntries, _ := current["ui_defs"].([]interface{})
@@ -523,8 +524,9 @@ func mergeGlobalVars(varsPath string, originalVars map[string]interface{}) error
 	if err != nil {
 		return fmt.Errorf("failed to read _global_variables.json for merge: %w", err)
 	}
+	stripped := stripjsoncomments.Strip(string(data))
 	var current map[string]interface{}
-	if err := json.Unmarshal(data, &current); err != nil {
+	if err := json.Unmarshal([]byte(stripped), &current); err != nil {
 		return fmt.Errorf("failed to parse _global_variables.json for merge: %w", err)
 	}
 
