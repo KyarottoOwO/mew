@@ -55,9 +55,9 @@ let viewerInstance = null
 
 const SKY_FACE_META = [
   { key: 0, label: 'Left',     threeFace: '-X', bedrock: 'cubemap_0' },
-  { key: 1, label: 'Behind',   threeFace: '-Z', bedrock: 'cubemap_1' },
+  { key: 1, label: 'Front',    threeFace: '+Z', bedrock: 'cubemap_1' },
   { key: 2, label: 'Right',    threeFace: '+X', bedrock: 'cubemap_2' },
-  { key: 3, label: 'Front',    threeFace: '+Z', bedrock: 'cubemap_3' },
+  { key: 3, label: 'Behind',   threeFace: '-Z', bedrock: 'cubemap_3' },
   { key: 4, label: 'Top',      threeFace: '+Y', bedrock: 'cubemap_4' },
   { key: 5, label: 'Bottom',   threeFace: '-Y', bedrock: 'cubemap_5' },
 ]
@@ -143,12 +143,10 @@ function loadImageToCanvas(uri) {
 }
 
 async function generateSkyCubemap(skyTex) {
-  const size = 512
-
-  function makeCanvas(draw) {
+  function makeCanvas(s, draw) {
     const c = document.createElement('canvas')
-    c.width = size; c.height = size
-    draw(c.getContext('2d'), size)
+    c.width = s; c.height = s
+    draw(c.getContext('2d'), s)
     return c
   }
 
@@ -160,12 +158,12 @@ async function generateSkyCubemap(skyTex) {
     ctx.fillRect(0, 0, s, s)
   }
 
-  function fallbackFace(topColor, bottomColor) {
-    return makeCanvas((ctx, s) => {
-      skyGradient(ctx, s, topColor, bottomColor)
+  function fallbackFace(s, topColor, bottomColor) {
+    return makeCanvas(s, (ctx, sz) => {
+      skyGradient(ctx, sz, topColor, bottomColor)
       for (let i = 0; i < 30; i++) {
         ctx.fillStyle = `rgba(255,255,255,${0.2 + Math.random() * 0.6})`
-        ctx.fillRect(Math.random() * s, Math.random() * s, 1 + Math.random() * 2, 1 + Math.random() * 2)
+        ctx.fillRect(Math.random() * sz, Math.random() * sz, 1 + Math.random() * 2, 1 + Math.random() * 2)
       }
     })
   }
@@ -211,17 +209,20 @@ async function generateSkyCubemap(skyTex) {
     xfaces[0], // -X = left = cubemap_0
     xfaces[4], // +Y = top = cubemap_4
     xfaces[5], // -Y = bottom = cubemap_5
-    xfaces[3], // +Z = behind camera = cubemap_3
-    xfaces[1], // -Z = behind player = cubemap_1
+    xfaces[1], // +Z = front = cubemap_1
+    xfaces[3], // -Z = behind = cubemap_3
   ]
 
+  const faceDims = faceMap.map(img => img ? (img.naturalWidth || img.width) : 0)
+  const size = Math.max(...faceDims, 512)
+
   const fallbacks = [
-    fallbackFace('#0e1e3d', '#3a7cc2'),
-    fallbackFace('#0c1a35', '#3a7cc2'),
-    fallbackFace('#070d1f', '#1a4a8a'),
-    fallbackFace('#7ec8e3', '#dceefb'),
-    fallbackFace('#10203f', '#2e6db3'),
-    fallbackFace('#0b1630', '#2e6db3'),
+    fallbackFace(size, '#0e1e3d', '#3a7cc2'),
+    fallbackFace(size, '#0c1a35', '#3a7cc2'),
+    fallbackFace(size, '#070d1f', '#1a4a8a'),
+    fallbackFace(size, '#7ec8e3', '#dceefb'),
+    fallbackFace(size, '#10203f', '#2e6db3'),
+    fallbackFace(size, '#0b1630', '#2e6db3'),
   ]
 
   const cubeFaces = faceMap.map((img, i) => {
