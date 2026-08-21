@@ -9,17 +9,6 @@ const props = defineProps({ active: Boolean })
 
 const mode = ref('porter')
 
-const FACE_NAMES = ['Left (-X)', 'Front (+Z)', 'Right (+X)', 'Behind (-Z)', 'Top (+Y)', 'Bottom (-Y)']
-const FACE_KEYS = ['left', 'front', 'right', 'behind', 'top', 'bottom']
-const FILENAME_PATTERNS = [
-  [/\bcubemap[_-]?0\b/i, /\bleft\b/i, /\b-?x-?\b/i, /\bwest\b/i, /\b0\b/],
-  [/\bcubemap[_-]?1\b/i, /\bfront\b/i, /\b\+?z\+?\b/i, /\bnorth\b/i, /\b1\b/],
-  [/\bcubemap[_-]?2\b/i, /\bright\b/i, /\b\+?x\+?\b/i, /\beast\b/i, /\b2\b/],
-  [/\bcubemap[_-]?3\b/i, /\bbehind\b/i, /\b-?z-?\b/i, /\bsouth\b/i, /\b3\b/],
-  [/\bcubemap[_-]?4\b/i, /\btop\b/i, /\b\+?y\+?\b/i, /\bup\b/i, /\b4\b/],
-  [/\bcubemap[_-]?5\b/i, /\bbottom\b/i, /\b-?y-?\b/i, /\bdown\b/i, /\b5\b/],
-]
-
 const panoFile = ref(null)
 const panoName = ref('')
 const panoSize = ref('')
@@ -60,58 +49,16 @@ function popup(title, text, icon) {
   }).fire({ title, text, icon, confirmButtonText: 'OK' })
 }
 
-function matchFileToFace(name) {
-  const lower = name.toLowerCase()
-  let best = -1
-  let bestScore = 0
-  for (let i = 0; i < 6; i++) {
-    let score = 0
-    for (const pat of FILENAME_PATTERNS[i]) {
-      if (pat.test(lower)) { score++; break }
-    }
-    if (score > bestScore) { bestScore = score; best = i }
-  }
-  return best
-}
-
 function handleFaceFiles(files) {
   const valid = Array.from(files).filter(f => /\.(png|jpe?g)$/i.test(f.name))
   if (!valid.length) {
     popup('Error', 'No valid image files found (.png, .jpg, .jpeg).', 'error')
     return
   }
-  const assigned = [false, false, false, false, false, false]
-  for (const f of valid) {
-    const idx = matchFileToFace(f.name)
-    if (idx >= 0 && !assigned[idx]) {
-      faceFiles.value[idx] = f
-      faceNames.value[idx] = f.name
-      assigned[idx] = true
-    }
-  }
-  let slot = 0
-  for (const f of valid) {
-    if (assigned.includes(false)) {
-      while (slot < 6 && assigned[slot]) slot++
-      if (slot < 6) {
-        const idx = valid.indexOf(f)
-        if (idx >= 0 && !assigned[slot]) {
-          faceFiles.value[slot] = f
-          faceNames.value[slot] = f.name
-          assigned[slot] = true
-        }
-      }
-    }
-  }
-  if (!faceFiles.value.some(f => f !== null)) {
-    let s = 0
-    for (const f of valid) {
-      if (s < 6) {
-        faceFiles.value[s] = f
-        faceNames.value[s] = f.name
-        s++
-      }
-    }
+  clearFaces()
+  for (let i = 0; i < Math.min(valid.length, 6); i++) {
+    faceFiles.value[i] = valid[i]
+    faceNames.value[i] = valid[i].name
   }
 }
 
@@ -362,7 +309,7 @@ async function createPack() {
       </div>
 
       <p class="card-desc" v-if="mode === 'porter'">
-        Port an existing sky to Bedrock. Drop all 6 cubemap face images at once — they'll be auto-sorted by filename.
+        Port an existing sky to Bedrock. Drop 6 cubemap face images (in order: -X, +Z, +X, -Z, +Y, -Y).
       </p>
       <p class="card-desc" v-else>
         Create a sky from a panoramic image. Upload a 2:1 equirectangular panorama and it'll be projected into 6 cubemap faces.
@@ -375,31 +322,16 @@ async function createPack() {
             <input type="file" accept=".png,.jpg,.jpeg" multiple class="hidden" @change="onFaceChange" />
             <div v-if="!anyFacesLoaded()" class="drop-zone-inner">
               <i class="fa fa-cloud-arrow-up drop-icon"></i>
-              <span class="drop-hint">Drop 6 cubemap faces here</span>
-              <span class="drop-sub">.png, .jpg, .jpeg &mdash; auto-sorted by filename</span>
+              <span class="drop-hint">Drop 6 cubemap face images here</span>
+              <span class="drop-sub">.png, .jpg, .jpeg &mdash; in order: -X, +Z, +X, -Z, +Y, -Y</span>
             </div>
-            <div v-else class="face-file-info">
-              <span class="face-file-name">{{ faceNames.filter(Boolean).length }} file(s) loaded</span>
-              <button class="face-remove" @click.prevent.stop="clearFaces">&times;</button>
+            <div v-else class="file-info-box">
+              <div class="ai-row">
+                <p class="ai-name">{{ faceNames.filter(Boolean).length }} face(s) loaded</p>
+                <button class="face-remove" @click.prevent.stop="clearFaces">&times;</button>
+              </div>
             </div>
           </label>
-
-          <div v-if="anyFacesLoaded()" class="face-list">
-            <div v-for="i in 6" :key="i-1" class="face-row">
-              <span class="face-label">{{ FACE_NAMES[i-1] }}</span>
-              <span class="face-filename" :class="{ missing: !faceFiles[i-1] }">{{ faceNames[i-1] || 'missing' }}</span>
-              <select v-model.number="faceRotations[i-1]" class="face-select">
-                <option :value="0">0&deg;</option>
-                <option :value="90">90&deg;</option>
-                <option :value="180">180&deg;</option>
-                <option :value="270">270&deg;</option>
-              </select>
-              <label class="face-flip" title="Flip horizontal">
-                <input type="checkbox" v-model="faceFlips[i-1]" />
-                <i class="fa fa-left-right"></i>
-              </label>
-            </div>
-          </div>
         </div>
 
         <div v-else>
