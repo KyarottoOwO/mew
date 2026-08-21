@@ -94,6 +94,10 @@ func (a *App) logDebug(msg string) {
 	debugLog("[DEBUG] " + msg)
 }
 
+func (a *App) IsDebug() bool {
+	return a.debug
+}
+
 func (a *App) acquirePort() error {
 	a.portMu.Lock()
 	if a.activePort {
@@ -253,6 +257,91 @@ func (a *App) GetInstalledPacks() ResourcePacksInfo {
 	}
 	sort.Strings(info.Packs)
 	return info
+}
+
+type PackListEntry struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	IconURI     string `json:"iconURI"`
+	Size        int64  `json:"size"`
+	ModTime     string `json:"modTime"`
+	DirName     string `json:"dirName"`
+}
+
+func (a *App) GetPackListWithInfo() ([]PackListEntry, error) {
+	path := a.getStringSetting("resourcePacksPath")
+	if path == "" {
+		path = a.getDefaultResourcePacksPath()
+	}
+	if st, err := os.Stat(path); err != nil || !st.IsDir() {
+		return nil, nil
+	}
+
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []PackListEntry
+	for _, e := range entries {
+		if !e.IsDir() && !strings.HasSuffix(strings.ToLower(e.Name()), ".mcpack") {
+			continue
+		}
+
+		dir := filepath.Join(path, e.Name())
+		st, err := os.Stat(dir)
+		if err != nil {
+			continue
+		}
+
+		entry := PackListEntry{
+			Name:    e.Name(),
+			DirName: e.Name(),
+			ModTime: st.ModTime().Format("2006-01-02 15:04:05"),
+		}
+
+		entry.Size = dirSize(dir)
+
+		manifestPath := filepath.Join(dir, "manifest.json")
+		if data, err := os.ReadFile(manifestPath); err == nil {
+			var manifest struct {
+				Header struct {
+					Name        string `json:"name"`
+					Description string `json:"description"`
+				} `json:"header"`
+			}
+			if json.Unmarshal(data, &manifest) == nil {
+				if manifest.Header.Name != "" {
+					entry.Name = manifest.Header.Name
+				}
+				entry.Description = manifest.Header.Description
+			}
+		}
+
+		iconPath := findFirstImage(dir, "pack_icon")
+		if iconPath != "" {
+			entry.IconURI = a.readImageAsDataURI(iconPath)
+		}
+
+		result = append(result, entry)
+	}
+
+	return result, nil
+}
+
+func dirSize(path string) int64 {
+	var size int64
+	filepath.WalkDir(path, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err == nil {
+			size += info.Size()
+		}
+		return nil
+	})
+	return size
 }
 
 func (a *App) GetInstalledPacksDetailed() DetailedPacksInfo {
@@ -1569,8 +1658,17 @@ type ArmorTextures struct {
 }
 
 type ItemTexture struct {
-	Name   string `json:"name"`
+	Name    string `json:"name"`
 	DataURI string `json:"dataURI"`
+}
+
+type SkyTextures struct {
+	Cubemap0 string `json:"cubemap0"`
+	Cubemap1 string `json:"cubemap1"`
+	Cubemap2 string `json:"cubemap2"`
+	Cubemap3 string `json:"cubemap3"`
+	Cubemap4 string `json:"cubemap4"`
+	Cubemap5 string `json:"cubemap5"`
 }
 
 func (a *App) getPackDir(packName string) string {
@@ -1673,6 +1771,47 @@ func (a *App) GetPackArmorTextures(packName string, material string) (ArmorTextu
 		result.Layer2 = a.readImageAsDataURI(layer2Path)
 	}
 
+	return result, nil
+}
+
+func (a *App) GetPackSkyTextures(packName string) (SkyTextures, error) {
+	dir := a.getPackDir(packName)
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		return SkyTextures{}, fmt.Errorf("pack not found: %s", packName)
+	}
+
+	envDir := filepath.Join(dir, "textures", "environment")
+	if st, err := os.Stat(envDir); err != nil || !st.IsDir() {
+		return SkyTextures{}, nil
+	}
+
+	cubemapDir := filepath.Join(envDir, "overworld_cubemap")
+
+	result := SkyTextures{}
+	for i := 0; i <= 5; i++ {
+		p := findFirstImage(cubemapDir, fmt.Sprintf("cubemap_%d", i))
+		if p == "" {
+			p = findFirstImage(envDir, fmt.Sprintf("cubemap_%d", i))
+		}
+		if p == "" {
+			continue
+		}
+		uri := a.readImageAsDataURI(p)
+		switch i {
+		case 0:
+			result.Cubemap0 = uri
+		case 1:
+			result.Cubemap1 = uri
+		case 2:
+			result.Cubemap2 = uri
+		case 3:
+			result.Cubemap3 = uri
+		case 4:
+			result.Cubemap4 = uri
+		case 5:
+			result.Cubemap5 = uri
+		}
+	}
 	return result, nil
 }
 

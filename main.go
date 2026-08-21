@@ -27,6 +27,7 @@ func main() {
 
 	if debug {
 		allocConsole()
+		debugConsoleEnabled = true
 		log.SetOutput(os.Stderr)
 		log.SetFlags(log.Ltime | log.Lshortfile)
 		log.Println("Debug mode enabled")

@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { GetAllRecentPacks } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
+import { parseBedrockCodes } from '../utils/formatCodes'
 
 const recentPacks = ref([])
 const isMounted = ref(false)
@@ -67,7 +68,7 @@ onMounted(() => {
         <div v-for="(pack, i) in recentPacks" :key="i" class="rp-entry">
           <div class="rp-header">
             <i class="fa fa-box-open rp-icon"></i>
-            <span class="rp-name">{{ pack.name }}</span>
+            <span class="rp-name" v-html="parseBedrockCodes(pack.name)"></span>
             <span class="rp-date">{{ formatTimestamp(pack.timestamp) }}</span>
           </div>
         </div>
@@ -167,7 +168,7 @@ onMounted(() => {
   color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-line;
 }
 
 .rp-date {

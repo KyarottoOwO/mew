@@ -3,12 +3,15 @@ import { ref, reactive, computed, onMounted, nextTick, watch } from 'vue'
 import * as THREE from 'three'
 import { SkinView3d } from 'vue-skinview3d'
 import { IdleAnimation, WalkingAnimation } from 'vue-skinview3d/animations'
-import { GetInstalledPacks, GetPackPreviewInfo, GetPackArmorTextures, GetPackItemTextures, GetPlayerSkinTexture, GetDefaultSkin, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackAllItemTextures, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem } from '../../wailsjs/go/main/App'
+import { GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackArmorTextures, GetPackItemTextures, GetPackSkyTextures, GetPlayerSkinTexture, GetDefaultSkin, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackAllItemTextures, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, IsDebug } from '../../wailsjs/go/main/App'
 import defaultSkinImg from '../assets/default-skin.png'
+import { parseBedrockCodes } from '../utils/formatCodes'
 
-const packs = ref([])
-const packInfos = reactive({})
+const packList = ref([])
+const packsPath = ref('')
 const loading = ref(true)
+const searchQuery = ref('')
+const sortBy = ref('name')
 
 const showModal = ref(false)
 const selectedPack = ref('')
@@ -28,6 +31,18 @@ const customSkinURI = ref('')
 const skinFileInput = ref(null)
 const viewerRef = ref(null)
 const modalContainer = ref(null)
+const isDebug = ref(false)
+
+const SKY_DEBUG_KEY = 'mew-sky-debug-config'
+const skyDebugFaces = reactive({
+  0: { rotation: 270, flipH: false },
+  1: { rotation: 0,   flipH: false },
+  2: { rotation: 90,  flipH: false },
+  3: { rotation: 180, flipH: false },
+  4: { rotation: 0,   flipH: false },
+  5: { rotation: 0,   flipH: false },
+})
+const showSkyDebug = ref(false)
 
 const customItemNames = ref([])
 const removedItemNames = ref([])
@@ -37,6 +52,189 @@ const pickerLoading = ref(false)
 const pickerSearch = ref('')
 
 let viewerInstance = null
+
+const SKY_FACE_META = [
+  { key: 0, label: 'Left',     threeFace: '-X', bedrock: 'cubemap_0' },
+  { key: 1, label: 'Behind',   threeFace: '-Z', bedrock: 'cubemap_1' },
+  { key: 2, label: 'Right',    threeFace: '+X', bedrock: 'cubemap_2' },
+  { key: 3, label: 'Front',    threeFace: '+Z', bedrock: 'cubemap_3' },
+  { key: 4, label: 'Top',      threeFace: '+Y', bedrock: 'cubemap_4' },
+  { key: 5, label: 'Bottom',   threeFace: '-Y', bedrock: 'cubemap_5' },
+]
+
+function loadSkyDebugConfig() {
+  try {
+    const raw = localStorage.getItem(SKY_DEBUG_KEY)
+    if (!raw) return
+    const cfg = JSON.parse(raw)
+    for (const key of Object.keys(cfg)) {
+      const i = parseInt(key)
+      if (skyDebugFaces[i] && cfg[i]) {
+        skyDebugFaces[i].rotation = cfg[i].rotation ?? skyDebugFaces[i].rotation
+        skyDebugFaces[i].flipH = cfg[i].flipH ?? skyDebugFaces[i].flipH
+      }
+    }
+  } catch {}
+}
+
+function saveSkyDebugConfig() {
+  try {
+    const cfg = {}
+    for (const key of Object.keys(skyDebugFaces)) {
+      cfg[key] = { rotation: skyDebugFaces[key].rotation, flipH: skyDebugFaces[key].flipH }
+    }
+    localStorage.setItem(SKY_DEBUG_KEY, JSON.stringify(cfg))
+  } catch {}
+}
+
+function resetSkyDebugConfig() {
+  skyDebugFaces[0].rotation = 270; skyDebugFaces[0].flipH = false
+  skyDebugFaces[1].rotation = 0;   skyDebugFaces[1].flipH = false
+  skyDebugFaces[2].rotation = 90;  skyDebugFaces[2].flipH = false
+  skyDebugFaces[3].rotation = 180; skyDebugFaces[3].flipH = false
+  skyDebugFaces[4].rotation = 0;   skyDebugFaces[4].flipH = false
+  skyDebugFaces[5].rotation = 0;   skyDebugFaces[5].flipH = false
+  saveSkyDebugConfig()
+  applySkyDebug()
+}
+
+function copySkyDebugConfig() {
+  const cfg = {}
+  for (const key of Object.keys(skyDebugFaces)) {
+    cfg[key] = { rotation: skyDebugFaces[key].rotation, flipH: skyDebugFaces[key].flipH }
+  }
+  navigator.clipboard.writeText(JSON.stringify(cfg, null, 2)).catch(() => {})
+}
+
+function flipCanvasH(src) {
+  if (!src) return null
+  const c = document.createElement('canvas')
+  const w = src.naturalWidth || src.width
+  const h = src.naturalHeight || src.height
+  c.width = w; c.height = h
+  const ctx = c.getContext('2d')
+  ctx.translate(w, 0)
+  ctx.scale(-1, 1)
+  ctx.drawImage(src, 0, 0)
+  return c
+}
+
+let lastSkyTex = null
+
+function setLastSkyTex(tex) { lastSkyTex = tex }
+
+async function applySkyDebug() {
+  if (!viewerInstance) return
+  const cubemap = await generateSkyCubemap(lastSkyTex)
+  if (viewerInstance) viewerInstance.scene.background = cubemap
+}
+
+function loadImageToCanvas(uri) {
+  return new Promise(resolve => {
+    if (!uri) return resolve(null)
+    const img = new Image(); img.crossOrigin = 'anonymous'
+    img.onload = () => resolve(img)
+    img.onerror = () => resolve(null)
+    img.src = uri
+  })
+}
+
+async function generateSkyCubemap(skyTex) {
+  const size = 512
+
+  function makeCanvas(draw) {
+    const c = document.createElement('canvas')
+    c.width = size; c.height = size
+    draw(c.getContext('2d'), size)
+    return c
+  }
+
+  function skyGradient(ctx, s, topColor, bottomColor) {
+    const g = ctx.createLinearGradient(0, 0, 0, s)
+    g.addColorStop(0, topColor)
+    g.addColorStop(1, bottomColor)
+    ctx.fillStyle = g
+    ctx.fillRect(0, 0, s, s)
+  }
+
+  function fallbackFace(topColor, bottomColor) {
+    return makeCanvas((ctx, s) => {
+      skyGradient(ctx, s, topColor, bottomColor)
+      for (let i = 0; i < 30; i++) {
+        ctx.fillStyle = `rgba(255,255,255,${0.2 + Math.random() * 0.6})`
+        ctx.fillRect(Math.random() * s, Math.random() * s, 1 + Math.random() * 2, 1 + Math.random() * 2)
+      }
+    })
+  }
+
+  // Three.js CubeTexture order: +X, -X, +Y, -Y, +Z, -Z
+  // Bedrock: 0=left, 1=north(behind player), 2=right, 3=behind camera, 4=top, 5=bottom
+  function rotateCanvas(src, degrees) {
+    if (!src) return null
+    const c = document.createElement('canvas')
+    const w = src.naturalWidth || src.width
+    const h = src.naturalHeight || src.height
+    const rad = degrees * Math.PI / 180
+    const swap = degrees === 90 || degrees === 270
+    c.width = swap ? h : w
+    c.height = swap ? w : h
+    const ctx = c.getContext('2d')
+    ctx.translate(c.width / 2, c.height / 2)
+    ctx.rotate(rad)
+    ctx.drawImage(src, -w / 2, -h / 2)
+    return c
+  }
+
+  const [c0, c1, c2, c3, c4, c5] = await Promise.all([
+    loadImageToCanvas(skyTex?.cubemap0),
+    loadImageToCanvas(skyTex?.cubemap1),
+    loadImageToCanvas(skyTex?.cubemap2),
+    loadImageToCanvas(skyTex?.cubemap3),
+    loadImageToCanvas(skyTex?.cubemap4),
+    loadImageToCanvas(skyTex?.cubemap5),
+  ])
+
+  const rawFaces = [c0, c1, c2, c3, c4, c5]
+  const xfaces = rawFaces.map((face, i) => {
+    let r = face
+    const cfg = skyDebugFaces[i]
+    if (cfg.rotation) r = rotateCanvas(r, cfg.rotation)
+    if (cfg.flipH) r = flipCanvasH(r)
+    return r
+  })
+
+  const faceMap = [
+    xfaces[2], // +X = right = cubemap_2
+    xfaces[0], // -X = left = cubemap_0
+    xfaces[4], // +Y = top = cubemap_4
+    xfaces[5], // -Y = bottom = cubemap_5
+    xfaces[3], // +Z = behind camera = cubemap_3
+    xfaces[1], // -Z = behind player = cubemap_1
+  ]
+
+  const fallbacks = [
+    fallbackFace('#0e1e3d', '#3a7cc2'),
+    fallbackFace('#0c1a35', '#3a7cc2'),
+    fallbackFace('#070d1f', '#1a4a8a'),
+    fallbackFace('#7ec8e3', '#dceefb'),
+    fallbackFace('#10203f', '#2e6db3'),
+    fallbackFace('#0b1630', '#2e6db3'),
+  ]
+
+  const cubeFaces = faceMap.map((img, i) => {
+    if (!img) return fallbacks[i]
+    const c = document.createElement('canvas')
+    c.width = img.naturalWidth || size
+    c.height = img.naturalHeight || size
+    const ctx = c.getContext('2d')
+    ctx.drawImage(img, 0, 0)
+    return c
+  })
+
+  const cubeTexture = new THREE.CubeTexture(cubeFaces)
+  cubeTexture.needsUpdate = true
+  return cubeTexture
+}
 
 const currentAnimation = computed(() => {
   return animating.value ? new WalkingAnimation() : new IdleAnimation()
@@ -51,6 +249,40 @@ const filteredPickerItems = computed(() => {
   const q = pickerSearch.value.trim().toLowerCase()
   if (!q) return pickerItems.value
   return pickerItems.value.filter(item => item.name.toLowerCase().includes(q))
+})
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / 1048576).toFixed(1) + ' MB'
+}
+
+const filteredPacks = computed(() => {
+  let list = packList.value
+
+  const q = searchQuery.value.trim().toLowerCase()
+  if (q) {
+    list = list.filter(p => {
+      const name = (p.name || '').toLowerCase()
+      const desc = (p.description || '').toLowerCase()
+      const dir = (p.dirName || '').toLowerCase()
+      return name.includes(q) || desc.includes(q) || dir.includes(q)
+    })
+  }
+
+  const sorted = [...list]
+  switch (sortBy.value) {
+    case 'name':
+      sorted.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+      break
+    case 'date':
+      sorted.sort((a, b) => (b.modTime || '').localeCompare(a.modTime || ''))
+      break
+    case 'size':
+      sorted.sort((a, b) => (b.size || 0) - (a.size || 0))
+      break
+  }
+  return sorted
 })
 
 const ARMOR_LAYER1_BONES = [
@@ -225,8 +457,8 @@ watch(viewerRef, async (newRef) => {
         if (defSkin) customSkinURI.value = defSkin
       } catch {}
       const uri = customSkinURI.value || defaultSkinImg
-      viewerInstance.loadSkin(uri, { model: skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value })
-      if (selectedPack.value) loadPackData(selectedPack.value)
+      await viewerInstance.loadSkin(uri, { model: skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value })
+      viewerInstance.scene.background = await generateSkyCubemap(null)
     } else {
       setTimeout(tryGetViewer, 50)
     }
@@ -242,21 +474,22 @@ watch(() => customSkinURI.value, async (newUri) => {
 
 async function loadAllPacks() {
   try {
-    const info = await GetInstalledPacks()
-    packs.value = info.packs || []
-    const iconPromises = packs.value.map(async (name) => {
-      try {
-        const pi = await GetPackPreviewInfo(name)
-        packInfos[name] = pi
-      } catch {
-        packInfos[name] = { name, description: '', iconURI: '' }
-      }
-    })
-    await Promise.all(iconPromises)
+    const [list, info] = await Promise.all([GetPackListWithInfo(), GetInstalledPacks()])
+    packsPath.value = info?.path || ''
+    packList.value = (list || []).map(p => ({
+      ...p,
+      dirName: p.dirName || '',
+    }))
   } catch (e) {
     console.error('Failed to load packs:', e)
   }
   loading.value = false
+}
+
+function openPackFolder() {
+  if (!packsPath.value || !selectedPack.value) return
+  const sep = packsPath.value.includes('\\') ? '\\' : '/'
+  OpenFolder(packsPath.value + sep + selectedPack.value)
 }
 
 async function openPack(packName) {
@@ -265,7 +498,17 @@ async function openPack(packName) {
   showModal.value = true
   await nextTick()
   await loadCustomItems()
+  await waitForViewer()
   await loadPackData(packName)
+}
+
+function waitForViewer() {
+  if (viewerInstance) return Promise.resolve()
+  return new Promise(resolve => {
+    const check = setInterval(() => {
+      if (viewerInstance) { clearInterval(check); resolve() }
+    }, 50)
+  })
 }
 
 function closeModal() {
@@ -274,8 +517,14 @@ function closeModal() {
 
 async function loadPackData(packName) {
   try {
-    const info = await GetPackPreviewInfo(packName)
+    const [info, skyTex] = await Promise.all([
+      GetPackPreviewInfo(packName),
+      GetPackSkyTextures(packName),
+    ])
     selectedPackInfo.value = info
+    setLastSkyTex(skyTex)
+    const cubemap = await generateSkyCubemap(skyTex)
+    if (viewerInstance) viewerInstance.scene.background = cubemap
     await applySkin(packName)
     await applyArmor(packName, selectedMaterial.value)
     await loadItems(packName, selectedMaterial.value)
@@ -292,7 +541,7 @@ async function loadItems(packName, material) {
 async function applySkin(packName) {
   if (!viewerInstance) return
   let skinURI = customSkinURI.value || await GetPlayerSkinTexture(packName) || defaultSkinImg
-  viewerInstance.loadSkin(skinURI, { model: skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value })
+  await viewerInstance.loadSkin(skinURI, { model: skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value })
 }
 
 async function applyArmor(packName, material) {
@@ -395,30 +644,57 @@ async function removeItem(name) {
 }
 
 onMounted(async () => {
+  try { isDebug.value = await IsDebug() } catch {}
+  loadSkyDebugConfig()
   await loadAllPacks()
 })
 </script>
 
 <template>
   <div class="pv-page page">
-    <div v-if="packs.length === 0 && !loading" class="pv-empty">
+    <div v-if="packList.length === 0 && !loading" class="pv-empty">
       <i class="fa fa-box-open pv-empty-icon"></i>
       <p>No installed packs found.</p>
       <p class="pv-empty-sub">Install a pack from the Pack Porter first.</p>
     </div>
 
-    <div v-else class="pv-grid">
-      <div v-for="pack in packs" :key="pack" class="pv-card" @click="openPack(pack)">
-        <img v-if="packInfos[pack]?.iconURI" :src="packInfos[pack].iconURI" class="pv-card-icon" />
-        <div v-else class="pv-card-icon pv-card-placeholder">
-          <i class="fa fa-box"></i>
+    <template v-else>
+      <div class="pv-toolbar">
+        <div class="pv-search">
+          <i class="fa fa-magnifying-glass pv-search-icon"></i>
+          <input v-model="searchQuery" class="pv-search-input" placeholder="Search packs..." />
+          <span v-if="searchQuery" class="pv-search-clear" @click="searchQuery = ''"><i class="fa fa-xmark"></i></span>
         </div>
-        <div class="pv-card-info">
-          <span class="pv-card-name">{{ packInfos[pack]?.name || pack }}</span>
-          <span v-if="packInfos[pack]?.description" class="pv-card-desc">{{ packInfos[pack].description }}</span>
+        <div class="pv-toolbar-right">
+          <span class="pv-count">{{ filteredPacks.length }} pack{{ filteredPacks.length !== 1 ? 's' : '' }}</span>
+          <div class="pv-sort">
+            <button v-for="opt in [{v:'name',icon:'fa-arrow-down-a-z'},{v:'date',icon:'fa-clock'},{v:'size',icon:'fa-hard-drive'}]"
+              :key="opt.v" class="pv-sort-btn" :class="{ active: sortBy === opt.v }"
+              :title="opt.v === 'name' ? 'Name' : opt.v === 'date' ? 'Date Added' : 'Size'"
+              @click="sortBy = opt.v"><i class="fa" :class="opt.icon"></i></button>
+          </div>
         </div>
       </div>
-    </div>
+
+      <div v-if="filteredPacks.length === 0" class="pv-empty" style="height:auto;padding:3rem">
+        <i class="fa fa-magnifying-glass pv-empty-icon" style="font-size:2rem"></i>
+        <p>No packs match your search.</p>
+      </div>
+
+      <div v-else class="pv-grid">
+        <div v-for="pack in filteredPacks" :key="pack.dirName" class="pv-card" @click="openPack(pack.dirName)">
+          <img v-if="pack.iconURI" :src="pack.iconURI" class="pv-card-icon" />
+          <div v-else class="pv-card-icon pv-card-placeholder">
+            <i class="fa fa-box"></i>
+          </div>
+          <div class="pv-card-info">
+            <span class="pv-card-name" v-html="parseBedrockCodes(pack.name || pack.dirName)"></span>
+            <span v-if="pack.description" class="pv-card-desc" v-html="parseBedrockCodes(pack.description)"></span>
+            <span class="pv-card-size">{{ formatSize(pack.size) }}</span>
+          </div>
+        </div>
+      </div>
+    </template>
 
     <div v-if="showModal" class="pv-modal-overlay" @click.self="closeModal">
       <div class="pv-modal">
@@ -426,30 +702,61 @@ onMounted(async () => {
           <div class="pv-modal-pack">
             <img v-if="selectedPackInfo.iconURI" :src="selectedPackInfo.iconURI" class="pv-modal-icon" />
             <div>
-              <h2 class="pv-modal-name">{{ selectedPackInfo.name || selectedPack }}</h2>
-              <p v-if="selectedPackInfo.description" class="pv-modal-desc">{{ selectedPackInfo.description }}</p>
+              <h2 class="pv-modal-name" v-html="parseBedrockCodes(selectedPackInfo.name || selectedPack)"></h2>
+              <p v-if="selectedPackInfo.description" class="pv-modal-desc" v-html="parseBedrockCodes(selectedPackInfo.description)"></p>
             </div>
           </div>
-          <button class="pv-modal-close" @click="closeModal"><i class="fa fa-xmark"></i></button>
+          <div class="pv-modal-actions">
+            <button v-if="isDebug" class="pv-modal-skybtn" :class="{ active: showSkyDebug }" @click="showSkyDebug = !showSkyDebug" title="Sky debug"><i class="fa fa-cloud-sun"></i></button>
+            <button class="pv-modal-folder" @click="openPackFolder" title="Open pack folder"><i class="fa fa-folder-open"></i></button>
+            <button class="pv-modal-close" @click="closeModal"><i class="fa fa-xmark"></i></button>
+          </div>
         </div>
 
-        <div ref="modalContainer" class="pv-3d">
-          <SkinView3d
-            ref="viewerRef"
-            :width="getViewerSize().w"
-            :height="getViewerSize().h"
-            :skin-url="customSkinURI || defaultSkinImg"
-            :skin-options="skinOptions"
-            :animation="currentAnimation"
-            :background="{ type: 'color', value: 0x2a2a3a }"
-            :fov="45"
-            :zoom="0.9"
-            :enable-rotate="true"
-            :enable-zoom="true"
-            :enable-pan="false"
-            :global-light="3"
-            :camera-light="1.2"
-          />
+        <div class="pv-viewer-wrap">
+          <div ref="modalContainer" class="pv-3d">
+            <SkinView3d
+              ref="viewerRef"
+              :width="getViewerSize().w"
+              :height="getViewerSize().h"
+              :skin-url="customSkinURI || defaultSkinImg"
+              :skin-options="skinOptions"
+              :animation="currentAnimation"
+              :background="null"
+              :fov="45"
+              :zoom="0.9"
+              :enable-rotate="true"
+              :enable-zoom="true"
+              :enable-pan="false"
+              :global-light="3"
+              :camera-light="1.2"
+            />
+          </div>
+
+          <div v-if="isDebug && showSkyDebug" class="pv-sky-debug">
+            <div class="pv-sky-debug-head">
+              <span class="pv-sky-debug-title"><i class="fa fa-cloud-sun"></i> Sky Cubemap</span>
+              <div class="pv-sky-debug-actions">
+                <button class="pv-sky-debug-btn" @click="copySkyDebugConfig" title="Copy config"><i class="fa fa-copy"></i></button>
+                <button class="pv-sky-debug-btn" @click="resetSkyDebugConfig" title="Reset defaults"><i class="fa fa-rotate-left"></i></button>
+              </div>
+            </div>
+            <div class="pv-sky-debug-faces">
+              <div v-for="meta in SKY_FACE_META" :key="meta.key" class="pv-sky-debug-row">
+                <span class="pv-sky-debug-label">{{ meta.bedrock }}<span class="pv-sky-debug-sub"> ({{ meta.threeFace }})</span></span>
+                <select v-model.number="skyDebugFaces[meta.key].rotation" class="pv-sky-debug-select" @change="saveSkyDebugConfig(); applySkyDebug()">
+                  <option :value="0">0°</option>
+                  <option :value="90">90°</option>
+                  <option :value="180">180°</option>
+                  <option :value="270">270°</option>
+                </select>
+                <label class="pv-sky-debug-flip" title="Flip horizontal">
+                  <input type="checkbox" v-model="skyDebugFaces[meta.key].flipH" @change="saveSkyDebugConfig(); applySkyDebug()" />
+                  <i class="fa fa-left-right"></i>
+                </label>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div class="pv-materials">
@@ -559,6 +866,130 @@ onMounted(async () => {
 .pv-empty-icon { font-size: 3rem; margin-bottom: 0.5rem; }
 .pv-empty-sub { font-size: 0.8rem; color: var(--text-version); }
 
+.pv-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 1rem 1.5rem 0.25rem;
+  position: relative;
+}
+
+.pv-toolbar-right {
+  position: absolute;
+  right: 1.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.pv-search {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  max-width: 340px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 0.5rem 0.75rem;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.pv-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.pv-search-icon {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  flex-shrink: 0;
+}
+
+.pv-search-input {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  min-width: 0;
+}
+
+.pv-search-input::placeholder {
+  color: var(--text-faint);
+}
+
+.pv-search-clear {
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  cursor: pointer;
+  padding: 0.15rem;
+  border-radius: 4px;
+  transition: color 0.15s;
+  flex-shrink: 0;
+}
+
+.pv-search-clear:hover {
+  color: var(--text-primary);
+}
+
+.pv-count {
+  font-size: 0.7rem;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.pv-sort {
+  display: flex;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.pv-sort-btn {
+  padding: 0.45rem 0.65rem;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 0.75rem;
+  transition: all 0.15s;
+  position: relative;
+}
+
+.pv-sort-btn:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 25%;
+  height: 50%;
+  width: 1px;
+  background: var(--border-subtle);
+}
+
+.pv-sort-btn:hover {
+  color: var(--text-secondary);
+  background: var(--bg-hover-1);
+}
+
+.pv-sort-btn.active {
+  color: var(--accent-light);
+  background: var(--accent-active-bg);
+}
+
+.pv-sort-btn.active::after {
+  background: transparent;
+}
+
+.pv-card-size {
+  font-size: 0.6rem;
+  color: var(--text-faint);
+  margin-top: 0.1rem;
+}
+
 .pv-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
@@ -616,7 +1047,7 @@ onMounted(async () => {
   font-weight: 600;
   color: var(--text-primary);
   text-align: center;
-  white-space: nowrap;
+  white-space: pre-line;
   overflow: hidden;
   text-overflow: ellipsis;
   width: 100%;
@@ -626,7 +1057,7 @@ onMounted(async () => {
   font-size: 0.65rem;
   color: var(--text-dim);
   text-align: center;
-  white-space: nowrap;
+  white-space: pre-line;
   overflow: hidden;
   text-overflow: ellipsis;
   width: 100%;
@@ -683,14 +1114,23 @@ onMounted(async () => {
   font-size: 1rem;
   font-weight: 600;
   color: var(--text-primary);
+  white-space: pre-line;
 }
 
 .pv-modal-desc {
   font-size: 0.7rem;
   color: var(--text-dim);
   margin-top: 1px;
+  white-space: pre-line;
 }
 
+.pv-modal-actions {
+  display: flex;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+.pv-modal-folder,
 .pv-modal-close {
   width: 32px;
   height: 32px;
@@ -706,6 +1146,7 @@ onMounted(async () => {
   transition: all 0.15s;
 }
 
+.pv-modal-folder:hover,
 .pv-modal-close:hover {
   background: var(--bg-hover-1);
   color: var(--text-primary);
@@ -715,9 +1156,8 @@ onMounted(async () => {
 .pv-3d {
   width: 100%;
   height: 400px;
-  border-radius: 10px;
-  overflow: hidden;
-  background: #2a2a3a;
+  border-radius: 0;
+  background: transparent;
 }
 
 .pv-3d canvas { display: block; }
@@ -1022,4 +1462,168 @@ onMounted(async () => {
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+
+.pv-viewer-wrap {
+  position: relative;
+  width: 100%;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #1a3a6a;
+}
+
+.pv-viewer-wrap .pv-3d {
+  background: transparent;
+  border-radius: 0;
+}
+
+.pv-modal-skybtn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-body);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.15s;
+}
+
+.pv-modal-skybtn:hover {
+  background: var(--bg-hover-1);
+  color: var(--text-primary);
+  border-color: var(--border-focus);
+}
+
+.pv-modal-skybtn.active {
+  background: var(--accent-active-bg);
+  color: var(--accent-light);
+  border-color: var(--accent-light);
+}
+
+.pv-sky-debug {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 220px;
+  background: rgba(12, 12, 20, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 8px;
+  z-index: 20;
+  backdrop-filter: blur(8px);
+}
+
+.pv-sky-debug-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.pv-sky-debug-title {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pv-sky-debug-title i {
+  color: var(--accent-light);
+}
+
+.pv-sky-debug-actions {
+  display: flex;
+  gap: 3px;
+}
+
+.pv-sky-debug-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.6rem;
+  transition: all 0.15s;
+}
+
+.pv-sky-debug-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+
+.pv-sky-debug-faces {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.pv-sky-debug-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.pv-sky-debug-label {
+  font-size: 0.6rem;
+  color: var(--text-secondary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: monospace;
+}
+
+.pv-sky-debug-sub {
+  color: var(--text-faint);
+}
+
+.pv-sky-debug-select {
+  width: 52px;
+  padding: 2px 3px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+  font-size: 0.6rem;
+  font-family: monospace;
+  cursor: pointer;
+  outline: none;
+}
+
+.pv-sky-debug-select:focus {
+  border-color: var(--accent);
+}
+
+.pv-sky-debug-select option {
+  background: #1a1a2e;
+  color: var(--text-primary);
+}
+
+.pv-sky-debug-flip {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 0.6rem;
+  transition: color 0.15s;
+}
+
+.pv-sky-debug-flip input {
+  display: none;
+}
+
+.pv-sky-debug-flip:has(input:checked) {
+  color: var(--accent-light);
+}
 </style>

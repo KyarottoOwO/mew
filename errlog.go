@@ -10,14 +10,31 @@ import (
 )
 
 const (
-	errLogMaxSize = 1 << 20 // rotate after 1 MB
+	errLogMaxSize = 1 << 20
 	errLogDateFmt = "2006-01-02 15:04:05"
 )
 
 var (
-	errLogMu sync.Mutex
+	errLogMu  sync.Mutex
 	errLogDir string
+	debugConsoleEnabled bool
 )
+
+const (
+	ansiReset   = "\033[0m"
+	ansiRed     = "\033[31m"
+	ansiGreen   = "\033[32m"
+	ansiYellow  = "\033[33m"
+	ansiCyan    = "\033[36m"
+	ansiGray    = "\033[90m"
+)
+
+func consoleLog(color, msg string) {
+	if !debugConsoleEnabled {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "%s%s%s\n", color, msg, ansiReset)
+}
 
 func getErrLogDir() string {
 	if errLogDir != "" {
@@ -33,11 +50,14 @@ func getErrLogDir() string {
 }
 
 func logError(msg string) {
+	ts := time.Now().Format(errLogDateFmt)
+	formatted := fmt.Sprintf("[%s] %s", ts, msg)
+	consoleLog(ansiRed, formatted)
+
 	errLogMu.Lock()
 	defer errLogMu.Unlock()
 
 	path := filepath.Join(getErrLogDir(), "errors.log")
-
 	rotateIfTooLarge(path)
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
@@ -46,8 +66,7 @@ func logError(msg string) {
 	}
 	defer f.Close()
 
-	ts := time.Now().Format(errLogDateFmt)
-	fmt.Fprintf(f, "[%s] %s\n", ts, msg)
+	fmt.Fprintln(f, formatted)
 }
 
 func rotateIfTooLarge(path string) {
@@ -70,11 +89,21 @@ func logErrorf(format string, args ...interface{}) {
 }
 
 func debugLog(msg string) {
+	ts := time.Now().Format(errLogDateFmt)
+	formatted := fmt.Sprintf("[%s] %s", ts, msg)
+
+	if strings.Contains(msg, "[ERROR]") {
+		consoleLog(ansiRed, formatted)
+	} else if strings.Contains(msg, "[WARN]") {
+		consoleLog(ansiYellow, formatted)
+	} else {
+		consoleLog(ansiGray, formatted)
+	}
+
 	errLogMu.Lock()
 	defer errLogMu.Unlock()
 
 	path := filepath.Join(getErrLogDir(), "debug.log")
-
 	rotateIfTooLarge(path)
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
@@ -83,8 +112,7 @@ func debugLog(msg string) {
 	}
 	defer f.Close()
 
-	ts := time.Now().Format(errLogDateFmt)
-	fmt.Fprintf(f, "[%s] %s\n", ts, msg)
+	fmt.Fprintln(f, formatted)
 }
 
 func debugLogf(format string, args ...interface{}) {

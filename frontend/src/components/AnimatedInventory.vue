@@ -3,6 +3,7 @@ import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { CreateAnimatedInventory, GetInstalledPacksDetailed, SetResourcePacksPath, SelectDirectory } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
 import { progressStore, startPort, updateFromEvent, finish, clearProgress } from '../utils/progressStore'
+import { parseBedrockCodes } from '../utils/formatCodes'
 
 const props = defineProps({ active: Boolean })
 
@@ -434,8 +435,8 @@ async function createPack() {
                 <div v-if="draftPacks.includes(p.name)" class="ai-pack-card-check">&#10003;</div>
               </div>
               <div class="ai-pack-card-info">
-                <div class="ai-pack-card-name">{{ p.name }}</div>
-                <div v-if="p.description" class="ai-pack-card-desc">{{ p.description }}</div>
+                <div class="ai-pack-card-name" v-html="parseBedrockCodes(p.name)"></div>
+                <div v-if="p.description" class="ai-pack-card-desc" v-html="parseBedrockCodes(p.description)"></div>
               </div>
             </div>
           </div>
@@ -892,7 +893,7 @@ async function createPack() {
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-line;
 }
 
 .ai-pack-card-desc {
@@ -900,7 +901,7 @@ async function createPack() {
   color: var(--text-dim);
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-line;
   margin-top: 0.15rem;
 }
 

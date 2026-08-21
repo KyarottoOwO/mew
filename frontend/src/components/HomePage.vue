@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { GetRecentPacks } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
+import { parseBedrockCodes } from '../utils/formatCodes'
 
 const props = defineProps({ homeAnimated: Boolean })
 const emit = defineEmits(['navigate', 'animated'])
@@ -76,7 +77,7 @@ onMounted(() => {
           <div v-for="(pack, i) in recentPacks" :key="i" class="recent-item">
             <div class="recent-info">
               <i class="fa fa-box-open recent-icon"></i>
-              <span class="recent-name">{{ pack.name }}</span>
+              <span class="recent-name" v-html="parseBedrockCodes(pack.name)"></span>
             </div>
           </div>
         </div>
@@ -186,7 +187,7 @@ onMounted(() => {
   color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-line;
 }
 
 .fade-in {
