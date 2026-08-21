@@ -125,6 +125,9 @@ function setLastSkyTex(tex) { lastSkyTex = tex }
 
 async function applySkyDebug() {
   if (!viewerInstance) return
+  if (viewerInstance.scene.background && viewerInstance.scene.background.dispose) {
+    viewerInstance.scene.background.dispose()
+  }
   const cubemap = await generateSkyCubemap(lastSkyTex)
   if (viewerInstance) viewerInstance.scene.background = cubemap
 }
@@ -224,10 +227,10 @@ async function generateSkyCubemap(skyTex) {
   const cubeFaces = faceMap.map((img, i) => {
     if (!img) return fallbacks[i]
     const c = document.createElement('canvas')
-    c.width = img.naturalWidth || size
-    c.height = img.naturalHeight || size
+    c.width = size
+    c.height = size
     const ctx = c.getContext('2d')
-    ctx.drawImage(img, 0, 0)
+    ctx.drawImage(img, 0, 0, size, size)
     return c
   })
 
@@ -458,6 +461,9 @@ watch(viewerRef, async (newRef) => {
       } catch {}
       const uri = customSkinURI.value || defaultSkinImg
       await viewerInstance.loadSkin(uri, { model: skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value })
+      if (viewerInstance.scene.background && viewerInstance.scene.background.dispose) {
+        viewerInstance.scene.background.dispose()
+      }
       viewerInstance.scene.background = await generateSkyCubemap(null)
     } else {
       setTimeout(tryGetViewer, 50)
@@ -524,7 +530,12 @@ async function loadPackData(packName) {
     selectedPackInfo.value = info
     setLastSkyTex(skyTex)
     const cubemap = await generateSkyCubemap(skyTex)
-    if (viewerInstance) viewerInstance.scene.background = cubemap
+    if (viewerInstance) {
+      if (viewerInstance.scene.background && viewerInstance.scene.background.dispose) {
+        viewerInstance.scene.background.dispose()
+      }
+      viewerInstance.scene.background = cubemap
+    }
     await applySkin(packName)
     await applyArmor(packName, selectedMaterial.value)
     await loadItems(packName, selectedMaterial.value)
