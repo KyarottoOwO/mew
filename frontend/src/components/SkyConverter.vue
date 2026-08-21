@@ -7,7 +7,18 @@ import { parseBedrockCodes } from '../utils/formatCodes'
 
 const props = defineProps({ active: Boolean })
 
-const mode = ref('panorama')
+const mode = ref('porter')
+
+const FACE_NAMES = ['Left (-X)', 'Front (+Z)', 'Right (+X)', 'Behind (-Z)', 'Top (+Y)', 'Bottom (-Y)']
+const FACE_KEYS = ['left', 'front', 'right', 'behind', 'top', 'bottom']
+const FILENAME_PATTERNS = [
+  [/\bcubemap[_-]?0\b/i, /\bleft\b/i, /\b-?x-?\b/i, /\bwest\b/i, /\b0\b/],
+  [/\bcubemap[_-]?1\b/i, /\bfront\b/i, /\b\+?z\+?\b/i, /\bnorth\b/i, /\b1\b/],
+  [/\bcubemap[_-]?2\b/i, /\bright\b/i, /\b\+?x\+?\b/i, /\beast\b/i, /\b2\b/],
+  [/\bcubemap[_-]?3\b/i, /\bbehind\b/i, /\b-?z-?\b/i, /\bsouth\b/i, /\b3\b/],
+  [/\bcubemap[_-]?4\b/i, /\btop\b/i, /\b\+?y\+?\b/i, /\bup\b/i, /\b4\b/],
+  [/\bcubemap[_-]?5\b/i, /\bbottom\b/i, /\b-?y-?\b/i, /\bdown\b/i, /\b5\b/],
+]
 
 const panoFile = ref(null)
 const panoName = ref('')
@@ -35,6 +46,7 @@ const spinnerClass = ref('ai-spinner')
 const progressDone = ref(false)
 const startedPort = ref(false)
 
+const faceDropZone = ref(null)
 const panoDropZone = ref(null)
 
 function formatSize(size) {
@@ -46,6 +58,84 @@ function popup(title, text, icon) {
     customClass: { popup: 'swal-custom-popup', confirmButton: 'custom-confirm-btn' },
     buttonsStyling: false
   }).fire({ title, text, icon, confirmButtonText: 'OK' })
+}
+
+function matchFileToFace(name) {
+  const lower = name.toLowerCase()
+  let best = -1
+  let bestScore = 0
+  for (let i = 0; i < 6; i++) {
+    let score = 0
+    for (const pat of FILENAME_PATTERNS[i]) {
+      if (pat.test(lower)) { score++; break }
+    }
+    if (score > bestScore) { bestScore = score; best = i }
+  }
+  return best
+}
+
+function handleFaceFiles(files) {
+  const valid = Array.from(files).filter(f => /\.(png|jpe?g)$/i.test(f.name))
+  if (!valid.length) {
+    popup('Error', 'No valid image files found (.png, .jpg, .jpeg).', 'error')
+    return
+  }
+  const assigned = [false, false, false, false, false, false]
+  for (const f of valid) {
+    const idx = matchFileToFace(f.name)
+    if (idx >= 0 && !assigned[idx]) {
+      faceFiles.value[idx] = f
+      faceNames.value[idx] = f.name
+      assigned[idx] = true
+    }
+  }
+  let slot = 0
+  for (const f of valid) {
+    if (assigned.includes(false)) {
+      while (slot < 6 && assigned[slot]) slot++
+      if (slot < 6) {
+        const idx = valid.indexOf(f)
+        if (idx >= 0 && !assigned[slot]) {
+          faceFiles.value[slot] = f
+          faceNames.value[slot] = f.name
+          assigned[slot] = true
+        }
+      }
+    }
+  }
+  if (!faceFiles.value.some(f => f !== null)) {
+    let s = 0
+    for (const f of valid) {
+      if (s < 6) {
+        faceFiles.value[s] = f
+        faceNames.value[s] = f.name
+        s++
+      }
+    }
+  }
+}
+
+function onFaceDrop(e) {
+  e.preventDefault()
+  faceDropZone.value?.classList.remove('drag-over')
+  handleFaceFiles(e.dataTransfer.files)
+}
+
+function onFaceDragOver(e) {
+  e.preventDefault()
+  faceDropZone.value?.classList.add('drag-over')
+}
+
+function onFaceDragLeave() {
+  faceDropZone.value?.classList.remove('drag-over')
+}
+
+function onFaceChange(e) {
+  handleFaceFiles(e.target.files)
+}
+
+function anyFacesLoaded() {
+  return faceFiles.value.some(f => f !== null)
 }
 
 function handlePano(selectedFile) {
@@ -79,48 +169,9 @@ function onPanoChange(e) {
   handlePano(e.target.files[0])
 }
 
-function cancelPano() {
-  panoFile.value = null
-  showPanoInfo.value = false
-}
-
-function handleFaceDrop(i, file) {
-  if (!file) return
-  if (!/\.(png|jpe?g)$/i.test(file.name)) {
-    popup('Error', 'Must be a .png, .jpg, or .jpeg file.', 'error')
-    return
-  }
-  faceFiles.value[i] = file
-  faceNames.value[i] = file.name
-}
-
-function onFaceDrop(i, e) {
-  e.preventDefault()
-  const zone = e.currentTarget
-  zone.classList.remove('drag-over')
-  handleFaceDrop(i, e.dataTransfer.files[0])
-}
-
-function onFaceDragOver(e) {
-  e.preventDefault()
-  e.currentTarget.classList.add('drag-over')
-}
-
-function onFaceDragLeave(e) {
-  e.currentTarget.classList.remove('drag-over')
-}
-
-function onFaceChange(i, e) {
-  handleFaceDrop(i, e.target.files[0])
-}
-
-function removeFace(i) {
-  faceFiles.value[i] = null
-  faceNames.value[i] = ''
-}
-
-function anyFacesLoaded() {
-  return faceFiles.value.some(f => f !== null)
+function clearFaces() {
+  faceFiles.value = [null, null, null, null, null, null]
+  faceNames.value = ['', '', '', '', '', '']
 }
 
 async function loadInstalledPacks() {
@@ -243,7 +294,7 @@ watch(() => props.active, (active) => {
 function cancelAll() {
   panoFile.value = null
   showPanoInfo.value = false
-  for (let i = 0; i < 6; i++) { faceFiles.value[i] = null; faceNames.value[i] = '' }
+  clearFaces()
 }
 
 async function createPack() {
@@ -264,7 +315,7 @@ async function createPack() {
       await CreateSkyPack(Array.from(new Uint8Array(buf)), panoFile.value.name, parseInt(faceSize.value), selectedPacks.value)
     } else {
       if (!anyFacesLoaded()) {
-        popup('Error', 'Please upload at least one face image.', 'error')
+        popup('Error', 'Please upload face images first.', 'error')
         startedPort.value = false
         clearProgress()
         showProgress.value = false
@@ -311,29 +362,32 @@ async function createPack() {
       </div>
 
       <p class="card-desc" v-if="mode === 'porter'">
-        Port an existing sky to Bedrock. Upload the 6 cubemap face images (in order: -X, +Z, +X, -Z, +Y, -Y) and they'll be packaged as Bedrock's overworld cubemap.
+        Port an existing sky to Bedrock. Drop all 6 cubemap face images at once — they'll be auto-sorted by filename.
       </p>
       <p class="card-desc" v-else>
-        Create a sky from a panoramic image. Upload a 2:1 equirectangular panorama (like Java resource pack skies) and it'll be projected into 6 cubemap faces.
+        Create a sky from a panoramic image. Upload a 2:1 equirectangular panorama and it'll be projected into 6 cubemap faces.
       </p>
 
       <div v-if="!showProgress">
-        <div v-if="mode === 'porter'" class="porter-faces">
-          <div class="face-grid">
+        <div v-if="mode === 'porter'">
+          <label ref="faceDropZone" class="drop-zone sky-drop"
+                 @drop.prevent="onFaceDrop" @dragover.prevent="onFaceDragOver" @dragleave="onFaceDragLeave">
+            <input type="file" accept=".png,.jpg,.jpeg" multiple class="hidden" @change="onFaceChange" />
+            <div v-if="!anyFacesLoaded()" class="drop-zone-inner">
+              <i class="fa fa-cloud-arrow-up drop-icon"></i>
+              <span class="drop-hint">Drop 6 cubemap faces here</span>
+              <span class="drop-sub">.png, .jpg, .jpeg &mdash; auto-sorted by filename</span>
+            </div>
+            <div v-else class="face-file-info">
+              <span class="face-file-name">{{ faceNames.filter(Boolean).length }} file(s) loaded</span>
+              <button class="face-remove" @click.prevent.stop="clearFaces">&times;</button>
+            </div>
+          </label>
+
+          <div v-if="anyFacesLoaded()" class="face-list">
             <div v-for="i in 6" :key="i-1" class="face-row">
-              <label class="face-drop" :class="{ loaded: faceFiles[i-1] }"
-                     @drop.prevent="onFaceDrop(i-1, $event)"
-                     @dragover.prevent="onFaceDragOver"
-                     @dragleave="onFaceDragLeave">
-                <input type="file" accept=".png,.jpg,.jpeg" class="hidden" @change="onFaceChange(i-1, $event)" />
-                <div v-if="!faceFiles[i-1]" class="face-drop-inner">
-                  <i class="fa fa-plus"></i>
-                </div>
-                <div v-else class="face-file-info">
-                  <span class="face-file-name">{{ faceNames[i-1] }}</span>
-                  <button class="face-remove" @click.prevent.stop="removeFace(i-1)">&times;</button>
-                </div>
-              </label>
+              <span class="face-label">{{ FACE_NAMES[i-1] }}</span>
+              <span class="face-filename" :class="{ missing: !faceFiles[i-1] }">{{ faceNames[i-1] || 'missing' }}</span>
               <select v-model.number="faceRotations[i-1]" class="face-select">
                 <option :value="0">0&deg;</option>
                 <option :value="90">90&deg;</option>
@@ -557,70 +611,16 @@ async function createPack() {
   margin-left: 1rem;
 }
 
-.porter-faces {
-  margin-bottom: 0.5rem;
-}
-
-.face-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-  margin-bottom: 0.75rem;
-}
-
-.face-row {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.face-drop {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px dashed var(--border-strong);
-  border-radius: 6px;
-  min-height: 36px;
-  cursor: pointer;
-  transition: all 0.15s;
-  background: var(--bg-surface);
-  overflow: hidden;
-}
-
-.face-drop:hover {
-  border-color: var(--accent);
-}
-
-.face-drop.loaded {
-  border-style: solid;
-  border-color: var(--border-default);
-}
-
-.face-drop-inner {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-dim);
-  font-size: 0.75rem;
-  padding: 0.25rem;
-}
-
 .face-file-info {
   display: flex;
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  padding: 0.25rem 0.5rem;
 }
 
 .face-file-name {
-  font-size: 0.7rem;
+  font-size: 0.875rem;
   color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
 }
 
 .face-remove {
@@ -628,7 +628,7 @@ async function createPack() {
   border: none;
   color: var(--text-dim);
   cursor: pointer;
-  font-size: 1rem;
+  font-size: 1.2rem;
   padding: 0 0.25rem;
   flex-shrink: 0;
 }
@@ -637,24 +637,60 @@ async function createPack() {
   color: #f87171;
 }
 
+.face-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.face-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+}
+
+.face-label {
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--text-dim);
+  width: 70px;
+  flex-shrink: 0;
+}
+
+.face-filename {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.face-filename.missing {
+  color: #f87171;
+  font-style: italic;
+}
+
 .face-select {
   width: 64px;
-  padding: 0.3rem 0.25rem;
+  padding: 0.2rem 0.25rem;
   border: 1px solid var(--border-default);
   border-radius: 4px;
   background: var(--bg-surface);
   color: var(--text-secondary);
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   cursor: pointer;
 }
 
 .face-flip {
   display: flex;
   align-items: center;
-  gap: 0.25rem;
+  gap: 0.2rem;
   cursor: pointer;
   color: var(--text-dim);
-  font-size: 0.75rem;
+  font-size: 0.7rem;
 }
 
 .face-flip input {
