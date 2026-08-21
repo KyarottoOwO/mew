@@ -9,6 +9,7 @@ import (
 	"image"
 	"image/color"
 	"image/gif"
+	_ "image/jpeg"
 	"image/png"
 	"io/fs"
 	"math"
@@ -272,6 +273,94 @@ func buildAnimatedPack(gifBytes []byte, fileName string, frameDuration string, o
 	return mcpackPath, nil
 }
 
+func buildStaticImagePack(imageBytes []byte, fileName string, overlayBytes []byte, useOverlay, transparentFill bool, fillColor, outDir, manifestDesc string) (string, error) {
+	img, _, err := image.Decode(bytes.NewReader(imageBytes))
+	if err != nil {
+		return "", fmt.Errorf("failed to decode image: %v", err)
+	}
+
+	fill := parseHexColor(fillColor)
+	packName := strings.TrimSuffix(fileName, filepath.Ext(fileName))
+	tempDir := getMewTempDir("anim_port_temp")
+	os.RemoveAll(tempDir)
+	os.MkdirAll(tempDir, os.ModePerm)
+	defer os.RemoveAll(tempDir)
+
+	bgDir := filepath.Join(tempDir, "textures", "animated_ui", "inventory_bg")
+	os.MkdirAll(bgDir, os.ModePerm)
+
+	canvas := fitFrameToCanvas(img, transparentFill, fill)
+
+	if err := writePNG(filepath.Join(bgDir, "inventory_vertical_flipbook.png"), buildFlipbook([]*image.RGBA{canvas})); err != nil {
+		return "", fmt.Errorf("failed to write flipbook: %v", err)
+	}
+
+	overlayDest := filepath.Join(bgDir, "inventory_overlay.png")
+	if useOverlay && len(overlayBytes) > 0 {
+		overlayImg, err := png.Decode(bytes.NewReader(overlayBytes))
+		if err != nil {
+			return "", fmt.Errorf("failed to read overlay png: %v", err)
+		}
+		resized := image.NewRGBA(image.Rect(0, 0, animFrameWidth, animFrameHeight))
+		xdraw.BiLinear.Scale(resized, resized.Bounds(), overlayImg, overlayImg.Bounds(), xdraw.Over, nil)
+		if err := writePNG(overlayDest, resized); err != nil {
+			return "", fmt.Errorf("failed to write overlay: %v", err)
+		}
+	} else {
+		asset, err := animatorAssets.ReadFile("animator_assets/textures/animated_ui/inventory_bg/inventory_overlay.png")
+		if err != nil {
+			return "", fmt.Errorf("failed to load default overlay: %v", err)
+		}
+		if err := os.WriteFile(overlayDest, asset, 0644); err != nil {
+			return "", fmt.Errorf("failed to write default overlay: %v", err)
+		}
+	}
+
+	if err := writePNG(filepath.Join(tempDir, "pack_icon.png"), canvas); err != nil {
+		return "", fmt.Errorf("failed to write pack icon: %v", err)
+	}
+
+	if err := copyEmbeddedAssets(tempDir); err != nil {
+		return "", fmt.Errorf("failed to copy pack assets: %v", err)
+	}
+
+	if err := writeGlobalVariables(tempDir, 1, "0.06"); err != nil {
+		return "", fmt.Errorf("failed to write global variables: %v", err)
+	}
+
+	manifest := map[string]interface{}{
+		"format_version": 1,
+		"header": map[string]interface{}{
+			"description":        manifestDesc,
+			"name":               packName,
+			"uuid":               uuid.New().String(),
+			"version":            []int{1, 0, 0},
+			"min_engine_version": []int{1, 12, 1},
+		},
+		"modules": []interface{}{
+			map[string]interface{}{
+				"description": manifestDesc,
+				"type":        "resources",
+				"uuid":        uuid.New().String(),
+				"version":     []int{1, 0, 0},
+			},
+		},
+	}
+	manifestData, err := json.MarshalIndent(manifest, "", "    ")
+	if err != nil {
+		return "", fmt.Errorf("failed to build manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "manifest.json"), manifestData, 0644); err != nil {
+		return "", fmt.Errorf("failed to write manifest: %v", err)
+	}
+
+	mcpackPath := filepath.Join(outDir, packName+".mcpack")
+	if err := zipDirToFile(tempDir, mcpackPath); err != nil {
+		return "", fmt.Errorf("failed to create mcpack: %v", err)
+	}
+	return mcpackPath, nil
+}
+
 func (a *App) CreateAnimatedInventory(gifBytes []byte, fileName string, frameDuration string, overlayBytes []byte, useOverlay, transparentFill bool, mergePacks []string, fillColor string) (string, error) {
 	a.logDebug(fmt.Sprintf("CreateAnimatedInventory: called, file=%s, size=%d, duration=%s, useOverlay=%v, transparent=%v, mergePacks=%v", fileName, len(gifBytes), frameDuration, useOverlay, transparentFill, mergePacks))
 
@@ -281,14 +370,13 @@ func (a *App) CreateAnimatedInventory(gifBytes []byte, fileName string, frameDur
 	defer a.releasePort()
 
 	if len(gifBytes) == 0 {
-		return "", fmt.Errorf("no gif data provided")
+		return "", fmt.Errorf("no file data provided")
 	}
-	if !strings.HasSuffix(strings.ToLower(fileName), ".gif") {
-		return "", fmt.Errorf("please provide a .gif file")
-	}
-	duration, err := strconv.ParseFloat(frameDuration, 64)
-	if err != nil || duration < 0.05 || duration > 0.09 {
-		return "", fmt.Errorf("frame duration must be between 0.05 and 0.09 seconds")
+	lower := strings.ToLower(fileName)
+	isGif := strings.HasSuffix(lower, ".gif")
+	isImage := strings.HasSuffix(lower, ".png") || strings.HasSuffix(lower, ".jpg") || strings.HasSuffix(lower, ".jpeg")
+	if !isGif && !isImage {
+		return "", fmt.Errorf("please provide a .gif, .png, .jpg, or .jpeg file")
 	}
 
 	desc := animManifestDescription
@@ -301,11 +389,21 @@ func (a *App) CreateAnimatedInventory(gifBytes []byte, fileName string, frameDur
 		outDir = a.getTempDir("mcpack")
 		os.MkdirAll(outDir, os.ModePerm)
 	}
-	a.emitProgress("Animating", "Processing GIF frames...", "info", fileName, 0, 0)
+	a.emitProgress("Animating", "Processing image...", "info", fileName, 0, 0)
 
-	mcpackPath, err := buildAnimatedPack(gifBytes, fileName, frameDuration, overlayBytes, useOverlay, transparentFill, fillColor, outDir, desc, func(completed, total int) {
-		a.emitProgress("Animating", fmt.Sprintf("Frame %d/%d", completed, total), "info", fileName, total, completed)
-	})
+	var mcpackPath string
+	var err error
+	if isGif {
+		duration, parseErr := strconv.ParseFloat(frameDuration, 64)
+		if parseErr != nil || duration < 0.05 || duration > 0.09 {
+			return "", fmt.Errorf("frame duration must be between 0.05 and 0.09 seconds")
+		}
+		mcpackPath, err = buildAnimatedPack(gifBytes, fileName, frameDuration, overlayBytes, useOverlay, transparentFill, fillColor, outDir, desc, func(completed, total int) {
+			a.emitProgress("Animating", fmt.Sprintf("Frame %d/%d", completed, total), "info", fileName, total, completed)
+		})
+	} else {
+		mcpackPath, err = buildStaticImagePack(gifBytes, fileName, overlayBytes, useOverlay, transparentFill, fillColor, outDir, desc)
+	}
 	if err != nil {
 		return "", err
 	}

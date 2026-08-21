@@ -11,6 +11,7 @@ const gifFile = ref(null)
 const gifName = ref('')
 const gifSize = ref('')
 const showGifInfo = ref(false)
+const isStaticImage = ref(false)
 
 const overlayFile = ref(null)
 const overlayName = ref('')
@@ -45,13 +46,16 @@ function formatSize(size) {
 
 function handleGif(selectedFile) {
   if (!selectedFile) return
-  if (!/\.gif$/i.test(selectedFile.name)) {
-    popup('Error', 'Must be a .gif file.', 'error')
+  const name = selectedFile.name.toLowerCase()
+  const isImage = /\.(png|jpe?g)$/i.test(name)
+  if (!/\.gif$/i.test(name) && !isImage) {
+    popup('Error', 'Must be a .gif, .png, .jpg, or .jpeg file.', 'error')
     return
   }
   gifFile.value = selectedFile
   gifName.value = selectedFile.name
   gifSize.value = formatSize(selectedFile.size)
+  isStaticImage.value = isImage
   showGifInfo.value = true
 }
 
@@ -107,6 +111,7 @@ function onOverlayChange(e) {
 function cancelGif() {
   gifFile.value = null
   showGifInfo.value = false
+  isStaticImage.value = false
 }
 
 function cancelOverlay() {
@@ -293,12 +298,12 @@ async function createPack() {
   <div class="page active-page animator-page">
     <div class="porter-card">
       <h2 class="card-title">Animated Inventory</h2>
-      <p class="card-desc">Turn a .gif into an animated inventory for Minecraft Bedrock.</p>
+      <p class="card-desc">Turn a .gif or image into an animated inventory for Minecraft Bedrock.</p>
 
       <div v-if="!showProgress">
         <label ref="gifDropZone" class="drop-zone"
                @drop="onGifDrop" @dragover="onGifDragOver" @dragleave="onGifDragLeave">
-          <input ref="gifUpload" type="file" accept=".gif" class="hidden" @change="onGifChange" />
+          <input ref="gifUpload" type="file" accept=".gif,.png,.jpg,.jpeg" class="hidden" @change="onGifChange" />
 
           <div v-if="!showGifInfo" class="drop-zone-inner">
             <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24"
@@ -307,7 +312,7 @@ async function createPack() {
               <polyline points="17 8 12 3 7 8"></polyline>
               <line x1="12" x2="12" y1="3" y2="15"></line>
             </svg>
-            <span class="drop-hint">Drop a .gif here</span>
+            <span class="drop-hint">Drop a .gif or image here</span>
           </div>
 
           <div v-else class="file-info-box">
@@ -340,7 +345,7 @@ async function createPack() {
           </div>
 
           <div class="ai-field-row">
-            <div class="ai-field">
+            <div v-if="!isStaticImage" class="ai-field">
               <label class="ai-label">Frame Duration</label>
               <select v-model="frameDuration" class="ai-select">
                 <option v-for="opt in durationOptions" :key="opt" :value="opt">{{ opt }}s</option>
@@ -365,7 +370,7 @@ async function createPack() {
           </div>
         </div>
 
-        <p class="card-desc mt-4">MCPE UI can only handle up to 40 frames max. Frame duration can be 0.05–0.09, any faster could cause crashes.</p>
+        <p v-if="!isStaticImage" class="card-desc mt-4">MCPE UI can only handle up to 40 frames max. Frame duration can be 0.05–0.09, any faster could cause crashes.</p>
 
         <div class="ai-actions">
           <button class="btn-cancel" @click="cancelGif">Clear</button>
