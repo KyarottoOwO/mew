@@ -35,12 +35,12 @@ const isDebug = ref(false)
 
 const SKY_DEBUG_KEY = 'mew-sky-debug-config'
 const skyDebugFaces = reactive({
-  0: { rotation: 270, flipH: false },
+  0: { rotation: 0,   flipH: false },
   1: { rotation: 0,   flipH: false },
-  2: { rotation: 90,  flipH: false },
-  3: { rotation: 180, flipH: false },
-  4: { rotation: 0,   flipH: false },
-  5: { rotation: 0,   flipH: false },
+  2: { rotation: 0,   flipH: false },
+  3: { rotation: 0,   flipH: false },
+  4: { rotation: 90,  flipH: false },
+  5: { rotation: 270, flipH: false },
 })
 const showSkyDebug = ref(false)
 
@@ -88,12 +88,12 @@ function saveSkyDebugConfig() {
 }
 
 function resetSkyDebugConfig() {
-  skyDebugFaces[0].rotation = 270; skyDebugFaces[0].flipH = false
+  skyDebugFaces[0].rotation = 0;   skyDebugFaces[0].flipH = false
   skyDebugFaces[1].rotation = 0;   skyDebugFaces[1].flipH = false
-  skyDebugFaces[2].rotation = 90;  skyDebugFaces[2].flipH = false
-  skyDebugFaces[3].rotation = 180; skyDebugFaces[3].flipH = false
-  skyDebugFaces[4].rotation = 0;   skyDebugFaces[4].flipH = false
-  skyDebugFaces[5].rotation = 0;   skyDebugFaces[5].flipH = false
+  skyDebugFaces[2].rotation = 0;   skyDebugFaces[2].flipH = false
+  skyDebugFaces[3].rotation = 0;   skyDebugFaces[3].flipH = false
+  skyDebugFaces[4].rotation = 90;  skyDebugFaces[4].flipH = false
+  skyDebugFaces[5].rotation = 270; skyDebugFaces[5].flipH = false
   saveSkyDebugConfig()
   applySkyDebug()
 }
