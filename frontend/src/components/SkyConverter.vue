@@ -1,13 +1,11 @@
 <script setup>
 import { ref, watch, onMounted, onUnmounted } from 'vue'
-import { CreateSkyPack, CreateSkyPackFromFaces, GetInstalledPacksDetailed, SetResourcePacksPath, SelectDirectory } from '../../wailsjs/go/main/App'
+import { CreateSkyPack, GetInstalledPacksDetailed, SetResourcePacksPath, SelectDirectory } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
 import { progressStore, startPort, updateFromEvent, finish, clearProgress } from '../utils/progressStore'
 import { parseBedrockCodes } from '../utils/formatCodes'
 
 const props = defineProps({ active: Boolean })
-
-const mode = ref('porter')
 
 const panoFile = ref(null)
 const panoName = ref('')
@@ -15,11 +13,6 @@ const panoSize = ref('')
 const showPanoInfo = ref(false)
 const faceSize = ref('1024')
 const faceOptions = ['512', '1024', '2048']
-
-const faceFiles = ref([null, null, null, null, null, null])
-const faceNames = ref(['', '', '', '', '', ''])
-const faceRotations = ref([0, 0, 0, 0, 90, 270])
-const faceFlips = ref([false, false, false, false, false, false])
 
 const selectedPacks = ref([])
 const draftPacks = ref([])
@@ -35,7 +28,6 @@ const spinnerClass = ref('ai-spinner')
 const progressDone = ref(false)
 const startedPort = ref(false)
 
-const faceDropZone = ref(null)
 const panoDropZone = ref(null)
 
 function formatSize(size) {
@@ -47,42 +39,6 @@ function popup(title, text, icon) {
     customClass: { popup: 'swal-custom-popup', confirmButton: 'custom-confirm-btn' },
     buttonsStyling: false
   }).fire({ title, text, icon, confirmButtonText: 'OK' })
-}
-
-function handleFaceFiles(files) {
-  const valid = Array.from(files).filter(f => /\.(png|jpe?g)$/i.test(f.name))
-  if (!valid.length) {
-    popup('Error', 'No valid image files found (.png, .jpg, .jpeg).', 'error')
-    return
-  }
-  clearFaces()
-  for (let i = 0; i < Math.min(valid.length, 6); i++) {
-    faceFiles.value[i] = valid[i]
-    faceNames.value[i] = valid[i].name
-  }
-}
-
-function onFaceDrop(e) {
-  e.preventDefault()
-  faceDropZone.value?.classList.remove('drag-over')
-  handleFaceFiles(e.dataTransfer.files)
-}
-
-function onFaceDragOver(e) {
-  e.preventDefault()
-  faceDropZone.value?.classList.add('drag-over')
-}
-
-function onFaceDragLeave() {
-  faceDropZone.value?.classList.remove('drag-over')
-}
-
-function onFaceChange(e) {
-  handleFaceFiles(e.target.files)
-}
-
-function anyFacesLoaded() {
-  return faceFiles.value.some(f => f !== null)
 }
 
 function handlePano(selectedFile) {
@@ -114,11 +70,6 @@ function onPanoDragLeave() {
 
 function onPanoChange(e) {
   handlePano(e.target.files[0])
-}
-
-function clearFaces() {
-  faceFiles.value = [null, null, null, null, null, null]
-  faceNames.value = ['', '', '', '', '', '']
 }
 
 async function loadInstalledPacks() {
@@ -241,7 +192,6 @@ watch(() => props.active, (active) => {
 function cancelAll() {
   panoFile.value = null
   showPanoInfo.value = false
-  clearFaces()
 }
 
 async function createPack() {
@@ -250,40 +200,15 @@ async function createPack() {
   startedPort.value = true
   startPort('skyconv', 'Starting...')
   try {
-    if (mode.value === 'panorama') {
-      if (!panoFile.value) {
-        popup('Error', 'Please upload a panoramic image first.', 'error')
-        startedPort.value = false
-        clearProgress()
-        showProgress.value = false
-        return
-      }
-      const buf = await panoFile.value.arrayBuffer()
-      await CreateSkyPack(Array.from(new Uint8Array(buf)), panoFile.value.name, parseInt(faceSize.value), selectedPacks.value)
-    } else {
-      if (!anyFacesLoaded()) {
-        popup('Error', 'Please upload face images first.', 'error')
-        startedPort.value = false
-        clearProgress()
-        showProgress.value = false
-        return
-      }
-      const faceDataArr = []
-      const rotArr = []
-      const flipArr = []
-      for (let i = 0; i < 6; i++) {
-        const f = faceFiles.value[i]
-        if (f) {
-          const buf = await f.arrayBuffer()
-          faceDataArr.push(Array.from(new Uint8Array(buf)))
-        } else {
-          faceDataArr.push([])
-        }
-        rotArr.push(faceRotations.value[i])
-        flipArr.push(faceFlips.value[i])
-      }
-      await CreateSkyPackFromFaces(faceDataArr, rotArr, flipArr, selectedPacks.value)
+    if (!panoFile.value) {
+      popup('Error', 'Please upload a panoramic image first.', 'error')
+      startedPort.value = false
+      clearProgress()
+      showProgress.value = false
+      return
     }
+    const buf = await panoFile.value.arrayBuffer()
+    await CreateSkyPack(Array.from(new Uint8Array(buf)), panoFile.value.name, parseInt(faceSize.value), selectedPacks.value)
   } catch (err) {
     console.error('[SkyConverter] createPack error:', err)
     popup('Error', err.toString(), 'error')
@@ -299,66 +224,34 @@ async function createPack() {
     <div class="porter-card skyconv-card">
       <h2 class="card-title"><i class="fa fa-cloud-sun" style="margin-right:0.5rem"></i>Sky Converter</h2>
 
-      <div class="skyconv-mode-toggle">
-        <button :class="['mode-tab', mode === 'porter' ? 'active' : '']" @click="mode = 'porter'">
-          <i class="fa fa-puzzle-piece"></i> Port Sky
-        </button>
-        <button :class="['mode-tab', mode === 'panorama' ? 'active' : '']" @click="mode = 'panorama'">
-          <i class="fa fa-image"></i> Make Sky
-        </button>
-      </div>
-
-      <p class="card-desc" v-if="mode === 'porter'">
-        Port an existing sky to Bedrock. Drop 6 cubemap face images (in order: -X, +Z, +X, -Z, +Y, -Y).
-      </p>
-      <p class="card-desc" v-else>
-        Create a sky from a panoramic image. Upload a 2:1 equirectangular panorama and it'll be projected into 6 cubemap faces.
+      <p class="card-desc">
+        Create a Bedrock sky from a panoramic image. Upload a 2:1 equirectangular panorama and it'll be projected into 6 cubemap faces.
       </p>
 
       <div v-if="!showProgress">
-        <div v-if="mode === 'porter'">
-          <label ref="faceDropZone" class="drop-zone sky-drop"
-                 @drop.prevent="onFaceDrop" @dragover.prevent="onFaceDragOver" @dragleave="onFaceDragLeave">
-            <input type="file" accept=".png,.jpg,.jpeg" multiple class="hidden" @change="onFaceChange" />
-            <div v-if="!anyFacesLoaded()" class="drop-zone-inner">
-              <i class="fa fa-cloud-arrow-up drop-icon"></i>
-              <span class="drop-hint">Drop 6 cubemap face images here</span>
-              <span class="drop-sub">.png, .jpg, .jpeg &mdash; in order: -X, +Z, +X, -Z, +Y, -Y</span>
+        <label ref="panoDropZone" class="drop-zone sky-drop"
+               @drop="onPanoDrop" @dragover="onPanoDragOver" @dragleave="onPanoDragLeave">
+          <input type="file" accept=".png,.jpg,.jpeg" class="hidden" @change="onPanoChange" />
+          <div v-if="!showPanoInfo" class="drop-zone-inner">
+            <i class="fa fa-cloud-arrow-up drop-icon"></i>
+            <span class="drop-hint">Drop a panoramic image here</span>
+            <span class="drop-sub">.png, .jpg, .jpeg</span>
+          </div>
+          <div v-else class="file-info-box">
+            <div class="ai-row">
+              <p class="ai-name">{{ panoName }}</p>
+              <p class="ai-size">{{ panoSize }}</p>
             </div>
-            <div v-else class="file-info-box">
-              <div class="ai-row">
-                <p class="ai-name">{{ faceNames.filter(Boolean).length }} face(s) loaded</p>
-                <button class="face-remove" @click.prevent.stop="clearFaces">&times;</button>
-              </div>
-            </div>
-          </label>
-        </div>
+          </div>
+        </label>
 
-        <div v-else>
-          <label ref="panoDropZone" class="drop-zone sky-drop"
-                 @drop="onPanoDrop" @dragover="onPanoDragOver" @dragleave="onPanoDragLeave">
-            <input type="file" accept=".png,.jpg,.jpeg" class="hidden" @change="onPanoChange" />
-            <div v-if="!showPanoInfo" class="drop-zone-inner">
-              <i class="fa fa-cloud-arrow-up drop-icon"></i>
-              <span class="drop-hint">Drop a panoramic image here</span>
-              <span class="drop-sub">.png, .jpg, .jpeg</span>
-            </div>
-            <div v-else class="file-info-box">
-              <div class="ai-row">
-                <p class="ai-name">{{ panoName }}</p>
-                <p class="ai-size">{{ panoSize }}</p>
-              </div>
-            </div>
-          </label>
-
-          <div class="ai-fields">
-            <div class="ai-field">
-              <label class="ai-label">Face Resolution</label>
-              <div class="mode-tabs">
-                <button v-for="opt in faceOptions" :key="opt"
-                        :class="['mode-tab', faceSize === opt ? 'active' : '']"
-                        @click="faceSize = opt">{{ opt }}px</button>
-              </div>
+        <div class="ai-fields">
+          <div class="ai-field">
+            <label class="ai-label">Face Resolution</label>
+            <div class="mode-tabs">
+              <button v-for="opt in faceOptions" :key="opt"
+                      :class="['mode-tab', faceSize === opt ? 'active' : '']"
+                      @click="faceSize = opt">{{ opt }}px</button>
             </div>
           </div>
         </div>
@@ -459,20 +352,6 @@ async function createPack() {
   color: var(--accent);
 }
 
-.skyconv-mode-toggle {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 0.75rem;
-}
-
-.skyconv-mode-toggle .mode-tab {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.4rem;
-}
-
 .card-desc {
   font-size: 0.875rem;
   color: var(--text-desc);
@@ -541,96 +420,6 @@ async function createPack() {
   color: var(--text-dim);
   flex-shrink: 0;
   margin-left: 1rem;
-}
-
-.face-file-info {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-}
-
-.face-file-name {
-  font-size: 0.875rem;
-  color: var(--text-secondary);
-}
-
-.face-remove {
-  background: none;
-  border: none;
-  color: var(--text-dim);
-  cursor: pointer;
-  font-size: 1.2rem;
-  padding: 0 0.25rem;
-  flex-shrink: 0;
-}
-
-.face-remove:hover {
-  color: #f87171;
-}
-
-.face-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  margin-bottom: 0.75rem;
-}
-
-.face-row {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.25rem 0;
-}
-
-.face-label {
-  font-size: 0.7rem;
-  font-weight: 500;
-  color: var(--text-dim);
-  width: 70px;
-  flex-shrink: 0;
-}
-
-.face-filename {
-  font-size: 0.7rem;
-  color: var(--text-secondary);
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.face-filename.missing {
-  color: #f87171;
-  font-style: italic;
-}
-
-.face-select {
-  width: 64px;
-  padding: 0.2rem 0.25rem;
-  border: 1px solid var(--border-default);
-  border-radius: 4px;
-  background: var(--bg-surface);
-  color: var(--text-secondary);
-  font-size: 0.7rem;
-  cursor: pointer;
-}
-
-.face-flip {
-  display: flex;
-  align-items: center;
-  gap: 0.2rem;
-  cursor: pointer;
-  color: var(--text-dim);
-  font-size: 0.7rem;
-}
-
-.face-flip input {
-  cursor: pointer;
-}
-
-.face-flip:has(input:checked) {
-  color: var(--accent);
 }
 
 .ai-fields {

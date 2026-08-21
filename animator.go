@@ -72,6 +72,17 @@ func fitFrameToCanvas(src image.Image, transparent bool, fill color.RGBA) *image
 	scaled := image.NewRGBA(image.Rect(0, 0, newW, newH))
 	xdraw.BiLinear.Scale(scaled, scaled.Bounds(), src, src.Bounds(), xdraw.Over, nil)
 
+	bounds := scaled.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			p := scaled.RGBAAt(x, y)
+			if p.A > 0 {
+				p.A = 255
+				scaled.SetRGBA(x, y, p)
+			}
+		}
+	}
+
 	offX := (animFrameWidth - newW) / 2
 	offY := (animFrameHeight - newH) / 2
 	xdraw.Draw(canvas, image.Rect(offX, offY, offX+newW, offY+newH), scaled, image.Point{}, xdraw.Over)
