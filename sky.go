@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	stripjsoncomments "github.com/trapcodeio/go-strip-json-comments"
 	xdraw "golang.org/x/image/draw"
 )
 
@@ -118,6 +119,21 @@ func sampleBilinear(src image.Image, bounds image.Rectangle, u, v float64) (uint
 	return r, g, b, a
 }
 
+func writeSkyGlobalVars(dir string, rotations [6]int, flips [6]bool) error {
+	gv := map[string]interface{}{}
+	for i := 0; i < 6; i++ {
+		gv[fmt.Sprintf("%d", i)] = map[string]interface{}{
+			"rotation": rotations[i],
+			"flipH":    flips[i],
+		}
+	}
+	data, err := json.MarshalIndent(gv, "", "    ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal global vars: %v", err)
+	}
+	return os.WriteFile(filepath.Join(dir, "_global_variables.json"), data, 0644)
+}
+
 func buildSkyPack(imageBytes []byte, fileName string, faceSize int, outDir, manifestDesc string) (string, error) {
 	img, _, err := image.Decode(bytes.NewReader(imageBytes))
 	if err != nil {
@@ -145,6 +161,12 @@ func buildSkyPack(imageBytes []byte, fileName string, faceSize int, outDir, mani
 		if err := os.WriteFile(filepath.Join(cubemapDir, name), buf.Bytes(), 0644); err != nil {
 			return "", fmt.Errorf("failed to write face %s: %v", name, err)
 		}
+	}
+
+	skyRotations := [6]int{0, 0, 0, 0, 90, 270}
+	skyFlips := [6]bool{false, false, false, false, false, false}
+	if err := writeSkyGlobalVars(tempDir, skyRotations, skyFlips); err != nil {
+		return "", fmt.Errorf("failed to write global vars: %v", err)
 	}
 
 	bounds := img.Bounds()
@@ -328,6 +350,10 @@ func buildSkyPackFromFaces(faceData [6][]byte, rotations [6]int, flips [6]bool, 
 	}
 	if err := os.WriteFile(filepath.Join(tempDir, "manifest.json"), manifestData, 0644); err != nil {
 		return "", fmt.Errorf("failed to write manifest: %v", err)
+	}
+
+	if err := writeSkyGlobalVars(tempDir, rotations, flips); err != nil {
+		return "", fmt.Errorf("failed to write global vars: %v", err)
 	}
 
 	mcpackPath := filepath.Join(outDir, packName+".mcpack")
@@ -527,8 +553,31 @@ func (a *App) mergeSkyPack(mcpackPath string, packNames []string) error {
 			copied++
 			return nil
 		})
+
+		srcGV := filepath.Join(extractDir, "_global_variables.json")
+		dstGV := filepath.Join(destDir, "_global_variables.json")
+		if srcBytes, err := os.ReadFile(srcGV); err == nil {
+			var srcVars map[string]interface{}
+			if err := json.Unmarshal(srcBytes, &srcVars); err == nil {
+				var dstVars map[string]interface{}
+				if dstBytes, err := os.ReadFile(dstGV); err == nil {
+					stripped := stripjsoncomments.Strip(string(dstBytes))
+					json.Unmarshal([]byte(stripped), &dstVars)
+				}
+				if dstVars == nil {
+					dstVars = map[string]interface{}{}
+				}
+				for k, v := range srcVars {
+					dstVars[k] = v
+				}
+				if mergedBytes, err := json.MarshalIndent(dstVars, "", "    "); err == nil {
+					os.WriteFile(dstGV, mergedBytes, 0644)
+				}
+			}
+		}
+
 		merged++
-		a.logDebug(fmt.Sprintf("mergeSkyPack: copied %d cubemap faces into %s", copied, destDir))
+		a.logDebug(fmt.Sprintf("mergeSkyPack: copied %d cubemap faces + global vars into %s", copied, destDir))
 	}
 
 	if merged == 0 {
