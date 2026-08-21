@@ -7,6 +7,8 @@ import { GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackArmo
 import defaultSkinImg from '../assets/default-skin.png'
 import { parseBedrockCodes } from '../utils/formatCodes'
 
+const props = defineProps({ active: Boolean })
+
 const packList = ref([])
 const packsPath = ref('')
 const loading = ref(true)
@@ -659,6 +661,10 @@ onMounted(async () => {
   try { isDebug.value = await IsDebug() } catch {}
   loadSkyDebugConfig()
   await loadAllPacks()
+})
+
+watch(() => props.active, (val) => {
+  if (val) loadAllPacks()
 })
 </script>
 
