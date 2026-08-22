@@ -13,6 +13,14 @@ const panoSize = ref('')
 const showPanoInfo = ref(false)
 const faceSize = ref('1024')
 const faceOptions = ['512', '1024', '2048']
+const skyMode = ref('panorama')
+const modeOptions = [
+  { value: 'panorama', label: 'Make a Sky', desc: 'You take an image and turn it into a minecraft bedrock sky.' },
+  { value: 'cross_a', label: 'Port a Sky', desc: 'You take a java sky and turn it into a minecraft bedrock sky.' }
+]
+function isCross() {
+  return skyMode.value.startsWith('cross')
+}
 
 const selectedPacks = ref([])
 const draftPacks = ref([])
@@ -201,14 +209,15 @@ async function createPack() {
   startPort('skyconv', 'Starting...')
   try {
     if (!panoFile.value) {
-      popup('Error', 'Please upload a panoramic image first.', 'error')
+      popup('Error', 'Add a sky image first', 'error')
       startedPort.value = false
       clearProgress()
       showProgress.value = false
       return
     }
     const buf = await panoFile.value.arrayBuffer()
-    await CreateSkyPack(Array.from(new Uint8Array(buf)), panoFile.value.name, parseInt(faceSize.value), selectedPacks.value)
+    const mode = isCross() ? 'cross' : skyMode.value
+    await CreateSkyPack(Array.from(new Uint8Array(buf)), panoFile.value.name, parseInt(faceSize.value), selectedPacks.value, mode, null)
   } catch (err) {
     console.error('[SkyConverter] createPack error:', err)
     popup('Error', err.toString(), 'error')
@@ -225,16 +234,26 @@ async function createPack() {
       <h2 class="card-title"><i class="fa fa-cloud-sun" style="margin-right:0.5rem"></i>Sky Converter</h2>
 
       <p class="card-desc">
-        Create a Bedrock sky from a panoramic image. Upload a 2:1 equirectangular panorama and it'll be projected into 6 cubemap faces.
+        {{ modeOptions.find(m => m.value === skyMode)?.desc || 'Create a Bedrock sky from an image.' }}
       </p>
 
       <div v-if="!showProgress">
+        <div class="ai-fields">
+          <div class="ai-field">
+            <label class="ai-label">Mode</label>
+            <div class="mode-tabs">
+              <button v-for="opt in modeOptions" :key="opt.value"
+                      :class="['mode-tab', skyMode === opt.value ? 'active' : '']"
+                      @click="skyMode = opt.value">{{ opt.label }}</button>
+            </div>
+          </div>
+        </div>
         <label ref="panoDropZone" class="drop-zone sky-drop"
                @drop="onPanoDrop" @dragover="onPanoDragOver" @dragleave="onPanoDragLeave">
           <input type="file" accept=".png,.jpg,.jpeg" class="hidden" @change="onPanoChange" />
           <div v-if="!showPanoInfo" class="drop-zone-inner">
             <i class="fa fa-cloud-arrow-up drop-icon"></i>
-            <span class="drop-hint">Drop a panoramic image here</span>
+            <span class="drop-hint">{{ isCross() ? 'Drop a java sky image here' : 'Drop an image here' }}</span>
             <span class="drop-sub">.png, .jpg, .jpeg</span>
           </div>
           <div v-else class="file-info-box">
@@ -245,9 +264,9 @@ async function createPack() {
           </div>
         </label>
 
-        <div class="ai-fields">
+        <div v-if="skyMode === 'panorama'" class="ai-fields">
           <div class="ai-field">
-            <label class="ai-label">Face Resolution</label>
+            <label class="ai-label">Sky Quality</label>
             <div class="mode-tabs">
               <button v-for="opt in faceOptions" :key="opt"
                       :class="['mode-tab', faceSize === opt ? 'active' : '']"

@@ -71,6 +71,20 @@ onMounted(async () => {
 
         <div class="tool-card">
           <div class="tool-card-header">
+            <i class="fa fa-cloud-sun tool-icon"></i>
+            <h3>Sky Converter</h3>
+          </div>
+          <p>
+            Turn images into custom skies for Minecraft Bedrock.
+            <strong>Make a Sky</strong> takes a 360&deg; sky image and builds the whole sky pack for you.
+            <strong>Port a Sky</strong> takes a Java sky image and cuts it into the faces Bedrock needs.
+            Pick your quality (512px to 2048px) and create a <code>.mcpack</code>, or merge it straight
+            into packs you already have installed.
+          </p>
+        </div>
+
+        <div class="tool-card">
+          <div class="tool-card-header">
             <i class="fa fa-palette tool-icon"></i>
             <h3>Recolor Tool</h3>
           </div>

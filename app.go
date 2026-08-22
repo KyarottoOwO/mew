@@ -259,6 +259,23 @@ func (a *App) GetInstalledPacks() ResourcePacksInfo {
 	return info
 }
 
+func (a *App) DeleteInstalledPack(packName string) error {
+	path := a.getStringSetting("resourcePacksPath")
+	if path == "" {
+		path = a.getDefaultResourcePacksPath()
+	}
+	if packName == "" || strings.Contains(packName, "..") || strings.ContainsAny(packName, `\/`) {
+		return fmt.Errorf("invalid pack name")
+	}
+	packDir := filepath.Join(path, packName)
+	st, err := os.Stat(packDir)
+	if err != nil || !st.IsDir() {
+		return fmt.Errorf("pack not found: %s", packName)
+	}
+	a.logDebug(fmt.Sprintf("DeleteInstalledPack: removing %s", packDir))
+	return os.RemoveAll(packDir)
+}
+
 type PackListEntry struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
@@ -531,6 +548,19 @@ func (a *App) emitFinished(title, message, icon string) {
 	})
 }
 
+func cleanPackName(name string) string {
+	base := strings.TrimSpace(name)
+	for {
+		ext := filepath.Ext(base)
+		switch strings.ToLower(ext) {
+		case ".zip", ".rar":
+			base = strings.TrimSuffix(base, ext)
+		default:
+			return base
+		}
+	}
+}
+
 func buildMcpackBytes(zipBytes []byte, fileName string, manifestDesc string) ([]byte, error) {
 	reader, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
 	if err != nil {
@@ -564,20 +594,48 @@ func buildMcpackBytes(zipBytes []byte, fileName string, manifestDesc string) ([]
 			return nil, fmt.Errorf("failed to create file in zip: %v", err)
 		}
 
-		if manifestDesc != "" && strings.EqualFold(file.Name, "manifest.json") {
+		if strings.EqualFold(file.Name, "manifest.json") {
 			var manifest map[string]interface{}
 			if json.Unmarshal(data, &manifest) == nil {
-				manifest["description"] = manifestDesc
-				if header, ok := manifest["header"].(map[string]interface{}); ok {
-					header["description"] = manifestDesc
+				changed := false
+				if manifestDesc != "" {
+					manifest["description"] = manifestDesc
+					changed = true
 				}
-				if modules, ok := manifest["modules"].([]interface{}); ok && len(modules) > 0 {
-					if mod, ok := modules[0].(map[string]interface{}); ok {
-						mod["description"] = manifestDesc
+				if header, ok := manifest["header"].(map[string]interface{}); ok {
+					if name, ok := header["name"].(string); ok && name != "" {
+						if cleaned := cleanPackName(name); cleaned != "" && cleaned != name {
+							header["name"] = cleaned
+							changed = true
+						}
+					}
+					if manifestDesc != "" {
+						header["description"] = manifestDesc
+						changed = true
 					}
 				}
-				if updated, err := json.MarshalIndent(manifest, "", "  "); err == nil {
-					data = updated
+				if modules, ok := manifest["modules"].([]interface{}); ok {
+					for _, m := range modules {
+						mod, ok := m.(map[string]interface{})
+						if !ok {
+							continue
+						}
+						if name, ok := mod["name"].(string); ok && name != "" {
+							if cleaned := cleanPackName(name); cleaned != "" && cleaned != name {
+								mod["name"] = cleaned
+								changed = true
+							}
+						}
+						if manifestDesc != "" {
+							mod["description"] = manifestDesc
+							changed = true
+						}
+					}
+				}
+				if changed {
+					if updated, err := json.MarshalIndent(manifest, "", "  "); err == nil {
+						data = updated
+					}
 				}
 			}
 		}

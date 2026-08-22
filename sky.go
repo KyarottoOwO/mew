@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	stripjsoncomments "github.com/trapcodeio/go-strip-json-comments"
 	xdraw "golang.org/x/image/draw"
 )
 
@@ -119,22 +118,137 @@ func sampleBilinear(src image.Image, bounds image.Rectangle, u, v float64) (uint
 	return r, g, b, a
 }
 
-func writeSkyGlobalVars(dir string, rotations [6]int, flips [6]bool) error {
-	gv := map[string]interface{}{}
-	for i := 0; i < 6; i++ {
-		gv[fmt.Sprintf("%d", i)] = map[string]interface{}{
-			"rotation": rotations[i],
-			"flipH":    flips[i],
+func cropCrossToCubemap(src image.Image, mode string, customMap [][2]int) [6]*image.RGBA {
+	bounds := src.Bounds()
+	srcW := bounds.Dx()
+	srcH := bounds.Dy()
+
+	faceSize := 0
+	is3x2 := false
+
+	// Try 4x3 layout (standard cross)
+	if srcH >= 3 && srcW >= 4 {
+		fs := srcH / 3
+		if fs*3 == srcH && fs*4 == srcW {
+			faceSize = fs
 		}
 	}
-	data, err := json.MarshalIndent(gv, "", "    ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal global vars: %v", err)
+	// Try 3x2 layout
+	if faceSize == 0 && srcH >= 2 && srcW >= 3 {
+		fs := srcH / 2
+		if fs*2 == srcH && fs*3 == srcW {
+			faceSize = fs
+			is3x2 = true
+		}
 	}
-	return os.WriteFile(filepath.Join(dir, "_global_variables.json"), data, 0644)
+
+	var faces [6]*image.RGBA
+	var crossMap [6][2]int
+	if mode == "custom" && len(customMap) == 6 {
+		for i := 0; i < 6; i++ {
+			crossMap[i] = customMap[i]
+		}
+	} else if is3x2 {
+		// 3x2 layout (port sky, e.g. 3072x2048 with 1024px faces):
+		//   col0,row0 = bottom(5)   col1,row0 = top(4)   col2,row0 = side
+		//   col0,row1 = side        col1,row1 = side     col2,row1 = side
+		if mode == "cross_b" {
+			// Sides B: mirrored horizon
+			crossMap = [6][2]int{
+				{2, 1}, // 0 = left
+				{2, 0}, // 1 = front
+				{1, 1}, // 2 = right
+				{0, 1}, // 3 = behind
+				{1, 0}, // 4 = top
+				{0, 0}, // 5 = bottom
+			}
+		} else if mode == "cross_c" {
+			// Sides C: A rotated 90 degrees (the "closest" one)
+			crossMap = [6][2]int{
+				{1, 1}, // 0 = left
+				{2, 0}, // 1 = front
+				{2, 1}, // 2 = right
+				{0, 1}, // 3 = behind
+				{1, 0}, // 4 = top
+				{0, 0}, // 5 = bottom
+			}
+		} else if mode == "cross_e" {
+			// Sides E: like C but left/front swapped
+			crossMap = [6][2]int{
+				{2, 0}, // 0 = left
+				{1, 1}, // 1 = front
+				{2, 1}, // 2 = right
+				{0, 1}, // 3 = behind
+				{1, 0}, // 4 = top
+				{0, 0}, // 5 = bottom
+			}
+		} else if mode == "cross_d" {
+			// Sides D: A rotated 270 degrees
+			crossMap = [6][2]int{
+				{2, 1}, // 0 = left
+				{0, 1}, // 1 = front
+				{1, 1}, // 2 = right
+				{2, 0}, // 3 = behind
+				{1, 0}, // 4 = top
+				{0, 0}, // 5 = bottom
+			}
+		} else {
+			// Default (confirmed working):
+			//   left=T5 front=T6 right=T3 behind=T4 top=T2 bottom=T1
+			crossMap = [6][2]int{
+				{1, 1}, // 0 = left
+				{2, 1}, // 1 = front
+				{2, 0}, // 2 = right
+				{0, 1}, // 3 = behind
+				{1, 0}, // 4 = top
+				{0, 0}, // 5 = bottom
+			}
+		}
+	} else {
+		// 4x3 layout (standard cross):
+		//   col0,row1 = left(0)  col1,row0 = top(4)  col2,row1 = right(2)  col3,row1 = behind(3)
+		//   col1,row1 = front(1)
+		//   col1,row2 = bottom(5)
+		crossMap = [6][2]int{
+			{0, 1}, // 0 = left
+			{1, 1}, // 1 = front
+			{2, 1}, // 2 = right
+			{3, 1}, // 3 = behind
+			{1, 0}, // 4 = top
+			{1, 2}, // 5 = bottom
+		}
+	}
+
+	for i, pos := range crossMap {
+		col, row := pos[0], pos[1]
+		sx := bounds.Min.X + col*faceSize
+		sy := bounds.Min.Y + row*faceSize
+		rect := image.Rect(0, 0, faceSize, faceSize)
+		faceImg := image.NewRGBA(rect)
+		xdraw.Draw(faceImg, rect, src, image.Point{X: sx, Y: sy}, xdraw.Src)
+		faces[i] = faceImg
+	}
+	return faces
 }
 
-func buildSkyPack(imageBytes []byte, fileName string, faceSize int, outDir, manifestDesc string) (string, error) {
+func rotateSquareRGBA(src *image.RGBA, deg int) *image.RGBA {
+	n := src.Bounds().Dx()
+	times := (((deg % 360) + 360) % 360) / 90
+	cur := src
+	for i := 0; i < times; i++ {
+		next := image.NewRGBA(image.Rect(0, 0, n, n))
+		for y := 0; y < n; y++ {
+			for x := 0; x < n; x++ {
+				r, g, b, a := cur.At(x, y).RGBA()
+				next.SetRGBA(n-1-y, x, color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)})
+			}
+		}
+		cur = next
+	}
+	return cur
+}
+
+func buildSkyPack(imageBytes []byte, fileName string, faceSize int, outDir, manifestDesc, mode string, customMap [][2]int) (string, error) {
 	img, _, err := image.Decode(bytes.NewReader(imageBytes))
 	if err != nil {
 		return "", fmt.Errorf("failed to decode image: %v", err)
@@ -151,7 +265,18 @@ func buildSkyPack(imageBytes []byte, fileName string, faceSize int, outDir, mani
 		return "", fmt.Errorf("failed to create cubemap dir: %v", err)
 	}
 
-	faces := equirectToCubemap(img, faceSize)
+	var faces [6]*image.RGBA
+	if mode == "custom" || strings.HasPrefix(mode, "custom") {
+		faces = cropCrossToCubemap(img, "custom", customMap)
+	} else if strings.HasPrefix(mode, "cross") {
+		faces = cropCrossToCubemap(img, mode, customMap)
+	} else {
+		faces = equirectToCubemap(img, faceSize)
+		// bake in the top/bottom rotation (top=90, bottom=270) that
+		// _global_variables.json used to provide
+		faces[4] = rotateSquareRGBA(faces[4], 270)
+		faces[5] = rotateSquareRGBA(faces[5], 90)
+	}
 	for i, faceImg := range faces {
 		name := skyFaces[i].name + ".png"
 		var buf bytes.Buffer
@@ -161,12 +286,6 @@ func buildSkyPack(imageBytes []byte, fileName string, faceSize int, outDir, mani
 		if err := os.WriteFile(filepath.Join(cubemapDir, name), buf.Bytes(), 0644); err != nil {
 			return "", fmt.Errorf("failed to write face %s: %v", name, err)
 		}
-	}
-
-	skyRotations := [6]int{0, 0, 0, 0, 90, 270}
-	skyFlips := [6]bool{false, false, false, false, false, false}
-	if err := writeSkyGlobalVars(tempDir, skyRotations, skyFlips); err != nil {
-		return "", fmt.Errorf("failed to write global vars: %v", err)
 	}
 
 	bounds := img.Bounds()
@@ -223,8 +342,8 @@ func buildSkyPack(imageBytes []byte, fileName string, faceSize int, outDir, mani
 	return mcpackPath, nil
 }
 
-func (a *App) CreateSkyPack(imageBytes []byte, fileName string, faceSize int, mergePacks []string) (string, error) {
-	a.logDebug(fmt.Sprintf("CreateSkyPack: called, file=%s, size=%d, faceSize=%d, mergePacks=%v", fileName, len(imageBytes), faceSize, mergePacks))
+func (a *App) CreateSkyPack(imageBytes []byte, fileName string, faceSize int, mergePacks []string, mode string, customMap [][]int) (string, error) {
+	a.logDebug(fmt.Sprintf("CreateSkyPack: called, file=%s, size=%d, faceSize=%d, mergePacks=%v, mode=%s", fileName, len(imageBytes), faceSize, mergePacks, mode))
 
 	if err := a.acquirePort(); err != nil {
 		return "", err
@@ -258,7 +377,14 @@ func (a *App) CreateSkyPack(imageBytes []byte, fileName string, faceSize int, me
 	}
 	a.emitProgress("Sky Converter", "Generating cubemap faces...", "info", fileName, 0, 0)
 
-	mcpackPath, err := buildSkyPack(imageBytes, fileName, faceSize, outDir, desc)
+	var mapFixed [][2]int
+	for _, m := range customMap {
+		if len(m) == 2 {
+			mapFixed = append(mapFixed, [2]int{m[0], m[1]})
+		}
+	}
+
+	mcpackPath, err := buildSkyPack(imageBytes, fileName, faceSize, outDir, desc, mode, mapFixed)
 	if err != nil {
 		return "", err
 	}
@@ -280,229 +406,7 @@ func (a *App) CreateSkyPack(imageBytes []byte, fileName string, faceSize int, me
 	return mcpackPath, nil
 }
 
-func buildSkyPackFromFaces(faceData [6][]byte, rotations [6]int, flips [6]bool, outDir, manifestDesc, packName string) (string, error) {
-	tempDir := getMewTempDir("sky_port_temp")
-	os.RemoveAll(tempDir)
-	os.MkdirAll(tempDir, os.ModePerm)
-	defer os.RemoveAll(tempDir)
 
-	cubemapDir := filepath.Join(tempDir, "textures", "environment", "overworld_cubemap")
-	if err := os.MkdirAll(cubemapDir, os.ModePerm); err != nil {
-		return "", fmt.Errorf("failed to create cubemap dir: %v", err)
-	}
-
-	for i := 0; i < 6; i++ {
-		if len(faceData[i]) == 0 {
-			continue
-		}
-		img, _, err := image.Decode(bytes.NewReader(faceData[i]))
-		if err != nil {
-			return "", fmt.Errorf("failed to decode face %d: %v", i, err)
-		}
-		processed := processFace(img, rotations[i], flips[i])
-		var buf bytes.Buffer
-		if err := png.Encode(&buf, processed); err != nil {
-			return "", fmt.Errorf("failed to encode face %d: %v", i, err)
-		}
-		if err := os.WriteFile(filepath.Join(cubemapDir, skyFaces[i].name+".png"), buf.Bytes(), 0644); err != nil {
-			return "", fmt.Errorf("failed to write face %s: %v", skyFaces[i].name, err)
-		}
-	}
-
-	iconImg := processFace(func() image.Image {
-		for i := 0; i < 6; i++ {
-			if len(faceData[i]) > 0 {
-				img, _, _ := image.Decode(bytes.NewReader(faceData[i]))
-				return img
-			}
-		}
-		return image.NewRGBA(image.Rect(0, 0, 1, 1))
-	}(), 0, false)
-	var iconBuf bytes.Buffer
-	if err := png.Encode(&iconBuf, iconImg); err != nil {
-		return "", fmt.Errorf("failed to encode icon: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(tempDir, "pack_icon.png"), iconBuf.Bytes(), 0644); err != nil {
-		return "", fmt.Errorf("failed to write pack icon: %v", err)
-	}
-
-	manifest := map[string]interface{}{
-		"format_version": 1,
-		"header": map[string]interface{}{
-			"description":        manifestDesc,
-			"name":               packName,
-			"uuid":               uuid.New().String(),
-			"version":            []int{1, 0, 0},
-			"min_engine_version": []int{1, 12, 1},
-		},
-		"modules": []interface{}{
-			map[string]interface{}{
-				"description": manifestDesc,
-				"type":        "resources",
-				"uuid":        uuid.New().String(),
-				"version":     []int{1, 0, 0},
-			},
-		},
-	}
-	manifestData, err := json.MarshalIndent(manifest, "", "    ")
-	if err != nil {
-		return "", fmt.Errorf("failed to build manifest: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(tempDir, "manifest.json"), manifestData, 0644); err != nil {
-		return "", fmt.Errorf("failed to write manifest: %v", err)
-	}
-
-	if err := writeSkyGlobalVars(tempDir, rotations, flips); err != nil {
-		return "", fmt.Errorf("failed to write global vars: %v", err)
-	}
-
-	mcpackPath := filepath.Join(outDir, packName+".mcpack")
-	if err := zipDirToFile(tempDir, mcpackPath); err != nil {
-		return "", fmt.Errorf("failed to create mcpack: %v", err)
-	}
-	return mcpackPath, nil
-}
-
-func processFace(src image.Image, rotation int, flipH bool) *image.RGBA {
-	bounds := src.Bounds()
-	w := bounds.Dx()
-	h := bounds.Dy()
-
-	var rotated image.Image = src
-	if rotation == 90 || rotation == 270 {
-		rotated = rotateImage(src, rotation)
-	} else if rotation == 180 {
-		rotated = rotateImage(src, 180)
-	}
-
-	if flipH {
-		rotated = flipImageH(rotated)
-	}
-
-	rb := rotated.Bounds()
-	out := image.NewRGBA(image.Rect(0, 0, rb.Dx(), rb.Dy()))
-	xdraw.BiLinear.Scale(out, out.Bounds(), rotated, rb, xdraw.Over, nil)
-	_ = w
-	_ = h
-	return out
-}
-
-func rotateImage(src image.Image, degrees int) *image.RGBA {
-	bounds := src.Bounds()
-	w := bounds.Dx()
-	h := bounds.Dy()
-
-	var outW, outH int
-	if degrees == 90 || degrees == 270 {
-		outW = h
-		outH = w
-	} else {
-		outW = w
-		outH = h
-	}
-
-	out := image.NewRGBA(image.Rect(0, 0, outW, outH))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			r, g, b, a := src.At(x+bounds.Min.X, y+bounds.Min.Y).RGBA()
-			var nx, ny int
-			switch degrees {
-			case 90:
-				nx = h - 1 - y
-				ny = x
-			case 180:
-				nx = w - 1 - x
-				ny = h - 1 - y
-			case 270:
-				nx = y
-				ny = w - 1 - x
-			default:
-				nx = x
-				ny = y
-			}
-			out.SetRGBA(nx, ny, color.RGBA{
-				R: uint8(r >> 8),
-				G: uint8(g >> 8),
-				B: uint8(b >> 8),
-				A: uint8(a >> 8),
-			})
-		}
-	}
-	return out
-}
-
-func flipImageH(src image.Image) *image.RGBA {
-	bounds := src.Bounds()
-	w := bounds.Dx()
-	h := bounds.Dy()
-	out := image.NewRGBA(image.Rect(0, 0, w, h))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			r, g, b, a := src.At(x+bounds.Min.X, y+bounds.Min.Y).RGBA()
-			out.SetRGBA(w-1-x, y, color.RGBA{
-				R: uint8(r >> 8),
-				G: uint8(g >> 8),
-				B: uint8(b >> 8),
-				A: uint8(a >> 8),
-			})
-		}
-	}
-	return out
-}
-
-func (a *App) CreateSkyPackFromFaces(faceData [6][]byte, rotations [6]int, flips [6]bool, mergePacks []string) (string, error) {
-	a.logDebug(fmt.Sprintf("CreateSkyPackFromFaces: called, mergePacks=%v", mergePacks))
-
-	if err := a.acquirePort(); err != nil {
-		return "", err
-	}
-	defer a.releasePort()
-
-	hasAny := false
-	for i := 0; i < 6; i++ {
-		if len(faceData[i]) > 0 {
-			hasAny = true
-			break
-		}
-	}
-	if !hasAny {
-		return "", fmt.Errorf("at least one face image is required")
-	}
-
-	desc := skyManifestDescription
-	if custom := a.getStringSetting("manifestDescription"); custom != "" {
-		desc = custom
-	}
-
-	outDir := a.getOutputDir()
-	if a.getBoolSetting("deleteMcpack") {
-		outDir = a.getTempDir("mcpack")
-		os.MkdirAll(outDir, os.ModePerm)
-	}
-	a.emitProgress("Sky Converter", "Building sky pack...", "info", "sky", 0, 0)
-
-	packName := "Sky Pack"
-	mcpackPath, err := buildSkyPackFromFaces(faceData, rotations, flips, outDir, desc, packName)
-	if err != nil {
-		return "", err
-	}
-
-	if len(mergePacks) > 0 {
-		if err := a.mergeSkyPack(mcpackPath, mergePacks); err != nil {
-			return "", err
-		}
-	} else if a.getBoolSetting("autoImport") {
-		a.importToBedrock(mcpackPath)
-	}
-	if a.getBoolSetting("autoOpenFolder") {
-		a.OpenFolder(outDir)
-	}
-
-	a.emitProgress("Done", mcpackPath, "success", "sky", 0, 0)
-	a.AddRecentPack(packName, mcpackPath)
-	a.logDebug(fmt.Sprintf("CreateSkyPackFromFaces completed: %s", mcpackPath))
-	return mcpackPath, nil
-}
 
 func (a *App) mergeSkyPack(mcpackPath string, packNames []string) error {
 	bedrockPath := a.getStringSetting("resourcePacksPath")
@@ -554,30 +458,8 @@ func (a *App) mergeSkyPack(mcpackPath string, packNames []string) error {
 			return nil
 		})
 
-		srcGV := filepath.Join(extractDir, "_global_variables.json")
-		dstGV := filepath.Join(destDir, "_global_variables.json")
-		if srcBytes, err := os.ReadFile(srcGV); err == nil {
-			var srcVars map[string]interface{}
-			if err := json.Unmarshal(srcBytes, &srcVars); err == nil {
-				var dstVars map[string]interface{}
-				if dstBytes, err := os.ReadFile(dstGV); err == nil {
-					stripped := stripjsoncomments.Strip(string(dstBytes))
-					json.Unmarshal([]byte(stripped), &dstVars)
-				}
-				if dstVars == nil {
-					dstVars = map[string]interface{}{}
-				}
-				for k, v := range srcVars {
-					dstVars[k] = v
-				}
-				if mergedBytes, err := json.MarshalIndent(dstVars, "", "    "); err == nil {
-					os.WriteFile(dstGV, mergedBytes, 0644)
-				}
-			}
-		}
-
 		merged++
-		a.logDebug(fmt.Sprintf("mergeSkyPack: copied %d cubemap faces + global vars into %s", copied, destDir))
+		a.logDebug(fmt.Sprintf("mergeSkyPack: copied %d cubemap faces into %s", copied, destDir))
 	}
 
 	if merged == 0 {

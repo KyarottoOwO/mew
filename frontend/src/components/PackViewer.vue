@@ -3,7 +3,7 @@ import { ref, reactive, computed, onMounted, nextTick, watch } from 'vue'
 import * as THREE from 'three'
 import { SkinView3d } from 'vue-skinview3d'
 import { IdleAnimation, WalkingAnimation } from 'vue-skinview3d/animations'
-import { GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackArmorTextures, GetPackItemTextures, GetPackSkyTextures, GetPlayerSkinTexture, GetDefaultSkin, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackAllItemTextures, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, IsDebug } from '../../wailsjs/go/main/App'
+import { GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackArmorTextures, GetPackItemTextures, GetPackSkyTextures, GetPlayerSkinTexture, GetDefaultSkin, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackAllItemTextures, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug } from '../../wailsjs/go/main/App'
 import defaultSkinImg from '../assets/default-skin.png'
 import { parseBedrockCodes } from '../utils/formatCodes'
 
@@ -501,6 +501,26 @@ function openPackFolder() {
   OpenFolder(packsPath.value + sep + selectedPack.value)
 }
 
+const confirmDelete = ref(false)
+
+async function deletePack() {
+  if (!selectedPack.value) return
+  if (!confirmDelete.value) {
+    confirmDelete.value = true
+    setTimeout(() => { confirmDelete.value = false }, 3000)
+    return
+  }
+  const name = selectedPack.value
+  confirmDelete.value = false
+  try {
+    await DeleteInstalledPack(name)
+    closeModal()
+    await loadAllPacks()
+  } catch (e) {
+    console.error('Failed to delete pack:', e)
+  }
+}
+
 async function openPack(packName) {
   selectedPack.value = packName
   selectedMaterial.value = 'diamond'
@@ -522,6 +542,7 @@ function waitForViewer() {
 
 function closeModal() {
   showModal.value = false
+  confirmDelete.value = false
 }
 
 async function loadPackData(packName) {
@@ -727,6 +748,9 @@ watch(() => props.active, (val) => {
           <div class="pv-modal-actions">
             <button v-if="isDebug" class="pv-modal-skybtn" :class="{ active: showSkyDebug }" @click="showSkyDebug = !showSkyDebug" title="Sky debug"><i class="fa fa-cloud-sun"></i></button>
             <button class="pv-modal-folder" @click="openPackFolder" title="Open pack folder"><i class="fa fa-folder-open"></i></button>
+            <button class="pv-modal-delete" :class="{ confirming: confirmDelete }" @click="deletePack" :title="confirmDelete ? 'Click again to delete' : 'Delete pack'">
+              <i :class="confirmDelete ? 'fa fa-triangle-exclamation' : 'fa fa-trash'"></i>
+            </button>
             <button class="pv-modal-close" @click="closeModal"><i class="fa fa-xmark"></i></button>
           </div>
         </div>
@@ -1149,6 +1173,7 @@ watch(() => props.active, (val) => {
 }
 
 .pv-modal-folder,
+.pv-modal-delete,
 .pv-modal-close {
   width: 32px;
   height: 32px;
@@ -1169,6 +1194,18 @@ watch(() => props.active, (val) => {
   background: var(--bg-hover-1);
   color: var(--text-primary);
   border-color: var(--border-focus);
+}
+
+.pv-modal-delete:hover {
+  background: rgba(248, 113, 113, 0.15);
+  color: #f87171;
+  border-color: #f87171;
+}
+
+.pv-modal-delete.confirming {
+  background: #f87171;
+  color: #1a1a1a;
+  border-color: #f87171;
 }
 
 .pv-3d {

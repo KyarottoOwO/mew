@@ -76,7 +76,13 @@ func fitFrameToCanvas(src image.Image, transparent bool, fill color.RGBA) *image
 	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
 		for x := bounds.Min.X; x < bounds.Max.X; x++ {
 			p := scaled.RGBAAt(x, y)
-			if p.A > 0 {
+			if p.A == 0 {
+				continue
+			}
+			if p.A < 255 {
+				p.R = uint8(int(p.R) * 255 / int(p.A))
+				p.G = uint8(int(p.G) * 255 / int(p.A))
+				p.B = uint8(int(p.B) * 255 / int(p.A))
 				p.A = 255
 				scaled.SetRGBA(x, y, p)
 			}
@@ -87,6 +93,12 @@ func fitFrameToCanvas(src image.Image, transparent bool, fill color.RGBA) *image
 	offY := (animFrameHeight - newH) / 2
 	xdraw.Draw(canvas, image.Rect(offX, offY, offX+newW, offY+newH), scaled, image.Point{}, xdraw.Over)
 	return canvas
+}
+
+func copyRGBA(src *image.RGBA) *image.RGBA {
+	dst := image.NewRGBA(src.Bounds())
+	xdraw.Draw(dst, dst.Bounds(), src, image.Point{}, xdraw.Src)
+	return dst
 }
 
 func buildFlipbook(frames []*image.RGBA) *image.RGBA {
@@ -207,8 +219,36 @@ func buildAnimatedPack(gifBytes []byte, fileName string, frameDuration string, o
 	os.MkdirAll(bgDir, os.ModePerm)
 
 	var canvases []*image.RGBA
+	canvas := image.NewRGBA(image.Rect(0, 0, decoded.Config.Width, decoded.Config.Height))
+	var prevCanvas *image.RGBA
+
 	for i, frame := range decoded.Image {
-		canvases = append(canvases, fitFrameToCanvas(frame, transparentFill, fill))
+		if i == 0 {
+			prevCanvas = image.NewRGBA(canvas.Bounds())
+		} else {
+			prevCanvas = copyRGBA(canvas)
+		}
+
+		bounds := frame.Bounds()
+		xdraw.Draw(canvas, bounds, frame, bounds.Min, xdraw.Over)
+
+		composited := copyRGBA(canvas)
+		composited = fitFrameToCanvas(composited, transparentFill, fill)
+		canvases = append(canvases, composited)
+
+		switch {
+		case i < len(decoded.Disposal) && decoded.Disposal[i] == gif.DisposalBackground:
+			bg := color.RGBA{fill.R, fill.G, fill.B, 255}
+			if transparentFill {
+				bg = color.RGBA{0, 0, 0, 0}
+			}
+			xdraw.Draw(canvas, bounds, &image.Uniform{C: bg}, bounds.Min, xdraw.Src)
+		case i < len(decoded.Disposal) && decoded.Disposal[i] == gif.DisposalPrevious:
+			if prevCanvas != nil {
+				xdraw.Draw(canvas, canvas.Bounds(), prevCanvas, image.Point{}, xdraw.Src)
+			}
+		}
+
 		if onFrame != nil {
 			onFrame(i+1, frames)
 		}
