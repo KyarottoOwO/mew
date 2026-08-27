@@ -20,17 +20,16 @@ const skyManifestDescription = "Sky made with MEW"
 
 type skyFace struct {
 	name  string
-	// direction function: given (s, t) in [-1,1], returns (x, y, z) direction
 	dirFn func(s, t float64) (float64, float64, float64)
 }
 
 var skyFaces = []skyFace{
-	{"cubemap_0", func(s, t float64) (float64, float64, float64) { return -1, -t, s }},    // -X left
-	{"cubemap_1", func(s, t float64) (float64, float64, float64) { return s, -t, 1 }},     // +Z front
-	{"cubemap_2", func(s, t float64) (float64, float64, float64) { return 1, -t, -s }},    // +X right
-	{"cubemap_3", func(s, t float64) (float64, float64, float64) { return -s, -t, -1 }},   // -Z behind
-	{"cubemap_4", func(s, t float64) (float64, float64, float64) { return s, 1, t }},      // +Y top
-	{"cubemap_5", func(s, t float64) (float64, float64, float64) { return s, -1, -t }},    // -Y bottom
+	{"cubemap_0", func(s, t float64) (float64, float64, float64) { return -1, -t, s }},
+	{"cubemap_1", func(s, t float64) (float64, float64, float64) { return s, -t, 1 }},
+	{"cubemap_2", func(s, t float64) (float64, float64, float64) { return 1, -t, -s }},
+	{"cubemap_3", func(s, t float64) (float64, float64, float64) { return -s, -t, -1 }},
+	{"cubemap_4", func(s, t float64) (float64, float64, float64) { return s, 1, t }},
+	{"cubemap_5", func(s, t float64) (float64, float64, float64) { return s, -1, -t }},
 }
 
 func equirectToCubemap(src image.Image, faceSize int) [6]*image.RGBA {
@@ -126,14 +125,12 @@ func cropCrossToCubemap(src image.Image, mode string, customMap [][2]int) [6]*im
 	faceSize := 0
 	is3x2 := false
 
-	// Try 4x3 layout (standard cross)
 	if srcH >= 3 && srcW >= 4 {
 		fs := srcH / 3
 		if fs*3 == srcH && fs*4 == srcW {
 			faceSize = fs
 		}
 	}
-	// Try 3x2 layout
 	if faceSize == 0 && srcH >= 2 && srcW >= 3 {
 		fs := srcH / 2
 		if fs*2 == srcH && fs*3 == srcW {
@@ -149,73 +146,30 @@ func cropCrossToCubemap(src image.Image, mode string, customMap [][2]int) [6]*im
 			crossMap[i] = customMap[i]
 		}
 	} else if is3x2 {
-		// 3x2 layout (port sky, e.g. 3072x2048 with 1024px faces):
-		//   col0,row0 = bottom(5)   col1,row0 = top(4)   col2,row0 = side
-		//   col0,row1 = side        col1,row1 = side     col2,row1 = side
 		if mode == "cross_b" {
-			// Sides B: mirrored horizon
 			crossMap = [6][2]int{
-				{2, 1}, // 0 = left
-				{2, 0}, // 1 = front
-				{1, 1}, // 2 = right
-				{0, 1}, // 3 = behind
-				{1, 0}, // 4 = top
-				{0, 0}, // 5 = bottom
+				{2, 1}, {2, 0}, {1, 1}, {0, 1}, {1, 0}, {0, 0},
 			}
 		} else if mode == "cross_c" {
-			// Sides C: A rotated 90 degrees (the "closest" one)
 			crossMap = [6][2]int{
-				{1, 1}, // 0 = left
-				{2, 0}, // 1 = front
-				{2, 1}, // 2 = right
-				{0, 1}, // 3 = behind
-				{1, 0}, // 4 = top
-				{0, 0}, // 5 = bottom
+				{1, 1}, {2, 0}, {2, 1}, {0, 1}, {1, 0}, {0, 0},
 			}
 		} else if mode == "cross_e" {
-			// Sides E: like C but left/front swapped
 			crossMap = [6][2]int{
-				{2, 0}, // 0 = left
-				{1, 1}, // 1 = front
-				{2, 1}, // 2 = right
-				{0, 1}, // 3 = behind
-				{1, 0}, // 4 = top
-				{0, 0}, // 5 = bottom
+				{2, 0}, {1, 1}, {2, 1}, {0, 1}, {1, 0}, {0, 0},
 			}
 		} else if mode == "cross_d" {
-			// Sides D: A rotated 270 degrees
 			crossMap = [6][2]int{
-				{2, 1}, // 0 = left
-				{0, 1}, // 1 = front
-				{1, 1}, // 2 = right
-				{2, 0}, // 3 = behind
-				{1, 0}, // 4 = top
-				{0, 0}, // 5 = bottom
+				{2, 1}, {0, 1}, {1, 1}, {2, 0}, {1, 0}, {0, 0},
 			}
 		} else {
-			// Default (confirmed working):
-			//   left=T5 front=T6 right=T3 behind=T4 top=T2 bottom=T1
 			crossMap = [6][2]int{
-				{1, 1}, // 0 = left
-				{2, 1}, // 1 = front
-				{2, 0}, // 2 = right
-				{0, 1}, // 3 = behind
-				{1, 0}, // 4 = top
-				{0, 0}, // 5 = bottom
+				{1, 1}, {2, 1}, {2, 0}, {0, 1}, {1, 0}, {0, 0},
 			}
 		}
 	} else {
-		// 4x3 layout (standard cross):
-		//   col0,row1 = left(0)  col1,row0 = top(4)  col2,row1 = right(2)  col3,row1 = behind(3)
-		//   col1,row1 = front(1)
-		//   col1,row2 = bottom(5)
 		crossMap = [6][2]int{
-			{0, 1}, // 0 = left
-			{1, 1}, // 1 = front
-			{2, 1}, // 2 = right
-			{3, 1}, // 3 = behind
-			{1, 0}, // 4 = top
-			{1, 2}, // 5 = bottom
+			{0, 1}, {1, 1}, {2, 1}, {3, 1}, {1, 0}, {1, 2},
 		}
 	}
 
@@ -272,8 +226,6 @@ func buildSkyPack(imageBytes []byte, fileName string, faceSize int, outDir, mani
 		faces = cropCrossToCubemap(img, mode, customMap)
 	} else {
 		faces = equirectToCubemap(img, faceSize)
-		// bake in the top/bottom rotation (top=90, bottom=270) that
-		// _global_variables.json used to provide
 		faces[4] = rotateSquareRGBA(faces[4], 270)
 		faces[5] = rotateSquareRGBA(faces[5], 90)
 	}
@@ -405,8 +357,6 @@ func (a *App) CreateSkyPack(imageBytes []byte, fileName string, faceSize int, me
 	a.logDebug(fmt.Sprintf("CreateSkyPack completed: %s", mcpackPath))
 	return mcpackPath, nil
 }
-
-
 
 func (a *App) mergeSkyPack(mcpackPath string, packNames []string) error {
 	bedrockPath := a.getStringSetting("resourcePacksPath")

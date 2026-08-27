@@ -1,9 +1,11 @@
 <script setup>
 import { ref, watch, onMounted, onUnmounted } from 'vue'
-import { CreateAnimatedInventory, GetInstalledPacksDetailed, SetResourcePacksPath, SelectDirectory } from '../../wailsjs/go/main/App'
-import { EventsOn } from '../../wailsjs/runtime/runtime'
-import { progressStore, startPort, updateFromEvent, finish, clearProgress } from '../utils/progressStore'
-import { parseBedrockCodes } from '../utils/formatCodes'
+import { CreateAnimatedInventory, GetInstalledPacksDetailed, SetResourcePacksPath, SelectDirectory } from '../../../wailsjs/go/main/App'
+import { EventsOn } from '../../../wailsjs/runtime/runtime'
+
+import { progressStore, startPort, updateFromEvent, finish, clearProgress } from '../../utils/progressStore'
+
+import { parseBedrockCodes } from '../../utils/formatCodes'
 
 const props = defineProps({ active: Boolean })
 

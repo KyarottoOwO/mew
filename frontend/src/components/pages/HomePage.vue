@@ -1,9 +1,9 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { GetRecentPacks } from '../../wailsjs/go/main/App'
-import { EventsOn } from '../../wailsjs/runtime/runtime'
-import { parseBedrockCodes } from '../utils/formatCodes'
+import { GetRecentPacks } from '../../../wailsjs/go/main/App'
+import { EventsOn } from '../../../wailsjs/runtime/runtime'
 
+import { parseBedrockCodes } from '../../utils/formatCodes'
 const props = defineProps({ homeAnimated: Boolean })
 const emit = defineEmits(['navigate', 'animated'])
 const showSuite = ref(false)

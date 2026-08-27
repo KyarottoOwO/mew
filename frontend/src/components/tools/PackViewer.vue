@@ -3,10 +3,10 @@ import { ref, reactive, computed, onMounted, nextTick, watch } from 'vue'
 import * as THREE from 'three'
 import { SkinView3d } from 'vue-skinview3d'
 import { IdleAnimation, WalkingAnimation } from 'vue-skinview3d/animations'
-import { GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackArmorTextures, GetPackItemTextures, GetPackSkyTextures, GetPlayerSkinTexture, GetDefaultSkin, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackAllItemTextures, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug } from '../../wailsjs/go/main/App'
-import defaultSkinImg from '../assets/default-skin.png'
-import { parseBedrockCodes } from '../utils/formatCodes'
+import { GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackArmorTextures, GetPackItemTextures, GetPackSkyTextures, GetPlayerSkinTexture, GetDefaultSkin, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackAllItemTextures, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug } from '../../../wailsjs/go/main/App'
+import defaultSkinImg from '../../assets/default-skin.png'
 
+import { parseBedrockCodes } from '../../utils/formatCodes'
 const props = defineProps({ active: Boolean })
 
 const packList = ref([])

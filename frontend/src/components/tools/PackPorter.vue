@@ -1,9 +1,9 @@
 <script setup>
 import { ref, watch, onMounted, onUnmounted } from 'vue'
-import { PortPack, PortPackFromURL } from '../../wailsjs/go/main/App'
-import { EventsOn } from '../../wailsjs/runtime/runtime'
-import { progressStore, startPort, updateFromEvent, finish, clearProgress } from '../utils/progressStore'
+import { PortPack, PortPackFromURL } from '../../../wailsjs/go/main/App'
+import { EventsOn } from '../../../wailsjs/runtime/runtime'
 
+import { progressStore, startPort, updateFromEvent, finish, clearProgress } from '../../utils/progressStore'
 const props = defineProps({ active: Boolean })
 const mode = ref('file')
 const file = ref(null)

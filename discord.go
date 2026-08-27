@@ -21,7 +21,7 @@ const (
 	discordClientID    = "1513804565366177882"
 	discordLargeImage  = "mew_logo"
 	discordGitHubURL   = "https://github.com/KyarottoOwO/mew"
-	discordInviteURL   = "https://discord.gg/AA8MSTDjB"
+	discordInviteURL   = "https://discord.gg/nv9GrqTVM3"
 	discordDialTimeout = 2 * time.Second
 )
 
@@ -94,9 +94,6 @@ func (a *App) stopDiscordRPC() {
 	a.discordClose()
 }
 
-// discordLoop keeps a connection to every running Discord client while the
-// discordRPC setting is enabled, reconciling every few seconds so newly
-// launched clients are picked up and dead connections are retried.
 func (a *App) discordLoop() {
 	for {
 		select {
@@ -117,9 +114,6 @@ func (a *App) discordLoop() {
 	}
 }
 
-// discordReconcile dials any Discord client pipe we are not yet connected to,
-// sends the handshake, starts a reader goroutine, and drops connections whose
-// pipe no longer exists (the owning client quit).
 func (a *App) discordReconcile() {
 	want := discordClientPipes()
 	wantSet := make(map[string]bool, len(want))
@@ -161,11 +155,6 @@ func (a *App) discordReconcile() {
 	a.discordIpcMu.Unlock()
 }
 
-// discordClientPipes enumerates every discord-ipc pipe whose server end is
-// owned by a Discord client process (Stable, PTB, Canary or Development).
-// All Discord flavours share the discord-ipc-0..9 range and the slot a client
-// lands on depends on launch order, so the owning process must be inspected to
-// tell them apart.
 func discordClientPipes() []string {
 	var pipes []string
 	for i := 0; i < 40; i++ {
@@ -211,9 +200,6 @@ func discordClientPipes() []string {
 	return pipes
 }
 
-// discordReadLoop reads frames continuously from the IPC socket so no leftover
-// bytes ever accumulate in the pipe, and removes the connection when Discord
-// closes it (opcode 2) or the pipe errors.
 func (a *App) discordReadLoop(name string, conn net.Conn) {
 	buf := make([]byte, 0, 4096)
 	tmp := make([]byte, 4096)
@@ -243,11 +229,6 @@ func (a *App) discordReadLoop(name string, conn net.Conn) {
 	}
 }
 
-// discordRemoveConn drops the connection for the given pipe, but only if the
-// map still holds this exact conn. A reader goroutine from a previous
-// connection may still be pending after a reconnect (closing a Windows named
-// pipe does not reliably cancel a blocked ReadFile), so without this guard a
-// stale reader could evict a freshly established connection.
 func (a *App) discordRemoveConn(name string, conn net.Conn) {
 	a.discordIpcMu.Lock()
 	if a.discordConns[name] == conn {
@@ -257,8 +238,6 @@ func (a *App) discordRemoveConn(name string, conn net.Conn) {
 	conn.Close()
 }
 
-// discordSend writes a single framed payload (opcode + length + JSON) to the
-// given connection. All socket writes are serialized by discordIpcMu.
 func (a *App) discordSend(conn net.Conn, opcode int32, payload []byte) error {
 	a.discordIpcMu.Lock()
 	defer a.discordIpcMu.Unlock()
@@ -276,8 +255,6 @@ func (a *App) discordSend(conn net.Conn, opcode int32, payload []byte) error {
 	return nil
 }
 
-// discordClose tears down every connection and clears any presence. It is
-// idempotent and safe to call from any goroutine.
 func (a *App) discordClose() {
 	a.discordIpcMu.Lock()
 	conns := make([]net.Conn, 0, len(a.discordConns))

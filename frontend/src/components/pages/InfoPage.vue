@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { GetChangelog, OpenDownloadLink } from '../../wailsjs/go/main/App'
+import { GetChangelog, OpenDownloadLink } from '../../../wailsjs/go/main/App'
 
 const changelog = ref([])
 

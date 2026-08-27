@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
-import { progressStore } from '../utils/progressStore'
-import { CancelPortFolder } from '../../wailsjs/go/main/App'
+import { progressStore } from '../../utils/progressStore'
+import { CancelPortFolder } from '../../../wailsjs/go/main/App'
 
 const props = defineProps({ currentPage: String })
 const emit = defineEmits(['navigate'])
@@ -41,7 +41,14 @@ const spinnerClass = computed(() => {
 
 const showCancel = computed(() => progressStore.source === 'packFolderPorter' && !progressStore.done)
 
-const title = computed(() => progressStore.source === 'packFolderPorter' ? 'Multi-Pack Porter' : 'Pack Porter')
+const title = computed(() => {
+  switch (progressStore.source) {
+    case 'packFolderPorter': return 'Multi-Pack Porter'
+    case 'skyconverter': return 'Sky Converter'
+    case 'animator': return 'Animated Inventory'
+    default: return 'Pack Porter'
+  }
+})
 
 function goToPage() {
   emit('navigate', progressStore.source)

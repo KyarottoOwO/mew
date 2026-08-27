@@ -1,6 +1,6 @@
 <script setup>
 import { ref } from 'vue'
-import { CheckPack } from '../../wailsjs/go/main/App'
+import { CheckPack } from '../../../wailsjs/go/main/App'
 
 const emit = defineEmits(['openDisplay'])
 const file = ref(null)

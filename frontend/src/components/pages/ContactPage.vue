@@ -1,5 +1,5 @@
 <script setup>
-import { OpenDiscordLink, OpenDonationLink } from '../../wailsjs/go/main/App'
+import { OpenDiscordLink, OpenDonationLink } from '../../../wailsjs/go/main/App'
 </script>
 
 <template>

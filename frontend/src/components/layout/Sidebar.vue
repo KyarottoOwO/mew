@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { GetVersion } from '../../wailsjs/go/main/App'
+import { GetVersion } from '../../../wailsjs/go/main/App'
 
 defineProps({
   currentPage: String

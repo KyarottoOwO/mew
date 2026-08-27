@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
-import { GetImages, SaveImage, ExportPack, DeleteTemp } from '../../wailsjs/go/main/App'
-import { applyHsvShift, upscaleNearestNeighbor } from '../utils/hue'
+import { GetImages, SaveImage, ExportPack, DeleteTemp } from '../../../wailsjs/go/main/App'
+import { applyHsvShift, upscaleNearestNeighbor } from '../../utils/hue'
 
 const props = defineProps({
   checkResult: Array,

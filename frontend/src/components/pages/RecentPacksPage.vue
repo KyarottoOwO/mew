@@ -1,9 +1,9 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { GetAllRecentPacks } from '../../wailsjs/go/main/App'
-import { EventsOn } from '../../wailsjs/runtime/runtime'
-import { parseBedrockCodes } from '../utils/formatCodes'
+import { GetAllRecentPacks } from '../../../wailsjs/go/main/App'
+import { EventsOn } from '../../../wailsjs/runtime/runtime'
 
+import { parseBedrockCodes } from '../../utils/formatCodes'
 const recentPacks = ref([])
 const isMounted = ref(false)
 

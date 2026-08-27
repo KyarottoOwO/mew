@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { GetSettings, SaveSettings, SelectDirectory, DetectMinecraftPaths, ClearCache, OpenMewDataDir } from '../../wailsjs/go/main/App'
+import { GetSettings, SaveSettings, SelectDirectory, DetectMinecraftPaths, ClearCache, OpenMewDataDir } from '../../../wailsjs/go/main/App'
 
 const autoImport = ref(false)
 const autoOpenFolder = ref(false)

@@ -35,24 +35,14 @@ jobs:
           VERSION="${TAG#v}"
           wails build -ldflags "-X main.currentVersion=$VERSION"
 
-      - name: Delete accidental release on MEOWWWW (if exists)
-        continue-on-error: true
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-        run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          gh release delete "$TAG" --repo KyarottoOwO/MEOWWWW --yes --cleanup-tag || true
-
-      - name: Create Release on mew
+      - name: Create Release
         id: release
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           gh release create "$TAG" build/bin/mew.exe \
-            --repo KyarottoOwO/mew \
             --title "MEW $TAG" \
             --generate-notes
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -63,7 +53,7 @@ jobs:
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
           TAG: ${{ steps.release.outputs.tag }}
-          RELEASE_URL: https://github.com/KyarottoOwO/mew/releases/tag/${{ steps.release.outputs.tag }}
+          RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.release.outputs.tag }}
         run: |
           export TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           python3 -c "

@@ -1,9 +1,11 @@
 <script setup>
 import { ref, watch, onMounted, onUnmounted } from 'vue'
-import { CreateSkyPack, GetInstalledPacksDetailed, SetResourcePacksPath, SelectDirectory } from '../../wailsjs/go/main/App'
-import { EventsOn } from '../../wailsjs/runtime/runtime'
-import { progressStore, startPort, updateFromEvent, finish, clearProgress } from '../utils/progressStore'
-import { parseBedrockCodes } from '../utils/formatCodes'
+import { CreateSkyPack, GetInstalledPacksDetailed, SetResourcePacksPath, SelectDirectory } from '../../../wailsjs/go/main/App'
+import { EventsOn } from '../../../wailsjs/runtime/runtime'
+
+import { progressStore, startPort, updateFromEvent, finish, clearProgress } from '../../utils/progressStore'
+
+import { parseBedrockCodes } from '../../utils/formatCodes'
 
 const props = defineProps({ active: Boolean })
 
@@ -184,7 +186,7 @@ onUnmounted(() => {
 
 watch(() => props.active, (active) => {
   if (!active) return
-  if (startedPort.value && progressStore.active && progressStore.source === 'skyconv') {
+  if (startedPort.value && progressStore.active && progressStore.source === 'skyconverter') {
     showProgress.value = true
     progressStatus.value = (progressStore.title || '') + (progressStore.message ? ': ' + progressStore.message : '')
     progressWidth.value = progressStore.percent
@@ -206,7 +208,7 @@ async function createPack() {
   resetProgress()
   showProgress.value = true
   startedPort.value = true
-  startPort('skyconv', 'Starting...')
+  startPort('skyconverter', 'Starting...')
   try {
     if (!panoFile.value) {
       popup('Error', 'Add a sky image first', 'error')

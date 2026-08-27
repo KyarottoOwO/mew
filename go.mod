@@ -1,4 +1,4 @@
-module srm
+module github.com/kyarottoOwO/mew
 
 go 1.26.0
 
