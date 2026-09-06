@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/kyarottoOwO/mew/internal/mediafire"
@@ -52,7 +53,7 @@ func cleanPackName(name string) string {
 	}
 }
 
-func buildMcpackBytes(zipBytes []byte, fileName string, manifestDesc string) ([]byte, error) {
+func (a *App) buildMcpackBytes(zipBytes []byte, fileName string, manifestDesc string) ([]byte, error) {
 	reader, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create zip reader: %v", err)
@@ -60,6 +61,14 @@ func buildMcpackBytes(zipBytes []byte, fileName string, manifestDesc string) ([]
 
 	var buf bytes.Buffer
 	writer := zip.NewWriter(&buf)
+
+	var promo map[string][]byte
+	if a.getBoolSetting("addPromoTexts") {
+		promo, err = promoFiles()
+		if err != nil {
+			return nil, fmt.Errorf("failed to load promo files: %v", err)
+		}
+	}
 
 	for _, file := range reader.File {
 		rc, err := file.Open()
@@ -137,6 +146,25 @@ func buildMcpackBytes(zipBytes []byte, fileName string, manifestDesc string) ([]
 		}
 	}
 
+	if promo != nil {
+		names := make([]string, 0, len(promo))
+		for name := range promo {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			f, err := writer.Create(name)
+			if err != nil {
+				writer.Close()
+				return nil, fmt.Errorf("failed to create promo file %s in zip: %v", name, err)
+			}
+			if _, err := f.Write(promo[name]); err != nil {
+				writer.Close()
+				return nil, fmt.Errorf("failed to write promo file %s to zip: %v", name, err)
+			}
+		}
+	}
+
 	if err := writer.Close(); err != nil {
 		return nil, fmt.Errorf("failed to close zip writer: %v", err)
 	}
@@ -144,8 +172,8 @@ func buildMcpackBytes(zipBytes []byte, fileName string, manifestDesc string) ([]
 	return buf.Bytes(), nil
 }
 
-func writeMcpack(zipBytes []byte, fileName string, outDir string, manifestDesc string) (string, error) {
-	data, err := buildMcpackBytes(zipBytes, fileName, manifestDesc)
+func (a *App) writeMcpack(zipBytes []byte, fileName string, outDir string, manifestDesc string) (string, error) {
+	data, err := a.buildMcpackBytes(zipBytes, fileName, manifestDesc)
 	if err != nil {
 		return "", err
 	}
@@ -160,6 +188,73 @@ func writeMcpack(zipBytes []byte, fileName string, outDir string, manifestDesc s
 
 	fmt.Println("Porting finished:", outFile)
 	return outFile, nil
+}
+
+func (a *App) ExportInstalledPack(packName string) (string, error) {
+	a.logDebug(fmt.Sprintf("ExportInstalledPack: called, pack=%s", packName))
+	if packName == "" || strings.Contains(packName, "..") || strings.ContainsAny(packName, `\/`) {
+		return "", fmt.Errorf("invalid pack name")
+	}
+
+	packDir := a.getPackDir(packName)
+	st, err := os.Stat(packDir)
+	if err != nil || !st.IsDir() {
+		return "", fmt.Errorf("pack not found: %s", packName)
+	}
+
+	outDir := a.getOutputDir()
+	if err := os.MkdirAll(outDir, os.ModePerm); err != nil {
+		return "", fmt.Errorf("failed to create output directory: %v", err)
+	}
+
+	outFile := filepath.Join(outDir, packName+".mcpack")
+	if err := zipDirToFile(packDir, outFile); err != nil {
+		return "", fmt.Errorf("failed to export pack: %v", err)
+	}
+
+	a.logDebug(fmt.Sprintf("ExportInstalledPack: wrote %s", outFile))
+	a.AddRecentPack(packName, outFile)
+	return outFile, nil
+}
+
+// ExportInstalledPacks exports multiple installed packs to the output directory
+// and returns the list of written .mcpack file paths.
+func (a *App) ExportInstalledPacks(packNames []string) ([]string, error) {
+	a.logDebug(fmt.Sprintf("ExportInstalledPacks: called, packs=%d", len(packNames)))
+	if len(packNames) == 0 {
+		return nil, fmt.Errorf("no packs selected")
+	}
+
+	outDir := a.getOutputDir()
+	if err := os.MkdirAll(outDir, os.ModePerm); err != nil {
+		return nil, fmt.Errorf("failed to create output directory: %v", err)
+	}
+
+	var written []string
+	for _, packName := range packNames {
+		if packName == "" || strings.Contains(packName, "..") || strings.ContainsAny(packName, `\/`) {
+			return nil, fmt.Errorf("invalid pack name: %s", packName)
+		}
+		packDir := a.getPackDir(packName)
+		st, err := os.Stat(packDir)
+		if err != nil || !st.IsDir() {
+			return nil, fmt.Errorf("pack not found: %s", packName)
+		}
+		outFile := filepath.Join(outDir, packName+".mcpack")
+		if err := zipDirToFile(packDir, outFile); err != nil {
+			return nil, fmt.Errorf("failed to export pack %s: %v", packName, err)
+		}
+		a.logDebug(fmt.Sprintf("ExportInstalledPacks: wrote %s", outFile))
+		a.AddRecentPack(packName, outFile)
+		written = append(written, outFile)
+	}
+
+	return written, nil
+}
+
+// GetExportOutputDir returns the directory where exported packs are written.
+func (a *App) GetExportOutputDir() string {
+	return a.getOutputDir()
 }
 
 func (a *App) PortPack(bytes []byte, fileName string) (string, error) {
@@ -205,11 +300,17 @@ func (a *App) PortPack(bytes []byte, fileName string) (string, error) {
 
 	a.logDebug(fmt.Sprintf("port.Port succeeded, output size: %d bytes", len(out)))
 
+	withSubpacks, err := a.maybeAddSkySubpacks(bytes, out)
+	if err != nil {
+		a.logDebug(fmt.Sprintf("maybeAddSkySubpacks failed: %v", err))
+	}
+	out = withSubpacks
+
 	mcpackDesc := a.getStringSetting("manifestDescription")
 
 	if a.getBoolSetting("deleteMcpack") && a.getBoolSetting("autoImport") {
 		a.logDebug("deleteMcpack + autoImport: importing directly from memory, no .mcpack on disk")
-		mcpackBytes, err := buildMcpackBytes(out, fileName, mcpackDesc)
+		mcpackBytes, err := a.buildMcpackBytes(out, fileName, mcpackDesc)
 		if err != nil {
 			logError(formatError(fmt.Sprintf("buildMcpackBytes failed for %s", fileName), err))
 			return "", fmt.Errorf("failed to build mcpack: %v", err)
@@ -217,11 +318,11 @@ func (a *App) PortPack(bytes []byte, fileName string) (string, error) {
 		a.importFromBytes(mcpackBytes, fileName)
 	} else {
 		mcpackDir := a.getOutputDir()
-		if a.getBoolSetting("deleteMcpack") {
+		if a.getBoolSetting("deleteMcpack") && a.getBoolSetting("autoImport") {
 			mcpackDir = a.getTempDir("mcpack")
 			os.MkdirAll(mcpackDir, os.ModePerm)
 		}
-		outFile, err := writeMcpack(out, fileName, mcpackDir, mcpackDesc)
+		outFile, err := a.writeMcpack(out, fileName, mcpackDir, mcpackDesc)
 		if err != nil {
 			a.logDebug(fmt.Sprintf("writeMcpack failed: %v", err))
 			logError(formatError(fmt.Sprintf("writeMcpack failed for %s", fileName), err))
@@ -302,9 +403,12 @@ func (a *App) portRarPack(rarBytes []byte, fileName string) (string, error) {
 			log.Printf("Failed to port %s: %v", filepath.Base(zPath), err)
 			continue
 		}
+		if withSub, subErr := a.maybeAddSkySubpacks(zipData, out); subErr == nil {
+			out = withSub
+		}
 		zName := filepath.Base(zPath)
 		if a.getBoolSetting("deleteMcpack") && a.getBoolSetting("autoImport") {
-			mcpackBytes, err := buildMcpackBytes(out, zName, a.getStringSetting("manifestDescription"))
+			mcpackBytes, err := a.buildMcpackBytes(out, zName, a.getStringSetting("manifestDescription"))
 			if err != nil {
 				logError(formatError(fmt.Sprintf("buildMcpackBytes failed: %s", zName), err))
 				continue
@@ -314,11 +418,11 @@ func (a *App) portRarPack(rarBytes []byte, fileName string) (string, error) {
 			results = append(results, zName)
 		} else {
 			mcpackDir := a.getOutputDir()
-			if a.getBoolSetting("deleteMcpack") {
+			if a.getBoolSetting("deleteMcpack") && a.getBoolSetting("autoImport") {
 				mcpackDir = a.getTempDir("mcpack")
 				os.MkdirAll(mcpackDir, os.ModePerm)
 			}
-			outFile, err := writeMcpack(out, zName, mcpackDir, a.getStringSetting("manifestDescription"))
+			outFile, err := a.writeMcpack(out, zName, mcpackDir, a.getStringSetting("manifestDescription"))
 			if err != nil {
 				a.logDebug(fmt.Sprintf("Failed to write mcpack for %s: %v", zName, err))
 				logError(formatError(fmt.Sprintf("write mcpack failed: %s", zName), err))
@@ -502,8 +606,11 @@ func (a *App) PortLocalArchive(data []byte, fileName string) error {
 			failCount++
 			continue
 		}
+		if withSub, subErr := a.maybeAddSkySubpacks(rawData, out); subErr == nil {
+			out = withSub
+		}
 
-		if mcpackPath, err := writeMcpack(out, c.Name, bedrockDir, a.getStringSetting("manifestDescription")); err != nil {
+		if mcpackPath, err := a.writeMcpack(out, c.Name, bedrockDir, a.getStringSetting("manifestDescription")); err != nil {
 			logError(formatError(fmt.Sprintf("write mcpack failed: %s", c.Name), err))
 			failCount++
 			continue
@@ -751,6 +858,9 @@ func (a *App) processPack(ctx context.Context, name string, data []byte, totalFi
 			a.emitProgress("Progress", c.Name, "fail", c.Name, totalFiles, index+1)
 			continue
 		}
+		if withSub, subErr := a.maybeAddSkySubpacks(rawData, out); subErr == nil {
+			out = withSub
+		}
 
 		javaDst := filepath.Join(javaDir, c.Name)
 		if !a.getBoolSetting("deleteOriginals") {
@@ -760,7 +870,7 @@ func (a *App) processPack(ctx context.Context, name string, data []byte, totalFi
 		}
 
 		if a.getBoolSetting("deleteMcpack") && a.getBoolSetting("autoImport") {
-			mcpackBytes, err := buildMcpackBytes(out, c.Name, a.getStringSetting("manifestDescription"))
+			mcpackBytes, err := a.buildMcpackBytes(out, c.Name, a.getStringSetting("manifestDescription"))
 			if err != nil {
 				logError(formatError(fmt.Sprintf("buildMcpackBytes failed: %s", c.Name), err))
 				a.emitProgress("Progress", c.Name, "fail", c.Name, totalFiles, index+1)
@@ -770,11 +880,11 @@ func (a *App) processPack(ctx context.Context, name string, data []byte, totalFi
 			a.AddRecentPack(c.Name, c.Name)
 		} else {
 			mcpackDir := bedrockDir
-			if a.getBoolSetting("deleteMcpack") {
+			if a.getBoolSetting("deleteMcpack") && a.getBoolSetting("autoImport") {
 				mcpackDir = a.getTempDir("mcpack")
 				os.MkdirAll(mcpackDir, os.ModePerm)
 			}
-			reportOut, reportErr := writeMcpack(out, c.Name, mcpackDir, a.getStringSetting("manifestDescription"))
+			reportOut, reportErr := a.writeMcpack(out, c.Name, mcpackDir, a.getStringSetting("manifestDescription"))
 			if reportErr != nil {
 				logError(formatError(fmt.Sprintf("write mcpack failed: %s", c.Name), reportErr))
 				log.Printf("Failed to write mcpack %s: %v", c.Name, reportErr)

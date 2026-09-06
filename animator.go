@@ -436,7 +436,7 @@ func (a *App) CreateAnimatedInventory(gifBytes []byte, fileName string, frameDur
 	}
 
 	outDir := a.getOutputDir()
-	if a.getBoolSetting("deleteMcpack") {
+	if a.getBoolSetting("deleteMcpack") && a.getBoolSetting("autoImport") {
 		outDir = a.getTempDir("mcpack")
 		os.MkdirAll(outDir, os.ModePerm)
 	}

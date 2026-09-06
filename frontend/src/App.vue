@@ -13,6 +13,7 @@ import ContactPage from './components/pages/ContactPage.vue'
 import RecentPacksPage from './components/pages/RecentPacksPage.vue'
 import SkyConverter from './components/tools/SkyConverter.vue'
 import PackViewer from './components/tools/PackViewer.vue'
+import ManifestTool from './components/tools/ManifestTool.vue'
 import ProgressNotification from './components/shared/ProgressNotification.vue'
 import { GetSettings, SaveSettings, CheckForUpdate, OpenDownloadLink, SetDiscordActivity } from '../wailsjs/go/main/App'
 
@@ -116,6 +117,7 @@ onMounted(() => {
       <RecentPacksPage v-if="currentPage === 'recentpacks'" />
       <SkyConverter v-show="currentPage === 'skyconverter'" :active="currentPage === 'skyconverter'" />
       <PackViewer v-show="currentPage === 'packviewer'" :active="currentPage === 'packviewer'" />
+      <ManifestTool v-show="currentPage === 'manifest'" :active="currentPage === 'manifest'" />
       <InfoPage v-show="currentPage === 'info'" />
       <SettingsPage v-show="currentPage === 'settings'" />
       <ContactPage v-show="currentPage === 'contact'" />

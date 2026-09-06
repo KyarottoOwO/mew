@@ -22,6 +22,7 @@ const navItems = [
   { id: 'animator', icon: 'fa-video', label: 'Animated Inventory' },
   { id: 'skyconverter', icon: 'fa-cloud-sun', label: 'Sky Converter' },
   { id: 'packviewer', icon: 'fa-eye', label: 'Pack Viewer' },
+  { id: 'manifest', icon: 'fa-file-lines', label: 'Manifest' },
   { id: 'recentpacks', icon: 'fa-clock', label: 'Recent Packs' },
   { id: 'info', icon: 'fa-circle-info', label: 'Info' },
   { id: 'settings', icon: 'fa-gear', label: 'Settings' },

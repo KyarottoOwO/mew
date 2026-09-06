@@ -1,18 +1,24 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"io"
+	"io/fs"
 	"math"
 	"os"
+	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/swim-services/swim_porter/cubemap"
 	xdraw "golang.org/x/image/draw"
 )
 
@@ -323,7 +329,7 @@ func (a *App) CreateSkyPack(imageBytes []byte, fileName string, faceSize int, me
 	}
 
 	outDir := a.getOutputDir()
-	if a.getBoolSetting("deleteMcpack") {
+	if a.getBoolSetting("deleteMcpack") && a.getBoolSetting("autoImport") {
 		outDir = a.getTempDir("mcpack")
 		os.MkdirAll(outDir, os.ModePerm)
 	}
@@ -416,4 +422,249 @@ func (a *App) mergeSkyPack(mcpackPath string, packNames []string) error {
 		return fmt.Errorf("none of the selected packs were found in Minecraft")
 	}
 	return nil
+}
+
+const skySubpackDir = "assets/minecraft/mcpatcher/sky/world0"
+
+type skyboxImage struct {
+	name string
+	img  image.Image
+}
+
+func scanSkyboxNames(reader *zip.Reader) []string {
+	var names []string
+	seen := map[string]bool{}
+	for _, f := range reader.File {
+		n := path.Clean(f.Name)
+		if !strings.HasPrefix(n, skySubpackDir+"/") {
+			continue
+		}
+		if !strings.EqualFold(path.Ext(n), ".png") {
+			continue
+		}
+		base := path.Base(n)
+		if seen[base] {
+			continue
+		}
+		seen[base] = true
+		names = append(names, f.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func decodeSkybox(reader *zip.Reader, name string) (skyboxImage, bool) {
+	rc, err := reader.Open(name)
+	if err != nil {
+		return skyboxImage{}, false
+	}
+	data, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		return skyboxImage{}, false
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return skyboxImage{}, false
+	}
+	stem := strings.TrimSuffix(path.Base(name), path.Ext(name))
+	return skyboxImage{name: stem, img: img}, true
+}
+
+func extractAllSkyboxes(javaBytes []byte) ([]skyboxImage, error) {
+	reader, err := zip.NewReader(bytes.NewReader(javaBytes), int64(len(javaBytes)))
+	if err != nil {
+		return nil, err
+	}
+
+	var skies []skyboxImage
+	for _, name := range scanSkyboxNames(reader) {
+		if sky, ok := decodeSkybox(reader, name); ok {
+			skies = append(skies, sky)
+		}
+	}
+	return skies, nil
+}
+
+func extractPresetSkyboxes(javaBytes []byte, presets []string) ([]skyboxImage, error) {
+	reader, err := zip.NewReader(bytes.NewReader(javaBytes), int64(len(javaBytes)))
+	if err != nil {
+		return nil, err
+	}
+
+	found := map[string]skyboxImage{}
+	for _, name := range scanSkyboxNames(reader) {
+		stem := strings.ToLower(strings.TrimSuffix(path.Base(name), path.Ext(name)))
+		if sky, ok := decodeSkybox(reader, name); ok {
+			found[stem] = sky
+		}
+	}
+
+	var skies []skyboxImage
+	for _, preset := range presets {
+		key := strings.ToLower(strings.TrimSpace(preset))
+		if key == "" {
+			continue
+		}
+		if sky, ok := found[key]; ok {
+			skies = append(skies, sky)
+		}
+	}
+	return skies, nil
+}
+
+func buildSkyCubemapPngs(sky image.Image) ([6][]byte, error) {
+	faces := cubemap.BuildCubemap(sky)
+	var out [6][]byte
+	for i, face := range faces {
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, face); err != nil {
+			return out, fmt.Errorf("failed to encode sky face %d: %v", i, err)
+		}
+		out[i] = buf.Bytes()
+	}
+	return out, nil
+}
+
+func addSkySubpacks(portOut []byte, skies []skyboxImage) ([]byte, error) {
+	if len(skies) == 0 {
+		return portOut, nil
+	}
+
+	reader, err := zip.NewReader(bytes.NewReader(portOut), int64(len(portOut)))
+	if err != nil {
+		return nil, err
+	}
+
+	var manifest map[string]interface{}
+	manifestData, err := readZipFile(reader, "manifest.json")
+	if err != nil {
+		return nil, err
+	}
+
+	remaining := map[string][]byte{}
+	for _, f := range reader.File {
+		if path.Clean(f.Name) == "manifest.json" {
+			continue
+		}
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			continue
+		}
+		data, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			continue
+		}
+		remaining[f.Name] = data
+	}
+
+	var subpacks []interface{}
+	for _, sky := range skies {
+		faces, err := buildSkyCubemapPngs(sky.img)
+		if err != nil {
+			continue
+		}
+		prefix := "subpacks/" + sky.name + "/textures/environment/overworld_cubemap/"
+		for i, face := range faces {
+			remaining[fmt.Sprintf("%scubemap_%d.png", prefix, i)] = face
+		}
+		subpacks = append(subpacks, map[string]interface{}{
+			"folder_name": sky.name,
+			"name":        sky.name,
+			"memory_tier": 0,
+		})
+	}
+
+	if len(subpacks) > 0 {
+		if err := json.Unmarshal(manifestData, &manifest); err != nil {
+			return nil, err
+		}
+		manifest["subpacks"] = subpacks
+		manifestData, err = json.MarshalIndent(manifest, "", "  ")
+		if err != nil {
+			return nil, err
+		}
+		remaining["manifest.json"] = manifestData
+	}
+
+	var buf bytes.Buffer
+	writer := zip.NewWriter(&buf)
+	names := make([]string, 0, len(remaining))
+	for name := range remaining {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		f, err := writer.Create(name)
+		if err != nil {
+			writer.Close()
+			return nil, err
+		}
+		if _, err := f.Write(remaining[name]); err != nil {
+			writer.Close()
+			return nil, err
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func (a *App) maybeAddSkySubpacks(javaBytes, portOut []byte) ([]byte, error) {
+	if len(javaBytes) == 0 {
+		return portOut, nil
+	}
+
+	var skies []skyboxImage
+	if a.getBoolSetting("portAllSkies") {
+		found, err := extractAllSkyboxes(javaBytes)
+		if err != nil {
+			a.logDebug(fmt.Sprintf("maybeAddSkySubpacks: extract all failed: %v", err))
+			return portOut, nil
+		}
+		skies = found
+	} else if a.getBoolSetting("skyPresets") {
+		presets := a.getStringArraySetting("skyPresetNames")
+		if len(presets) == 0 {
+			return portOut, nil
+		}
+		found, err := extractPresetSkyboxes(javaBytes, presets)
+		if err != nil {
+			a.logDebug(fmt.Sprintf("maybeAddSkySubpacks: extract presets failed: %v", err))
+			return portOut, nil
+		}
+		skies = found
+	} else {
+		return portOut, nil
+	}
+
+	if len(skies) == 0 {
+		return portOut, nil
+	}
+	withSubpacks, err := addSkySubpacks(portOut, skies)
+	if err != nil {
+		a.logDebug(fmt.Sprintf("maybeAddSkySubpacks: add failed: %v", err))
+		return portOut, nil
+	}
+	a.logDebug(fmt.Sprintf("maybeAddSkySubpacks: added %d sky subpack(s)", len(skies)))
+	return withSubpacks, nil
+}
+
+func readZipFile(reader *zip.Reader, name string) ([]byte, error) {
+	for _, f := range reader.File {
+		if path.Clean(f.Name) == name {
+			rc, err := f.Open()
+			if err != nil {
+				return nil, err
+			}
+			defer rc.Close()
+			return io.ReadAll(rc)
+		}
+	}
+	return nil, fs.ErrNotExist
 }

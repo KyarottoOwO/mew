@@ -78,6 +78,22 @@ func (a *App) getStringSetting(key string) string {
 	return ""
 }
 
+func (a *App) getStringArraySetting(key string) []string {
+	if val, ok := a.settings[key].([]string); ok {
+		return val
+	}
+	if val, ok := a.settings[key].([]interface{}); ok {
+		var out []string
+		for _, v := range val {
+			if s, ok := v.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
 type MinecraftPath struct {
 	Name string `json:"name"`
 	Path string `json:"path"`

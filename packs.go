@@ -68,6 +68,10 @@ type SkyTextures struct {
 	Cubemap5 string `json:"cubemap5"`
 }
 
+type SkySubpack struct {
+	FolderName string `json:"folderName"`
+	Name       string `json:"name"`
+}
 type FolderImage struct {
 	Filename string `json:"filename"`
 	DataURI  string `json:"dataURI"`
@@ -398,6 +402,107 @@ func (a *App) GetPackSkyTextures(packName string) (SkyTextures, error) {
 	return result, nil
 }
 
+func (a *App) readSkyCubemap(cubemapDir string, envDir string) SkyTextures {
+	result := SkyTextures{}
+	for i := 0; i <= 5; i++ {
+		p := findFirstImage(cubemapDir, fmt.Sprintf("cubemap_%d", i))
+		if p == "" {
+			p = findFirstImage(envDir, fmt.Sprintf("cubemap_%d", i))
+		}
+		if p == "" {
+			continue
+		}
+		uri := a.readImageAsDataURI(p)
+		if uri == "" {
+			continue
+		}
+		switch i {
+		case 0:
+			result.Cubemap0 = uri
+		case 1:
+			result.Cubemap1 = uri
+		case 2:
+			result.Cubemap2 = uri
+		case 3:
+			result.Cubemap3 = uri
+		case 4:
+			result.Cubemap4 = uri
+		case 5:
+			result.Cubemap5 = uri
+		}
+	}
+	return result
+}
+
+func hasSkyCubemap(cubemapDir string, envDir string) bool {
+	for i := 0; i <= 5; i++ {
+		if findFirstImage(cubemapDir, fmt.Sprintf("cubemap_%d", i)) != "" {
+			return true
+		}
+		if findFirstImage(envDir, fmt.Sprintf("cubemap_%d", i)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) GetPackSkySubpacks(packName string) ([]SkySubpack, error) {
+	dir := a.getPackDir(packName)
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		return nil, fmt.Errorf("pack not found: %s", packName)
+	}
+
+	manifestPath := filepath.Join(dir, "manifest.json")
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return nil, nil
+	}
+
+	var manifest struct {
+		Subpacks []struct {
+			FolderName string `json:"folder_name"`
+			Name       string `json:"name"`
+		} `json:"subpacks"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return nil, nil
+	}
+	out := make([]SkySubpack, 0, len(manifest.Subpacks))
+	for _, sp := range manifest.Subpacks {
+		if sp.FolderName == "" {
+			continue
+		}
+		subpackDir := filepath.Join(dir, "subpacks", sp.FolderName)
+		envDir := filepath.Join(subpackDir, "textures", "environment")
+		cubemapDir := filepath.Join(envDir, "overworld_cubemap")
+		if !hasSkyCubemap(cubemapDir, envDir) {
+			continue
+		}
+		out = append(out, SkySubpack{FolderName: sp.FolderName, Name: sp.Name})
+	}
+	return out, nil
+}
+
+func (a *App) GetPackSkySubpackTextures(packName string, subpackName string) (SkyTextures, error) {
+	dir := a.getPackDir(packName)
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		return SkyTextures{}, fmt.Errorf("pack not found: %s", packName)
+	}
+
+	subpackDir := filepath.Join(dir, "subpacks", subpackName)
+	if st, err := os.Stat(subpackDir); err != nil || !st.IsDir() {
+		return SkyTextures{}, nil
+	}
+
+	envDir := filepath.Join(subpackDir, "textures", "environment")
+	if st, err := os.Stat(envDir); err != nil || !st.IsDir() {
+		return SkyTextures{}, nil
+	}
+	cubemapDir := filepath.Join(envDir, "overworld_cubemap")
+	return a.readSkyCubemap(cubemapDir, envDir), nil
+}
+
+
 func (a *App) GetPackItemTextures(packName string, material string) ([]ItemTexture, error) {
 	dir := a.getPackDir(packName)
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
@@ -531,6 +636,56 @@ func (a *App) GetPackAllItemTextures(packName string) ([]ItemTexture, error) {
 	}
 
 	return items, nil
+}
+
+func (a *App) GetPackItemTextureNames(packName string) ([]string, error) {
+	dir := a.getPackDir(packName)
+	itemsDir := filepath.Join(dir, "textures", "items")
+	if st, err := os.Stat(itemsDir); err != nil || !st.IsDir() {
+		return nil, nil
+	}
+
+	entries, err := os.ReadDir(itemsDir)
+	if err != nil {
+		return nil, err
+	}
+
+	exts := map[string]bool{".png": true, ".tga": true, ".jpg": true, ".jpeg": true}
+	var names []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(entry.Name()))
+		if !exts[ext] {
+			continue
+		}
+		name := strings.TrimSuffix(entry.Name(), ext)
+		if name == "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
+func (a *App) GetPackItemTexture(packName string, name string) (string, error) {
+	dir := a.getPackDir(packName)
+	itemsDir := filepath.Join(dir, "textures", "items")
+	if st, err := os.Stat(itemsDir); err != nil || !st.IsDir() {
+		return "", nil
+	}
+
+	guard := filepath.Clean(name)
+	if strings.ContainsAny(guard, "/\\") || guard == "." || guard == ".." || strings.HasPrefix(guard, "..") {
+		return "", nil
+	}
+
+	imgPath := findFirstImage(itemsDir, name)
+	if imgPath == "" {
+		return "", nil
+	}
+	return a.readImageAsDataURI(imgPath), nil
 }
 
 func (a *App) GetPlayerSkinTexture(packName string) string {

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { GetSettings, SaveSettings, SelectDirectory, DetectMinecraftPaths, ClearCache, OpenMewDataDir } from '../../../wailsjs/go/main/App'
 
 const autoImport = ref(false)
@@ -9,6 +9,10 @@ const deleteMcpack = ref(false)
 const discordRPC = ref(true)
 const customOutputDir = ref('')
 const manifestDescription = ref('')
+const portAllSkies = ref(false)
+const skyPresets = ref(true)
+const skyPresetNames = ref('')
+const addPromoTexts = ref(false)
 const resourcePacksPath = ref('')
 const theme = ref('dark')
 
@@ -29,6 +33,10 @@ async function loadSettings() {
     discordRPC.value = s.discordRPC !== false
     customOutputDir.value = s.customOutputDir || ''
     manifestDescription.value = s.manifestDescription || ''
+    portAllSkies.value = s.portAllSkies || false
+    skyPresets.value = s.skyPresets !== false
+    skyPresetNames.value = Array.isArray(s.skyPresetNames) ? s.skyPresetNames.join(', ') : ''
+    addPromoTexts.value = s.addPromoTexts || false
     resourcePacksPath.value = s.resourcePacksPath || ''
     theme.value = s.theme || 'dark'
 
@@ -71,6 +79,10 @@ async function persistSettings() {
       discordRPC: discordRPC.value,
       customOutputDir: customOutputDir.value,
       manifestDescription: manifestDescription.value,
+      portAllSkies: portAllSkies.value,
+      skyPresets: skyPresets.value,
+      skyPresetNames: skyPresetNames.value.split(',').map(s => s.trim()).filter(s => s !== ''),
+      addPromoTexts: addPromoTexts.value,
       resourcePacksPath: finalPath,
       theme: theme.value,
     }
@@ -86,6 +98,17 @@ async function persistSettings() {
 function onThemeChange() {
   persistSettings()
 }
+
+watch([portAllSkies, skyPresets], ([all, presets]) => {
+  if (all && presets) {
+    if (portAllSkies.value) {
+      skyPresets.value = false
+    } else {
+      portAllSkies.value = false
+    }
+    persistSettings()
+  }
+})
 
 function onMinecraftPathChange() {
   if (selectedMinecraftPath.value === '__custom__') {
@@ -270,6 +293,53 @@ onMounted(loadSettings)
             class="text-input"
             @change="persistSettings"
           />
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Port All Sky Images as Subpacks</span>
+            <span class="setting-desc">When porting a pack, convert every sky image in it as selectable subpacks (overrides preset names below)</span>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" v-model="portAllSkies" @change="persistSettings" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Port Preset Sky Names as Subpacks</span>
+            <span class="setting-desc">Port specific sky names from a pack as selectable subpacks</span>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" v-model="skyPresets" @change="persistSettings" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div v-if="skyPresets" class="setting-row setting-row-block">
+          <div class="setting-info">
+            <span class="setting-label">Sky Preset Names</span>
+            <span class="setting-desc">Comma-separated sky names to port as subpacks. Only skies present in the pack are used.</span>
+          </div>
+          <input
+            v-model="skyPresetNames"
+            type="text"
+            placeholder="starfield, sky1, sky2, starfield02, starfield03"
+            class="text-input"
+            @change="persistSettings"
+          />
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Add MEW Promo Files</span>
+            <span class="setting-desc">Add loading messages and splash texts to each ported pack</span>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" v-model="addPromoTexts" @change="persistSettings" />
+            <span class="toggle-slider"></span>
+          </label>
         </div>
 
         <div class="setting-row">

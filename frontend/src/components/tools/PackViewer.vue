@@ -1,9 +1,10 @@
 <script setup>
-import { ref, reactive, computed, onMounted, nextTick, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import * as THREE from 'three'
 import { SkinView3d } from 'vue-skinview3d'
 import { IdleAnimation, WalkingAnimation } from 'vue-skinview3d/animations'
-import { GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackArmorTextures, GetPackItemTextures, GetPackSkyTextures, GetPlayerSkinTexture, GetDefaultSkin, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackAllItemTextures, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug } from '../../../wailsjs/go/main/App'
+import PackExporter from './PackExporter.vue'
+import { GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackArmorTextures, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPlayerSkinTexture, GetDefaultSkin, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug } from '../../../wailsjs/go/main/App'
 import defaultSkinImg from '../../assets/default-skin.png'
 
 import { parseBedrockCodes } from '../../utils/formatCodes'
@@ -16,10 +17,12 @@ const searchQuery = ref('')
 const sortBy = ref('name')
 
 const showModal = ref(false)
+const confirmDelete = ref(false)
 const selectedPack = ref('')
 const selectedPackInfo = ref({ name: '', description: '', iconURI: '' })
 const selectedMaterial = ref('diamond')
 const itemTextures = ref([])
+const itemCache = new Map()
 
 const materials = ['diamond', 'gold', 'iron', 'chain', 'cloth', 'netherite', 'naked']
 const materialLabels = {
@@ -35,6 +38,11 @@ const viewerRef = ref(null)
 const modalContainer = ref(null)
 const isDebug = ref(false)
 
+const showMemPanel = ref(true)
+const memLog = ref([])
+const memTimer = ref(null)
+const memLive = ref(null)
+
 const SKY_DEBUG_KEY = 'mew-sky-debug-config'
 const skyDebugFaces = reactive({
   0: { rotation: 0,   flipH: false },
@@ -49,11 +57,46 @@ const showSkyDebug = ref(false)
 const customItemNames = ref([])
 const removedItemNames = ref([])
 const showItemPicker = ref(false)
-const pickerItems = ref([])
+const pickerNames = ref([])
+const pickerTextures = reactive(new Map())
+const pickerThumbs = reactive(new Map())
+const pickerLoaded = reactive(new Set())
+const pickerGridRef = ref(null)
 const pickerLoading = ref(false)
 const pickerSearch = ref('')
+let pickerObserver = null
 
 let viewerInstance = null
+
+const fullscreen = ref(false)
+const fsViewerRef = ref(null)
+const fsContainerRef = ref(null)
+let fsViewerInstance = null
+
+const showExportPopup = ref(false)
+
+const IDLE_PAUSE_MS = 3000
+const IDLE_GC_MS = 10000
+const idleCleanups = new Set()
+let fsIdleCleanup = null
+
+// Cap the 3D renderer's pixel ratio to bound GPU/JS memory on HiDPI displays.
+// skinview3d defaults to devicePixelRatio (up to 2-3x), which can ~4-9x memory usage.
+const SKIN_PIXEL_RATIO = 1.5
+
+function capPixelRatio(v) {
+  if (!v || v.disposed) return
+  try {
+    if (v.pixelRatio !== SKIN_PIXEL_RATIO) v.pixelRatio = SKIN_PIXEL_RATIO
+  } catch {}
+}
+
+let viewerTimer = null
+let fsViewerTimer = null
+let modelSetupAlive = true
+
+const skySubpacks = ref([])
+const skySlider = ref(0)
 
 const SKY_FACE_META = [
   { key: 0, label: 'Left',     threeFace: '-X', bedrock: 'cubemap_0' },
@@ -122,16 +165,130 @@ function flipCanvasH(src) {
 }
 
 let lastSkyTex = null
+let currentSkyKey = null
+let lastLoadedPack = null
 
 function setLastSkyTex(tex) { lastSkyTex = tex }
 
+const skyCache = new Map()
+const skyPending = new Map()
+const SKY_CACHE_CAP = 3
+const ITEM_CACHE_CAP = 3
+const SKY_FACE_CAP_MODAL = 512
+
+function skyKey(key) {
+  return key + (fullscreen.value ? ':fs' : ':m')
+}
+
+function skyCap() {
+  return fullscreen.value ? null : SKY_FACE_CAP_MODAL
+}
+
+function skyBuild(key, tex) {
+  return buildSkyCubemap(skyKey(key), tex, skyCap())
+}
+
+function pruneSkyCache() {
+  if (skyCache.size <= SKY_CACHE_CAP) return
+  const base = selectedPack.value + '#'
+  const evictable = [...skyCache.keys()].filter(k => k !== 'default' && !k.startsWith(base))
+  for (const k of evictable) {
+    if (skyCache.size <= SKY_CACHE_CAP) break
+    const t = skyCache.get(k)
+    try { t.dispose() } catch {}
+    skyCache.delete(k)
+  }
+}
+
+function pruneItemCache() {
+  if (itemCache.size <= ITEM_CACHE_CAP) return
+  const cur = selectedPack.value
+  const evictable = [...itemCache.keys()].filter(k => k !== cur)
+  for (const k of evictable) {
+    if (itemCache.size <= ITEM_CACHE_CAP) break
+    itemCache.delete(k)
+  }
+}
+
+async function buildSkyCubemap(key, tex, cap) {
+  if (skyCache.has(key)) return skyCache.get(key)
+  if (skyPending.has(key)) return skyPending.get(key)
+  const pending = generateSkyCubemap(tex, cap).then(built => {
+    skyPending.delete(key)
+    if (skyCache.has(key)) {
+      try { built.dispose() } catch {}
+      return skyCache.get(key)
+    }
+    skyCache.set(key, built)
+    pruneSkyCache()
+    return built
+  })
+  skyPending.set(key, pending)
+  return pending
+}
+
+function setSkyOnViewers(cubemap) {
+  if (viewerInstance) viewerInstance.scene.background = cubemap
+  if (fsViewerInstance) fsViewerInstance.scene.background = cubemap
+}
+
+function invalidateSkyCache(pack) {
+  for (const k of [...skyCache.keys()]) {
+    if (k.startsWith(pack + '#')) {
+      const t = skyCache.get(k)
+      try { t.dispose() } catch {}
+      skyCache.delete(k)
+    }
+  }
+  for (const k of [...skyPending.keys()]) {
+    if (k.startsWith(pack + '#')) skyPending.delete(k)
+  }
+}
+
+const textureCache = new Map()
+const texturePending = new Map()
+const TEXTURE_CACHE_CAP = 12
+
+function pruneTextureCache() {
+  if (textureCache.size <= TEXTURE_CACHE_CAP) return
+  const cur = selectedPack.value
+  const evictable = [...textureCache.keys()].filter(k => !cur || !k.startsWith(cur + '|'))
+  for (const k of evictable) {
+    if (textureCache.size <= TEXTURE_CACHE_CAP) break
+    textureCache.delete(k)
+  }
+}
+
+function invalidateTextureCache(pack) {
+  const prefix = pack + '|'
+  for (const k of [...textureCache.keys()]) {
+    if (k.startsWith(prefix)) textureCache.delete(k)
+  }
+  for (const k of [...texturePending.keys()]) {
+    if (k.startsWith(prefix)) texturePending.delete(k)
+  }
+}
+
+function cachedTextureFetch(key, fetcher) {
+  if (textureCache.has(key)) return Promise.resolve(textureCache.get(key))
+  if (texturePending.has(key)) return texturePending.get(key)
+  const p = Promise.resolve().then(fetcher).then(v => {
+    texturePending.delete(key)
+    if (textureCache.has(key)) return textureCache.get(key)
+    textureCache.set(key, v)
+    pruneTextureCache()
+    return v
+  })
+  texturePending.set(key, p)
+  return p
+}
+
+
 async function applySkyDebug() {
   if (!viewerInstance) return
-  if (viewerInstance.scene.background && viewerInstance.scene.background.dispose) {
-    viewerInstance.scene.background.dispose()
-  }
-  const cubemap = await generateSkyCubemap(lastSkyTex)
-  if (viewerInstance) viewerInstance.scene.background = cubemap
+  const cubemap = await skyBuild(selectedPack.value + '#current', lastSkyTex)
+  currentSkyKey = skyKey(selectedPack.value + '#current')
+  setSkyOnViewers(cubemap)
 }
 
 function loadImageToCanvas(uri) {
@@ -144,7 +301,7 @@ function loadImageToCanvas(uri) {
   })
 }
 
-async function generateSkyCubemap(skyTex) {
+async function generateSkyCubemap(skyTex, cap) {
   function makeCanvas(s, draw) {
     const c = document.createElement('canvas')
     c.width = s; c.height = s
@@ -216,7 +373,8 @@ async function generateSkyCubemap(skyTex) {
   ]
 
   const faceDims = faceMap.map(img => img ? (img.naturalWidth || img.width) : 0)
-  const size = Math.max(...faceDims, 512)
+  const native = Math.max(...faceDims, 128)
+  const size = (cap && Number.isFinite(cap)) ? Math.min(native, cap) : native
 
   const fallbacks = [
     fallbackFace(size, '#0e1e3d', '#3a7cc2'),
@@ -253,8 +411,8 @@ const skinOptions = computed(() => ({
 
 const filteredPickerItems = computed(() => {
   const q = pickerSearch.value.trim().toLowerCase()
-  if (!q) return pickerItems.value
-  return pickerItems.value.filter(item => item.name.toLowerCase().includes(q))
+  if (!q) return pickerNames.value
+  return pickerNames.value.filter(name => name.toLowerCase().includes(q))
 })
 
 function formatSize(bytes) {
@@ -262,6 +420,265 @@ function formatSize(bytes) {
   if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB'
   return (bytes / 1048576).toFixed(1) + ' MB'
 }
+
+let gcTimer = null
+let lastActivity = Date.now()
+let idleGCArmed = false
+let gcWatchdog = null
+let gcIdleEvents = null
+
+function markActivity() {
+  lastActivity = Date.now()
+}
+
+function armIdleGC() {
+  idleGCArmed = true
+}
+
+function scheduleIdleGC(delayMs, reason) {
+  if (typeof gc !== 'function') return
+  if (gcTimer) return
+  gcTimer = setTimeout(() => {
+    gcTimer = null
+    try {
+      gc()
+      if (isDebug.value) console.log('[gc] collected' + (reason ? ' (' + reason + ')' : ''))
+    } catch {}
+    recordMem(reason ? 'gc ' + reason : 'gc')
+  }, delayMs == null ? 4000 : delayMs)
+}
+
+function startGCWatchdog() {
+  stopGCWatchdog()
+  gcWatchdog = setInterval(() => {
+    if (!idleGCArmed) return
+    if (Date.now() - lastActivity < IDLE_GC_MS) return
+    idleGCArmed = false
+    scheduleIdleGC(null, 'idle')
+  }, 2000)
+  gcIdleEvents = ['pointerdown', 'pointermove', 'wheel', 'touchstart', 'touchmove', 'keydown']
+  for (const evt of gcIdleEvents) window.addEventListener(evt, markActivity, { passive: true })
+}
+
+function stopGCWatchdog() {
+  if (gcWatchdog) { clearInterval(gcWatchdog); gcWatchdog = null }
+  if (gcIdleEvents) {
+    for (const evt of gcIdleEvents) window.removeEventListener(evt, markActivity)
+    gcIdleEvents = null
+  }
+}
+
+function measureMem() {
+  let heap = null
+  let heapTotal = null
+  let heapLimit = null
+  try {
+    const m = performance.memory
+    if (m) {
+      heap = m.usedJSHeapSize
+      heapTotal = m.totalJSHeapSize
+      heapLimit = m.jsHeapSizeLimit
+    }
+  } catch {}
+
+  let nodeCount = 0
+  try { nodeCount = document.querySelectorAll('*').length } catch {}
+
+  let canvasBytes = 0
+  let canvasCount = 0
+  for (const c of document.querySelectorAll('canvas')) {
+    if (c.width > 1 && c.height > 1) {
+      canvasCount++
+      canvasBytes += c.width * c.height * 4
+    }
+  }
+
+  let imgBytes = 0
+  let imgCount = 0
+  for (const img of document.querySelectorAll('.pv-item-img, .pv-picker-item-img, .pv-fs-3d canvas, .pv-thumb, .pack-card img, .pv-pack-icon')) {
+    const w = img.naturalWidth || img.width
+    const h = img.naturalHeight || img.height
+    if (w > 1 && h > 1) {
+      imgCount++
+      imgBytes += w * h * 4
+    }
+  }
+
+  let allImgBytes = 0
+  let allImgCount = 0
+  for (const img of document.querySelectorAll('img')) {
+    const w = img.naturalWidth || img.width
+    const h = img.naturalHeight || img.height
+    if (w > 1 && h > 1) {
+      allImgCount++
+      allImgBytes += w * h * 4
+    }
+  }
+
+  return { heap, canvasBytes, canvasCount, imgBytes, imgCount, allImgBytes, allImgCount }
+}
+
+function cachePinStats() {
+  let itemTexBytes = 0
+  const it = itemTextures.value || []
+  for (const itm of it) {
+    if (itm && itm.dataURI) itemTexBytes += itm.dataURI.length
+  }
+  let skyBytes = 0
+  for (const t of skyCache.values()) {
+    if (t && t.image) {
+      for (const c of t.image) {
+        if (c) skyBytes += (c.naturalWidth || c.width || 0) * (c.naturalHeight || c.height || 0) * 4
+      }
+    }
+  }
+  let itemBytes = 0
+  for (const arr of itemCache.values()) {
+    if (Array.isArray(arr)) {
+      for (const itm of arr) {
+        if (itm && itm.dataURI) itemBytes += itm.dataURI.length
+      }
+    }
+  }
+  return {
+    skyCount: skyCache.size,
+    skyBytes,
+    itemCacheCount: itemCache.size,
+    itemCacheBytes: itemBytes,
+    itemTexCount: it.length,
+    itemTexBytes,
+  }
+}
+
+function recordMem(label) {
+  if (!isDebug.value) return
+  const s = measureMem()
+  const p = cachePinStats()
+  const entry = {
+    t: new Date().toLocaleTimeString(),
+    label,
+    heap: s.heap,
+    canvasBytes: s.canvasBytes,
+    canvasCount: s.canvasCount,
+    imgBytes: s.imgBytes,
+    imgCount: s.imgCount,
+    skyCount: p.skyCount,
+    skyBytes: p.skyBytes,
+    itemCacheCount: p.itemCacheCount,
+    itemCacheBytes: p.itemCacheBytes,
+    itemTexCount: p.itemTexCount,
+    itemTexBytes: p.itemTexBytes,
+    allImgCount: s.allImgCount,
+    allImgBytes: s.allImgBytes,
+  }
+  const log = memLog.value
+  log.push(entry)
+  if (log.length > 60) log.shift()
+  memLog.value = log
+}
+
+async function memDump() {
+  const s = measureMem()
+  const p = cachePinStats()
+  const logRows = (memLog.value || []).slice(-30).map(e =>
+    e.t + ' ' + e.label +
+    ' heap ' + formatSize(e.heap) +
+    ' sky ' + e.skyCount + ' (' + formatSize(e.skyBytes) + ')' +
+    ' itemC ' + e.itemCacheCount + ' (' + formatSize(e.itemCacheBytes) + ')' +
+    ' allI ' + e.allImgCount + ' (' + formatSize(e.allImgBytes) + ')'
+  )
+  const uaLines = []
+  try {
+    if (typeof performance.measureUserAgentSpecificMemory === 'function') {
+      const r = await performance.measureUserAgentSpecificMemory()
+      uaLines.push('UA memory total: ' + formatSize(r.bytes))
+      const byType = {}
+      for (const b of r.breakdown || []) {
+        if (b.bytes > 0) byType[b.type || 'unknown'] = (byType[b.type] || 0) + b.bytes
+      }
+      for (const k of Object.keys(byType).sort((a, b) => byType[b] - byType[a])) {
+        uaLines.push('  ' + k + ': ' + formatSize(byType[k]))
+      }
+    }
+  } catch {}
+  const lines = [
+    '=== MEMORY DUMP ' + new Date().toISOString() + ' ===',
+    'heap: ' + formatSize(s.heap) + (s.heap != null ? ' (' + Math.round(s.heap / 1048576) + ' MB)' : ''),
+    'canvases: ' + s.canvasCount + ' / ' + formatSize(s.canvasBytes),
+    'decoded imgs: ' + s.imgCount + ' / ' + formatSize(s.imgBytes),
+    'ALL imgs in DOM: ' + (s.allImgCount != null ? s.allImgCount + ' / ' + formatSize(s.allImgBytes) : 'n/a'),
+    'itemTextures (grid): ' + p.itemTexCount + ' / ' + formatSize(p.itemTexBytes),
+    'itemCache: ' + p.itemCacheCount + ' pack(s) / ' + formatSize(p.itemCacheBytes),
+    'skyCache: ' + p.skyCount + ' cubemap(s) / ' + formatSize(p.skyBytes),
+    'pickerTextures: ' + pickerTextures.size,
+    'pickerNames: ' + pickerNames.value.length,
+    'packList: ' + (packList.value || []).length,
+    'packsPath: ' + (packsPath.value || ''),
+    ...uaLines,
+    '--- recent log ---',
+    ...(logRows.length ? logRows : ['(empty)']),
+    '=== END DUMP ===',
+  ]
+  const text = lines.join('\n')
+  try { await navigator.clipboard.writeText(text) } catch {}
+  console.log(text)
+  recordMem('MEM DUMP')
+}
+
+function resetMem() {
+  if (!confirm('Reset memory? This clears all caches/viewers and reloads the app.')) return
+  if (viewerTimer) { clearTimeout(viewerTimer); viewerTimer = null }
+  if (fsViewerTimer) { clearTimeout(fsViewerTimer); fsViewerTimer = null }
+  clearIdlePause()
+  disposeViewerResources(viewerInstance)
+  disposeViewerResources(fsViewerInstance)
+  viewerInstance = null
+  fsViewerInstance = null
+  itemCache.clear()
+  itemTextures.value = []
+  clearSkyCache()
+  pickerTextures.clear()
+  pickerLoaded.clear()
+  window.location.reload()
+}
+
+let memTimerHandle = null
+function startMemSampler() {
+  stopMemSampler()
+  const tick = () => {
+    const s = measureMem()
+    const p = cachePinStats()
+    memLive.value = {
+      t: new Date().toLocaleTimeString(),
+      heap: s.heap,
+      canvasBytes: s.canvasBytes,
+      canvasCount: s.canvasCount,
+      imgBytes: s.imgBytes,
+      imgCount: s.imgCount,
+      skyCount: p.skyCount,
+      skyBytes: p.skyBytes,
+      itemCacheCount: p.itemCacheCount,
+      itemCacheBytes: p.itemCacheBytes,
+      itemTexCount: p.itemTexCount,
+      itemTexBytes: p.itemTexBytes,
+      allImgCount: s.allImgCount,
+      allImgBytes: s.allImgBytes,
+      modal: !!viewerInstance,
+      fs: !!fsViewerInstance,
+      packs: (packList.value || []).length,
+    }
+    memTimerHandle = setTimeout(tick, 1000)
+  }
+  tick()
+}
+function stopMemSampler() {
+  if (memTimerHandle) { clearTimeout(memTimerHandle); memTimerHandle = null }
+}
+
+watch(showMemPanel, (on) => {
+  if (on && isDebug.value) startMemSampler()
+  else stopMemSampler()
+})
 
 const filteredPacks = computed(() => {
   let list = packList.value
@@ -397,6 +814,60 @@ function disposeMesh(mesh) {
   } else if (mesh.material) { mesh.material.dispose() }
 }
 
+function disposeViewerResources(v) {
+  if (!v) return
+  removeArmorMeshes(v)
+  v.scene.background = null
+  if (!v.disposed) {
+    try { v.dispose() } catch {}
+  }
+}
+
+function clearIdlePause() {
+  for (const c of idleCleanups) { try { c() } catch {} }
+  idleCleanups.clear()
+  if (fsIdleCleanup) { try { fsIdleCleanup() } catch {}; fsIdleCleanup = null }
+  setViewerPaused(viewerInstance, false)
+  setViewerPaused(fsViewerInstance, false)
+}
+
+function setViewerPaused(v, paused) {
+  if (!v || v.disposed) return
+  v.renderPaused = paused
+}
+
+function resumeViewers() {
+  setViewerPaused(viewerInstance, false)
+  setViewerPaused(fsViewerInstance, false)
+}
+
+function setupIdlePause(v, cleanupSet) {
+  if (!v || v.disposed) return
+  let timer = null
+  const resume = () => {
+    setViewerPaused(v, false)
+    clearTimeout(timer)
+    timer = setTimeout(() => setViewerPaused(v, true), IDLE_PAUSE_MS)
+  }
+  const evts = ['pointerdown', 'pointermove', 'wheel', 'touchstart', 'touchmove']
+  for (const evt of evts) v.canvas.addEventListener(evt, resume, { passive: true })
+  setViewerPaused(v, true)
+  const cleanup = () => {
+    clearTimeout(timer)
+    for (const evt of evts) v.canvas.removeEventListener(evt, resume)
+  }
+  if (cleanupSet) cleanupSet.add(cleanup)
+  return cleanup
+}
+
+function clearSkyCache() {
+  for (const t of skyCache.values()) {
+    try { t.dispose() } catch {}
+  }
+  skyCache.clear()
+  skyPending.clear()
+}
+
 function loadImage(uri) {
   return new Promise(resolve => {
     if (!uri) return resolve(null)
@@ -407,9 +878,24 @@ function loadImage(uri) {
   })
 }
 
-function buildArmor(tex1, tex2) {
-  if (!viewerInstance) return
-  const skin = viewerInstance.playerObject.skin
+async function toThumb(dataURI, size = 64) {
+  try {
+    const img = await loadImage(dataURI)
+    if (!img) return dataURI
+    const c = document.createElement('canvas')
+    c.width = size; c.height = size
+    const ctx = c.getContext('2d')
+    ctx.imageSmoothingEnabled = false
+    ctx.drawImage(img, 0, 0, size, size)
+    return c.toDataURL('image/png')
+  } catch {
+    return dataURI
+  }
+}
+
+function buildArmor(v, tex1, tex2) {
+  if (!v || v.disposed) return
+  const skin = v.playerObject.skin
   const allBones = [
     ...(tex1 ? ARMOR_LAYER1_BONES.map(b => [b, tex1]) : []),
     ...(tex2 ? ARMOR_LAYER2_BONES.map(b => [b, tex2]) : []),
@@ -422,9 +908,9 @@ function buildArmor(tex1, tex2) {
   }
 }
 
-function removeArmorMeshes() {
-  if (!viewerInstance) return
-  const skin = viewerInstance.playerObject.skin
+function removeArmorMeshes(v) {
+  if (!v || v.disposed) return
+  const skin = v.playerObject.skin
   for (const partName of Object.keys(skin)) {
     const part = skin[partName]
     if (!part || !part.children) continue
@@ -442,6 +928,7 @@ function getViewerSize() {
 
 function configureViewer() {
   if (!viewerInstance) return
+  capPixelRatio(viewerInstance)
   viewerInstance.camera.position.set(0, 8, 40)
   viewerInstance.controls.target.set(0, 2, 0)
   viewerInstance.controls.enableDamping = true
@@ -451,34 +938,165 @@ function configureViewer() {
   viewerInstance.controls.update()
 }
 
-watch(viewerRef, async (newRef) => {
-  if (!newRef) return
-  const tryGetViewer = async () => {
+const fsIndex = ref(0)
+
+function openFullscreen() {
+  const idx = filteredPacks.value.findIndex(p => p.dirName === selectedPack.value)
+  fsIndex.value = idx >= 0 ? idx : 0
+  fullscreen.value = true
+  nextTick(() => {
+    measureFs()
+    applyAppearanceFs()
+    recordMem('fs open')
+  })
+}
+
+async function closeFullscreen() {
+  const wasFsKey = currentSkyKey
+  const baseKey = wasFsKey && wasFsKey.startsWith(selectedPack.value + '#')
+    ? wasFsKey.replace(/:fs$/, '')
+    : (selectedPack.value ? selectedPack.value + '#base' : null)
+  fullscreen.value = false
+  if (baseKey && lastSkyTex) {
+    try {
+      const cubemap = await skyBuild(baseKey, lastSkyTex)
+      currentSkyKey = skyKey(baseKey)
+      if (currentSkyKey !== wasFsKey) setSkyOnViewers(cubemap)
+    } catch {}
+  }
+  if (wasFsKey && wasFsKey.endsWith(':fs')) {
+    const t = skyCache.get(wasFsKey)
+    if (t) { try { t.dispose() } catch {}; skyCache.delete(wasFsKey) }
+    skyPending.delete(wasFsKey)
+  }
+  recordMem('fs close')
+}
+
+function fsPrev() {
+  navPack(-1)
+}
+
+function fsNext() {
+  navPack(1)
+}
+
+let lastNavAt = 0
+
+function navPack(delta) {
+  if (filteredPacks.value.length === 0) return
+  const now = Date.now()
+  if (now - lastNavAt < 500) return
+  lastNavAt = now
+  doNavPack(delta)
+}
+
+async function doNavPack(delta) {
+  const curIdx = filteredPacks.value.findIndex(p => p.dirName === selectedPack.value)
+  const base = curIdx >= 0 ? curIdx : fsIndex.value
+  const idx = (base + delta + filteredPacks.value.length) % filteredPacks.value.length
+  const pack = filteredPacks.value[idx]
+  if (!pack) return
+  fsIndex.value = idx
+  selectedPack.value = pack.dirName
+  selectedMaterial.value = selectedMaterial.value
+  showModal.value = true
+  await nextTick()
+  await loadPackData(pack.dirName)
+  recordMem(fullscreen.value ? 'fs nav' : 'nav')
+}
+
+function onFsNavKey(e) {
+  if (!fullscreen.value) return
+  if (e.key === 'ArrowLeft') { e.preventDefault(); fsPrev() }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); fsNext() }
+  else if (e.key === 'Escape') closeFullscreen()
+}
+
+watch(fullscreen, (val) => {
+  if (val) window.addEventListener('keydown', onFsNavKey)
+  else window.removeEventListener('keydown', onFsNavKey)
+})
+
+const fsSize = ref({ w: 0, h: 0 })
+
+function measureFs() {
+  if (fsContainerRef.value) {
+    const r = fsContainerRef.value.getBoundingClientRect()
+    fsSize.value = { w: Math.round(r.width), h: Math.round(r.height) }
+  }
+}
+
+watch(fsViewerRef, (newRef) => {
+  if (!newRef || !modelSetupAlive) return
+  if (fsViewerTimer) { clearTimeout(fsViewerTimer); fsViewerTimer = null }
+  const tryGetViewer = () => {
+    if (!modelSetupAlive) return
     const v = newRef.viewer
     if (v) {
-      viewerInstance = v
-      configureViewer()
-      try {
-        const defSkin = await GetDefaultSkin()
-        if (defSkin) customSkinURI.value = defSkin
-      } catch {}
-      const uri = customSkinURI.value || defaultSkinImg
-      await viewerInstance.loadSkin(uri, { model: skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value })
-      if (viewerInstance.scene.background && viewerInstance.scene.background.dispose) {
-        viewerInstance.scene.background.dispose()
+      if (v.disposed) return
+      fsViewerTimer = null
+      fsViewerInstance = v
+      capPixelRatio(v)
+      if (fsIdleCleanup) { fsIdleCleanup(); fsIdleCleanup = null }
+      fsIdleCleanup = setupIdlePause(v, null)
+      v.camera.position.set(0, 8, 40)
+      v.controls.target.set(0, 2, 0)
+      v.controls.enableDamping = true
+      v.controls.dampingFactor = 0.08
+      if (customSkinURI.value) {
+        v.loadSkin(customSkinURI.value, { model: skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value })
       }
-      viewerInstance.scene.background = await generateSkyCubemap(null)
+      applyAppearanceFs()
     } else {
-      setTimeout(tryGetViewer, 50)
+      fsViewerTimer = setTimeout(tryGetViewer, 50)
     }
   }
   tryGetViewer()
 })
 
-watch(() => customSkinURI.value, async (newUri) => {
-  if (!viewerInstance || !showModal.value) return
-  const uri = newUri || defaultSkinImg
-  viewerInstance.loadSkin(uri, { model: skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value })
+async function applyAppearanceFs() {
+  if (!fsViewerInstance) return
+  const uri = customSkinURI.value || defaultSkinImg
+  await fsViewerInstance.loadSkin(uri, { model: skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value })
+  const cached = currentSkyKey ? skyCache.get(currentSkyKey) : null
+  const cubemap = cached || await skyBuild(selectedPack.value + '#base', lastSkyTex)
+  currentSkyKey = skyKey(selectedPack.value + '#base')
+  setSkyOnViewers(cubemap)
+  await applyArmor(selectedPack.value, selectedMaterial.value)
+  resumeViewers()
+}
+
+watch(viewerRef, (newRef) => {
+  if (!newRef || !modelSetupAlive) return
+  if (viewerTimer) { clearTimeout(viewerTimer); viewerTimer = null }
+  const tryGetViewer = () => {
+    if (!modelSetupAlive) return
+    const v = newRef.viewer
+    if (v) {
+      if (v.disposed) return
+      viewerTimer = null
+      viewerInstance = v
+      setupIdlePause(v, idleCleanups)
+      configureViewer()
+      const setupViewer = async () => {
+        try {
+          const defSkin = await GetDefaultSkin()
+          if (defSkin) customSkinURI.value = defSkin
+        } catch {}
+        if (viewerInstance && !viewerInstance.disposed) {
+          const uri = customSkinURI.value || defaultSkinImg
+          await viewerInstance.loadSkin(uri, { model: skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value })
+          setSkyOnViewers(await buildSkyCubemap('default', null))
+          if (selectedPack.value) await applyArmor(selectedPack.value, selectedMaterial.value)
+          resumeViewers()
+        }
+      }
+      setupViewer()
+    } else {
+      viewerTimer = setTimeout(tryGetViewer, 50)
+    }
+  }
+  tryGetViewer()
 })
 
 async function loadAllPacks() {
@@ -501,8 +1119,6 @@ function openPackFolder() {
   OpenFolder(packsPath.value + sep + selectedPack.value)
 }
 
-const confirmDelete = ref(false)
-
 async function deletePack() {
   if (!selectedPack.value) return
   if (!confirmDelete.value) {
@@ -514,6 +1130,7 @@ async function deletePack() {
   confirmDelete.value = false
   try {
     await DeleteInstalledPack(name)
+    invalidateTextureCache(name)
     closeModal()
     await loadAllPacks()
   } catch (e) {
@@ -531,11 +1148,12 @@ async function openPack(packName) {
   await loadPackData(packName)
 }
 
-function waitForViewer() {
+function waitForViewer(timeout = 5000) {
   if (viewerInstance) return Promise.resolve()
   return new Promise(resolve => {
+    const start = Date.now()
     const check = setInterval(() => {
-      if (viewerInstance) { clearInterval(check); resolve() }
+      if (viewerInstance || Date.now() - start > timeout) { clearInterval(check); resolve() }
     }, 50)
   })
 }
@@ -543,53 +1161,147 @@ function waitForViewer() {
 function closeModal() {
   showModal.value = false
   confirmDelete.value = false
+  fullscreen.value = false
+  if (viewerTimer) { clearTimeout(viewerTimer); viewerTimer = null }
+  if (fsViewerTimer) { clearTimeout(fsViewerTimer); fsViewerTimer = null }
+  clearIdlePause()
+  disposeViewerResources(viewerInstance)
+  disposeViewerResources(fsViewerInstance)
+  viewerInstance = null
+  fsViewerInstance = null
+  setLastSkyTex(null)
+  currentSkyKey = null
+  skySubpacks.value = []
+  skySlider.value = 0
+  itemTextures.value = []
+  itemCache.clear()
+  clearSkyCache()
+  textureCache.clear()
+  texturePending.clear()
+  if (pickerObserver) pickerObserver.disconnect()
+  pickerObserver = null
+  pickerNames.value = []
+  pickerTextures.clear()
+  pickerThumbs.clear()
+  pickerLoaded.clear()
+  pickerSearch.value = ''
+  showItemPicker.value = false
 }
 
 async function loadPackData(packName) {
   try {
+    if (lastLoadedPack && lastLoadedPack !== packName) {
+      invalidateSkyCache(lastLoadedPack)
+      itemCache.delete(lastLoadedPack)
+      invalidateTextureCache(lastLoadedPack)
+    }
+    lastLoadedPack = packName
     const [info, skyTex] = await Promise.all([
       GetPackPreviewInfo(packName),
-      GetPackSkyTextures(packName),
+      cachedTextureFetch(packName + '|sky', () => GetPackSkyTextures(packName)),
     ])
+    recordMem('stage:info')
     selectedPackInfo.value = info
     setLastSkyTex(skyTex)
-    const cubemap = await generateSkyCubemap(skyTex)
-    if (viewerInstance) {
-      if (viewerInstance.scene.background && viewerInstance.scene.background.dispose) {
-        viewerInstance.scene.background.dispose()
-      }
-      viewerInstance.scene.background = cubemap
-    }
+    const cubemap = await skyBuild(packName + '#base', skyTex)
+    recordMem('stage:sky')
+    currentSkyKey = skyKey(packName + '#base')
+    setSkyOnViewers(cubemap)
+    textureCache.delete(packName + '|sky')
     await applySkin(packName)
+    recordMem('stage:skin')
     await applyArmor(packName, selectedMaterial.value)
-    await loadItems(packName, selectedMaterial.value)
+    recordMem('stage:armor')
+    await loadItems(packName)
+    recordMem('stage:items')
+    skySubpacks.value = (await GetPackSkySubpacks(packName)) || []
+    skySlider.value = 0
+    resumeViewers()
+    recordMem('load pack')
+    armIdleGC()
+    scheduleIdleGC(null, 'load pack')
   } catch (e) {
     console.error('Failed to load pack data:', e)
   }
 }
 
-async function loadItems(packName, material) {
-  const items = await GetPackItemTextures(packName, material)
-  itemTextures.value = items || []
+async function reloadPack() {
+  const pack = selectedPack.value
+  if (!pack) return
+  invalidateSkyCache(pack)
+  itemCache.delete(pack)
+  invalidateTextureCache(pack)
+  await loadPackData(pack)
+  if (fullscreen.value && fsViewerInstance) await applyAppearanceFs()
+  recordMem('reload pack')
+}
+
+async function applySkySubpack(idx) {
+  if (!skySubpacks.value.length) return
+  const sp = skySubpacks.value[idx]
+  if (!sp) return
+  const tex = await cachedTextureFetch(selectedPack.value + '|sub|' + sp.folderName, () => GetPackSkySubpackTextures(selectedPack.value, sp.folderName))
+  if (isDebug.value) {
+    console.log('[subpack]', selectedPack.value, sp.folderName, JSON.stringify(tex, (k, v) => v ? (typeof v === 'string' ? v.slice(0, 40) + '...' : v) : v))
+  }
+  if (!tex || (!tex.cubemap0 && !tex.cubemap1)) {
+    if (isDebug.value) console.warn('[subpack] no cubemap textures returned for', sp.folderName)
+    return
+  }
+  setLastSkyTex(tex)
+  const cubemap = await skyBuild(selectedPack.value + '#' + idx, tex)
+  currentSkyKey = skyKey(selectedPack.value + '#' + idx)
+  setSkyOnViewers(cubemap)
+  resumeViewers()
+  recordMem('sky subpack')
+}
+
+async function loadItems(packName) {
+  if (itemCache.has(packName)) {
+    itemTextures.value = itemCache.get(packName)
+    return
+  }
+  const thmb = await cachedTextureFetch(packName + '|itemthumbs|' + selectedMaterial.value, async () => {
+    const items = await GetPackItemTextures(packName, selectedMaterial.value)
+    return Promise.all((items || []).map(async itm => itm && itm.dataURI ? { ...itm, dataURI: await toThumb(itm.dataURI) } : itm))
+  }) || []
+  itemTextures.value = thmb
+  itemCache.set(packName, thmb)
+  pruneItemCache()
+  scheduleIdleGC(null, 'items')
+}
+
+function reloadItems(packName) {
+  itemCache.delete(packName)
+  const prefix = packName + '|itemthumbs|'
+  for (const k of [...textureCache.keys()]) { if (k.startsWith(prefix)) textureCache.delete(k) }
+  for (const k of [...texturePending.keys()]) { if (k.startsWith(prefix)) texturePending.delete(k) }
+  return loadItems(packName)
 }
 
 async function applySkin(packName) {
   if (!viewerInstance) return
-  let skinURI = customSkinURI.value || await GetPlayerSkinTexture(packName) || defaultSkinImg
+  let skinURI = customSkinURI.value || await cachedTextureFetch(packName + '|skin', () => GetPlayerSkinTexture(packName)) || defaultSkinImg
   await viewerInstance.loadSkin(skinURI, { model: skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value })
+  resumeViewers()
+  scheduleIdleGC(null, 'skin')
 }
 
 async function applyArmor(packName, material) {
   selectedMaterial.value = material
-  if (!viewerInstance) return
-  removeArmorMeshes()
+  removeArmorMeshes(viewerInstance)
+  removeArmorMeshes(fsViewerInstance)
   try {
-    const tex = await GetPackArmorTextures(packName, material)
+    const tex = await cachedTextureFetch(packName + '|armor|' + material, () => GetPackArmorTextures(packName, material))
     let img1 = null, img2 = null
     if (tex.layer1) img1 = await loadImage(tex.layer1)
     if (tex.layer2) img2 = await loadImage(tex.layer2)
-    buildArmor(img1, img2)
-    await loadItems(packName, material)
+    buildArmor(viewerInstance, img1, img2)
+    buildArmor(fsViewerInstance, img1, img2)
+    resumeViewers()
+    recordMem('material ' + material)
+    armIdleGC()
+    scheduleIdleGC(null, 'armor')
   } catch (e) {
     console.error('Failed to apply armor:', e)
   }
@@ -629,22 +1341,76 @@ async function loadCustomItems() {
 async function openItemPicker() {
   showItemPicker.value = true
   pickerLoading.value = true
-  pickerItems.value = []
+  pickerNames.value = []
+  pickerTextures.clear()
+  pickerThumbs.clear()
+  pickerLoaded.clear()
   pickerSearch.value = ''
   try {
-    const all = await GetPackAllItemTextures(selectedPack.value)
-    pickerItems.value = all || []
+    const names = await GetPackItemTextureNames(selectedPack.value)
+    pickerNames.value = names || []
   } catch (err) {
-    console.error('Failed to load item textures:', err)
-    pickerItems.value = []
+    console.error('Failed to load item names:', err)
+    pickerNames.value = []
   }
   pickerLoading.value = false
+  nextTick(setupPickerObserver)
+  recordMem('picker open')
+}
+
+function setupPickerObserver() {
+  if (pickerObserver) pickerObserver.disconnect()
+  pickerObserver = null
+  if (!pickerGridRef.value) return
+  pickerObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) loadPickerTexture(entry.target.dataset.name)
+    }
+  }, { root: pickerGridRef.value, rootMargin: '200px' })
+  for (const el of pickerGridRef.value.querySelectorAll('.pv-picker-item')) {
+    const name = el.dataset.name
+    if (name && (pickerLoaded.has(name) || pickerTextures.has(name))) {
+      loadPickerTexture(name)
+      continue
+    }
+    pickerObserver.observe(el)
+  }
+}
+
+watch(filteredPickerItems, () => {
+  nextTick(setupPickerObserver)
+})
+
+async function loadPickerTexture(name) {
+  if (pickerLoaded.has(name) || pickerTextures.has(name)) return
+  pickerLoaded.add(name)
+  try {
+    const dataURI = await cachedTextureFetch(selectedPack.value + '|picker|' + name, () => GetPackItemTexture(selectedPack.value, name))
+    if (dataURI) pickerTextures.set(name, dataURI)
+    loadPickerThumb(name, dataURI)
+  } catch (err) {
+    console.error('Failed to load item texture:', name, err)
+  }
+}
+
+async function loadPickerThumb(name, dataURI) {
+  if (!dataURI || pickerThumbs.has(name)) return
+  try {
+    pickerThumbs.set(name, await toThumb(dataURI, 36))
+  } catch {}
 }
 
 function closeItemPicker() {
   showItemPicker.value = false
-  pickerItems.value = []
+  if (pickerObserver) pickerObserver.disconnect()
+  pickerObserver = null
+  pickerNames.value = []
+  pickerTextures.clear()
+  pickerLoaded.clear()
   pickerSearch.value = ''
+  recordMem('picker close')
+  armIdleGC()
+  scheduleIdleGC(null, 'picker close')
 }
 
 async function selectPickerItem(name) {
@@ -657,7 +1423,8 @@ async function selectPickerItem(name) {
       await SaveCustomItem(name)
     }
     await loadCustomItems()
-    if (selectedPack.value) await loadItems(selectedPack.value, selectedMaterial.value)
+    if (selectedPack.value) await reloadItems(selectedPack.value)
+    recordMem('item added')
   } catch (err) {
     console.error('Failed to add item:', err)
   }
@@ -672,7 +1439,8 @@ async function removeItem(name) {
       await SaveRemovedItem(name)
     }
     await loadCustomItems()
-    if (selectedPack.value) await loadItems(selectedPack.value, selectedMaterial.value)
+    if (selectedPack.value) await reloadItems(selectedPack.value)
+    recordMem('item removed')
   } catch (err) {
     console.error('Failed to remove item:', err)
   }
@@ -682,10 +1450,54 @@ onMounted(async () => {
   try { isDebug.value = await IsDebug() } catch {}
   loadSkyDebugConfig()
   await loadAllPacks()
+  window.addEventListener('resize', onFsResize)
+  if (isDebug.value && showMemPanel.value) startMemSampler()
+  recordMem('mounted')
+  startGCWatchdog()
+})
+
+onUnmounted(() => {
+  stopGCWatchdog()
+  if (gcTimer) { clearTimeout(gcTimer); gcTimer = null }
+  stopMemSampler()
+  window.removeEventListener('resize', onFsResize)
+  window.removeEventListener('keydown', onFsNavKey)
+  if (viewerTimer) { clearTimeout(viewerTimer); viewerTimer = null }
+  if (fsViewerTimer) { clearTimeout(fsViewerTimer); fsViewerTimer = null }
+  modelSetupAlive = false
+  clearIdlePause()
+  disposeViewerResources(viewerInstance)
+  disposeViewerResources(fsViewerInstance)
+  clearSkyCache()
+  viewerInstance = null
+  fsViewerInstance = null
+})
+
+function onFsResize() {
+  if (fullscreen.value) measureFs()
+}
+
+watch(() => customSkinURI.value, async () => {
+  if (fsViewerInstance) {
+    const uri = customSkinURI.value || defaultSkinImg
+    await fsViewerInstance.loadSkin(uri, { model: skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value })
+    await applyAppearanceFs()
+  }
+})
+
+watch(() => skinModel.value, async () => {
+  if (fsViewerInstance) {
+    const uri = customSkinURI.value || defaultSkinImg
+    await fsViewerInstance.loadSkin(uri, { model: skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value })
+  }
 })
 
 watch(() => props.active, (val) => {
-  if (val) loadAllPacks()
+  if (val) {
+    loadAllPacks()
+  } else {
+    closeModal()
+  }
 })
 </script>
 
@@ -747,6 +1559,7 @@ watch(() => props.active, (val) => {
           </div>
           <div class="pv-modal-actions">
             <button v-if="isDebug" class="pv-modal-skybtn" :class="{ active: showSkyDebug }" @click="showSkyDebug = !showSkyDebug" title="Sky debug"><i class="fa fa-cloud-sun"></i></button>
+            <button class="pv-modal-folder" @click="openFullscreen" title="Fullscreen preview"><i class="fa fa-expand"></i></button>
             <button class="pv-modal-folder" @click="openPackFolder" title="Open pack folder"><i class="fa fa-folder-open"></i></button>
             <button class="pv-modal-delete" :class="{ confirming: confirmDelete }" @click="deletePack" :title="confirmDelete ? 'Click again to delete' : 'Delete pack'">
               <i :class="confirmDelete ? 'fa fa-triangle-exclamation' : 'fa fa-trash'"></i>
@@ -758,6 +1571,7 @@ watch(() => props.active, (val) => {
         <div class="pv-viewer-wrap">
           <div ref="modalContainer" class="pv-3d">
             <SkinView3d
+              v-if="!fullscreen"
               ref="viewerRef"
               :width="getViewerSize().w"
               :height="getViewerSize().h"
@@ -774,6 +1588,9 @@ watch(() => props.active, (val) => {
               :camera-light="1.2"
             />
           </div>
+
+          <button class="pv-nav pv-nav-prev" @click.stop="navPack(-1)" title="Previous pack"><i class="fa fa-chevron-left"></i></button>
+          <button class="pv-nav pv-nav-next" @click.stop="navPack(1)" title="Next pack"><i class="fa fa-chevron-right"></i></button>
 
           <div v-if="isDebug && showSkyDebug" class="pv-sky-debug">
             <div class="pv-sky-debug-head">
@@ -798,6 +1615,15 @@ watch(() => props.active, (val) => {
                 </label>
               </div>
             </div>
+          </div>
+
+          <div v-if="skySubpacks.length > 0" class="pv-skybar">
+            <div class="pv-skybar-head">
+              <div class="pv-skybar-label"><i class="fa fa-cloud-sun"></i> Subpacks</div>
+              <div class="pv-skybar-current" v-html="parseBedrockCodes(skySubpacks[skySlider]?.name || '')"></div>
+            </div>
+            <input type="range" class="pv-skybar-slider" min="0" :max="skySubpacks.length - 1" step="1"
+              v-model.number="skySlider" @input="skySlider = Number(skySlider); applySkySubpack(Number(skySlider))" />
           </div>
         </div>
 
@@ -825,6 +1651,13 @@ watch(() => props.active, (val) => {
           <button class="pv-mat-btn pv-skin-btn" @click="triggerSkinUpload">
             <i class="fa fa-user-pen"></i> Change Skin
           </button>
+          <button class="pv-mat-btn pv-reload-btn" @click="reloadPack" title="Reload this pack from disk (sky, items, armor)">
+            <i class="fa fa-rotate"></i> Reload
+          </button>
+          <span class="pv-mat-sep"></span>
+          <button class="pv-mat-btn" @click="showExportPopup = true" title="Export this pack as a .mcpack file">
+            <i class="fa fa-file-export"></i> Export .mcpack
+          </button>
         </div>
         <input ref="skinFileInput" type="file" accept="image/png" class="pv-hidden-input" @change="onSkinFileChange" />
 
@@ -849,13 +1682,62 @@ watch(() => props.active, (val) => {
       </div>
     </div>
 
+    <PackExporter :show="showExportPopup" :active="showExportPopup" @close="showExportPopup = false" />
+
+    <div v-if="fullscreen" class="pv-fs-overlay">
+      <div ref="fsContainerRef" class="pv-fs-3d">
+        <SkinView3d
+          ref="fsViewerRef"
+          :width="fsSize.w"
+          :height="fsSize.h"
+          :skin-url="customSkinURI || defaultSkinImg"
+          :skin-options="skinOptions"
+          :animation="currentAnimation"
+          :background="null"
+          :fov="45"
+          :zoom="1.1"
+          :enable-rotate="true"
+          :enable-zoom="true"
+          :enable-pan="false"
+          :global-light="3"
+          :camera-light="1.2"
+        />
+        <button class="pv-nav pv-nav-prev" @click.stop="navPack(-1)" title="Previous pack (←)"><i class="fa fa-chevron-left"></i></button>
+        <button class="pv-nav pv-nav-next" @click.stop="navPack(1)" title="Next pack (→)"><i class="fa fa-chevron-right"></i></button>
+        <div v-if="skySubpacks.length > 0" class="pv-skybar pv-fs-skybar">
+          <div class="pv-skybar-head">
+            <div class="pv-skybar-label"><i class="fa fa-cloud-sun"></i> Subpacks</div>
+            <div class="pv-skybar-current" v-html="parseBedrockCodes(skySubpacks[skySlider]?.name || '')"></div>
+          </div>
+          <input type="range" class="pv-skybar-slider" min="0" :max="skySubpacks.length - 1" step="1"
+            v-model.number="skySlider" @input="skySlider = Number(skySlider); applySkySubpack(Number(skySlider))" />
+        </div>
+      </div>
+      <div class="pv-fs-bar">
+        <div class="pv-fs-controls">
+          <button v-for="m in materials" :key="m" class="pv-mat-btn" :class="{ active: selectedMaterial === m }"
+            @click="applyArmor(selectedPack, m)">{{ materialLabels[m] }}</button>
+          <span class="pv-mat-sep"></span>
+          <button class="pv-mat-btn" :class="{ active: animating }" @click="animating = !animating"><i class="fa fa-walking"></i> Walk</button>
+          <span class="pv-mat-sep"></span>
+          <button class="pv-mat-btn" :class="{ active: skinModel === 'auto-detect' }" @click="skinModel = 'auto-detect'"><i class="fa fa-robot"></i> Auto</button>
+          <button class="pv-mat-btn" :class="{ active: skinModel === 'default' }" @click="skinModel = 'default'"><i class="fa fa-person"></i> Wide</button>
+          <button class="pv-mat-btn" :class="{ active: skinModel === 'slim' }" @click="skinModel = 'slim'"><i class="fa fa-person-dress"></i> Slim</button>
+          <span class="pv-mat-sep"></span>
+          <button class="pv-mat-btn pv-skin-btn" @click="triggerSkinUpload"><i class="fa fa-user-pen"></i> Change Skin</button>
+          <button class="pv-mat-btn pv-reload-btn" @click="reloadPack" title="Reload this pack from disk (sky, items, armor)"><i class="fa fa-rotate"></i></button>
+        </div>
+        <button class="pv-fs-btn pv-fs-close" @click="closeFullscreen" title="Close (Esc)"><i class="fa fa-xmark"></i></button>
+      </div>
+    </div>
+
     <div v-if="showItemPicker" class="pv-picker-overlay" @click.self="closeItemPicker">
       <div class="pv-picker" @click.stop>
         <div class="pv-picker-head">
           <h3 class="pv-picker-title">Add Item to Grid</h3>
           <button class="pv-modal-close" @click="closeItemPicker"><i class="fa fa-xmark"></i></button>
         </div>
-        <div v-if="!pickerLoading && pickerItems.length > 0" class="pv-picker-search">
+        <div v-if="!pickerLoading && pickerNames.length > 0" class="pv-picker-search">
           <i class="fa fa-search pv-picker-search-icon"></i>
           <input v-model="pickerSearch" class="pv-picker-search-input" placeholder="Search items..." />
         </div>
@@ -865,18 +1747,57 @@ watch(() => props.active, (val) => {
         <div v-else-if="filteredPickerItems.length === 0" class="pv-picker-empty">
           <p>{{ pickerSearch ? 'No matching items found.' : 'No item textures found in this pack.' }}</p>
         </div>
-        <div v-else class="pv-picker-grid">
-          <div v-for="item in filteredPickerItems" :key="item.name"
+        <div v-else ref="pickerGridRef" class="pv-picker-grid">
+          <div v-for="item in filteredPickerItems" :key="item"
             class="pv-picker-item"
-            :class="{ used: itemTextures.some(i => i.name === item.name) }"
-            @click="selectPickerItem(item.name)">
-            <img :src="item.dataURI" class="pv-picker-item-img" />
-            <span class="pv-picker-item-name">{{ formatName(item.name) }}</span>
-            <div v-if="itemTextures.some(i => i.name === item.name)" class="pv-picker-item-check">
+            :class="{ used: itemTextures.some(i => i.name === item) }"
+            :data-name="item"
+            @click="selectPickerItem(item)">
+            <img :src="pickerThumbs.get(item) || pickerTextures.get(item)" class="pv-picker-item-img" />
+            <span class="pv-picker-item-name">{{ formatName(item) }}</span>
+            <div v-if="itemTextures.some(i => i.name === item)" class="pv-picker-item-check">
               <i class="fa fa-check"></i>
             </div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <div v-if="isDebug && showMemPanel" class="pv-mem-panel">
+      <div class="pv-mem-head">
+        <button class="pv-mem-toggle" @click="showMemPanel = !showMemPanel" title="Toggle mem panel"><i class="fa fa-microchip"></i></button>
+        <button class="pv-mem-toggle" @click="memDump" title="Copy memory dump to clipboard + console"><i class="fa fa-clipboard"></i></button>
+        <button class="pv-mem-toggle" @click="resetMem" title="Reset memory: clear caches/viewers and reload"><i class="fa fa-refresh"></i></button>
+        <button class="pv-mem-clear" @click="memLog = []" title="Clear log"><i class="fa fa-eraser"></i></button>
+      </div>
+      <div class="pv-mem-live" v-if="memLive">
+        <span class="pv-mem-k">LIVE {{ memLive.t }}</span>
+        <span class="pv-mem-v">heap {{ formatSize(memLive.heap) }}</span>
+        <span class="pv-mem-v">canv {{ formatSize(memLive.canvasBytes) }} ({{ memLive.canvasCount }})</span>
+        <span class="pv-mem-v">imgs {{ formatSize(memLive.imgBytes) }} ({{ memLive.imgCount }})</span>
+        <span class="pv-mem-v">allI {{ memLive.allImgCount }} ({{ formatSize(memLive.allImgBytes) }})</span>
+        <span class="pv-mem-v">sky {{ memLive.skyCount }} ({{ formatSize(memLive.skyBytes) }})</span>
+        <span class="pv-mem-v">itemC {{ memLive.itemCacheCount }} ({{ formatSize(memLive.itemCacheBytes) }})</span>
+        <span class="pv-mem-v">itemG {{ memLive.itemTexCount }} ({{ formatSize(memLive.itemTexBytes) }})</span>
+        <span class="pv-mem-v">modal {{ memLive.modal ? 'on' : 'off' }} / fs {{ memLive.fs ? 'on' : 'off' }} / {{ memLive.packs }} packs</span>
+      </div>
+      <div v-if="memLog.length" class="pv-mem-last">
+        <span class="pv-mem-k">{{ memLog[memLog.length - 1].label }}</span>
+        <span class="pv-mem-v">heap {{ formatSize(memLog[memLog.length - 1].heap) }}</span>
+        <span class="pv-mem-v">canvas {{ formatSize(memLog[memLog.length - 1].canvasBytes) }} ({{ memLog[memLog.length - 1].canvasCount }})</span>
+        <span class="pv-mem-v">img {{ formatSize(memLog[memLog.length - 1].imgBytes) }} ({{ memLog[memLog.length - 1].imgCount }})</span>
+        <span class="pv-mem-v">allI {{ memLog[memLog.length - 1].allImgCount }} ({{ formatSize(memLog[memLog.length - 1].allImgBytes) }})</span>
+        <span class="pv-mem-v">sky {{ memLog[memLog.length - 1].skyCount }} ({{ formatSize(memLog[memLog.length - 1].skyBytes) }})</span>
+        <span class="pv-mem-v">itemC {{ memLog[memLog.length - 1].itemCacheCount }} ({{ formatSize(memLog[memLog.length - 1].itemCacheBytes) }})</span>
+      </div>
+      <div v-for="(e, i) in [...memLog].reverse()" :key="i" class="pv-mem-row">
+        <span class="pv-mem-k">{{ e.t }} {{ e.label }}</span>
+        <span class="pv-mem-v">heap {{ formatSize(e.heap) }}</span>
+        <span class="pv-mem-v">canv {{ formatSize(e.canvasBytes) }}</span>
+        <span class="pv-mem-v">imgs {{ formatSize(e.imgBytes) }}</span>
+        <span class="pv-mem-v">allI {{ e.allImgCount }} ({{ formatSize(e.allImgBytes) }})</span>
+        <span class="pv-mem-v">sky {{ e.skyCount }} ({{ formatSize(e.skyBytes) }})</span>
+        <span class="pv-mem-v">itemC {{ e.itemCacheCount }} ({{ formatSize(e.itemCacheBytes) }})</span>
       </div>
     </div>
 
@@ -1255,6 +2176,14 @@ watch(() => props.active, (val) => {
 }
 
 .pv-skin-btn i { margin-right: 0.3rem; }
+
+.pv-reload-btn {
+  color: var(--accent-light);
+}
+
+.pv-reload-btn:hover {
+  border-color: var(--accent-light);
+}
 
 .pv-hidden-input {
   position: absolute;
@@ -1680,5 +2609,315 @@ watch(() => props.active, (val) => {
 
 .pv-sky-debug-flip:has(input:checked) {
   color: var(--accent-light);
+}
+
+.pv-skybar {
+  position: absolute;
+  left: 0.5rem;
+  right: 0.5rem;
+  bottom: 0.5rem;
+  padding: 0.55rem 0.75rem 0.6rem;
+  background: rgba(10, 10, 18, 0.78);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(8px);
+  z-index: 15;
+}
+
+.pv-skybar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.pv-skybar-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+
+.pv-skybar-label i { color: var(--accent-light); }
+
+.pv-skybar-slider {
+  width: 100%;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-hover-3);
+  outline: none;
+  cursor: pointer;
+  margin-bottom: 0.35rem;
+}
+
+.pv-skybar-slider::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-hover-3);
+}
+
+.pv-skybar-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid #1a1a1a;
+  cursor: pointer;
+  margin-top: -5px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+.pv-skybar-slider::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-hover-3);
+}
+
+.pv-skybar-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid #1a1a1a;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+.pv-skybar-current {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent-light);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pv-fs-overlay {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+  z-index: 100;
+}
+
+.pv-fs-3d {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.pv-fs-3d canvas { display: block; }
+
+.pv-fs-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  padding: 0.6rem 0.9rem;
+  background: rgba(8, 8, 16, 0.92);
+  border-top: 1px solid var(--border-subtle);
+  backdrop-filter: blur(6px);
+  flex-wrap: wrap;
+  z-index: 110;
+}
+
+.pv-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 40px;
+  height: 56px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(10, 10, 18, 0.55);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+  backdrop-filter: blur(6px);
+  z-index: 120;
+  transition: all 0.15s;
+}
+
+.pv-nav-prev {
+  left: 0.6rem;
+  border-radius: 10px;
+}
+
+.pv-nav-next {
+  right: 0.6rem;
+  border-radius: 10px;
+}
+
+.pv-nav:hover {
+  background: rgba(10, 10, 18, 0.9);
+  color: var(--text-primary);
+  border-color: var(--border-focus);
+}
+
+.pv-nav:active {
+  opacity: 0.8;
+}
+
+.pv-fs-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.pv-fs-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(10, 10, 18, 0.7);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  backdrop-filter: blur(6px);
+  transition: all 0.15s;
+}
+
+.pv-fs-btn:hover {
+  background: rgba(10, 10, 18, 0.9);
+  color: var(--text-primary);
+  border-color: var(--border-focus);
+}
+
+.pv-fs-btn.active {
+  background: var(--accent-active-bg);
+  color: var(--accent-light);
+  border-color: var(--accent-light);
+}
+
+.pv-fs-close {
+  position: absolute;
+  right: 0.9rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(231, 76, 60, 0.8);
+  border-color: rgba(231, 76, 60, 0.9);
+  color: #fff;
+}
+
+.pv-fs-close:hover {
+  background: #e74c3c;
+  color: #fff;
+  border-color: #e74c3c;
+}
+
+.pv-fs-skybar {
+  top: 0.75rem;
+  right: 0.75rem;
+  left: auto;
+  bottom: auto;
+  width: 300px;
+  max-width: calc(100% - 1.5rem);
+  border-radius: 12px;
+  border: 1px solid var(--border-subtle);
+}
+
+.pv-mem-panel {
+  position: fixed;
+  right: 0.5rem;
+  bottom: 0.5rem;
+  width: 340px;
+  max-height: 60vh;
+  overflow-y: auto;
+  z-index: 999;
+  background: rgba(8, 8, 16, 0.92);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 0.4rem 0.5rem;
+  backdrop-filter: blur(6px);
+  font-size: 0.62rem;
+  color: var(--text-secondary);
+}
+
+.pv-mem-head {
+  display: flex;
+  gap: 0.3rem;
+  margin-bottom: 0.35rem;
+}
+
+.pv-mem-toggle,
+.pv-mem-clear {
+  padding: 0.2rem 0.45rem;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  background: rgba(10, 10, 18, 0.7);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.62rem;
+}
+
+.pv-mem-toggle:hover,
+.pv-mem-clear:hover {
+  color: var(--text-primary);
+  border-color: var(--border-focus);
+}
+
+.pv-mem-last {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.3rem;
+  margin-bottom: 0.3rem;
+  background: var(--accent-active-bg);
+  border-radius: 6px;
+}
+
+.pv-mem-live {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.1rem 0.45rem;
+  align-items: baseline;
+  padding: 0.25rem 0.3rem;
+  margin-bottom: 0.3rem;
+  background: rgba(120, 200, 120, 0.12);
+  border: 1px solid rgba(120, 200, 120, 0.25);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.pv-mem-live .pv-mem-tag {
+  color: #7fdb8a;
+  font-weight: 600;
+}
+
+.pv-mem-row {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.15rem 0.2rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.pv-mem-k {
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.pv-mem-v {
+  white-space: nowrap;
 }
 </style>

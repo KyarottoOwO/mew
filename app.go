@@ -39,6 +39,10 @@ func NewApp(debug bool) *App {
 			"customOutputDir":       "",
 			"manifestDescription":   "",
 			"resourcePacksPath":     "",
+			"portAllSkies":          false,
+			"skyPresets":            true,
+			"skyPresetNames":        []string{"starfield", "sky1", "sky2", "starfield02", "starfield03"},
+			"addPromoTexts":         false,
 		},
 		discordConns: map[string]net.Conn{},
 	}
