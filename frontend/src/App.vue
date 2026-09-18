@@ -1,12 +1,12 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import Sidebar from './components/layout/Sidebar.vue'
 import HomePage from './components/pages/HomePage.vue'
 import PackPorter from './components/tools/PackPorter.vue'
 import FolderPorter from './components/tools/FolderPorter.vue'
 import RecolorTool from './components/tools/RecolorTool.vue'
 import AnimatedInventory from './components/tools/AnimatedInventory.vue'
-import FolderDisplay from './components/shared/FolderDisplay.vue'
+import RecolorEditor from './components/tools/RecolorEditor.vue'
 import InfoPage from './components/pages/InfoPage.vue'
 import SettingsPage from './components/pages/SettingsPage.vue'
 import ContactPage from './components/pages/ContactPage.vue'
@@ -16,11 +16,11 @@ import PackViewer from './components/tools/PackViewer.vue'
 import ManifestTool from './components/tools/ManifestTool.vue'
 import ProgressNotification from './components/shared/ProgressNotification.vue'
 import { GetSettings, SaveSettings, CheckForUpdate, OpenDownloadLink, SetDiscordActivity } from '../wailsjs/go/main/App'
+import { updaterState, bindUpdaterEvents, unbindUpdaterEvents, downloadUpdate, installUpdate } from './utils/updater'
 
 const currentPage = ref('home')
-const showRecolorPage = ref(false)
-const checkResult = ref(null)
-const packName = ref('')
+const recolorSource = ref(null)
+const packViewRequest = ref(null)
 const sidebarWidth = ref(64)
 
 const homeAnimated = ref(localStorage.getItem('mew_home_animated') === '1')
@@ -43,27 +43,25 @@ function onSidebarWidthChange(w) {
 }
 
 function openDisplay(data) {
-  checkResult.value = data.folders
-  packName.value = data.packName
-  showRecolorPage.value = true
+  recolorSource.value = data
+  currentPage.value = 'recoloreditor'
 }
 
 function closeDisplay() {
-  showRecolorPage.value = false
-  checkResult.value = null
-  packName.value = ''
+  const data = recolorSource.value
+  const target = data && data.dirName
+  recolorSource.value = null
+  if (target && data.kind === 'installed') {
+    packViewRequest.value = { name: target, ts: Date.now() }
+    currentPage.value = 'packviewer'
+  } else {
+    currentPage.value = 'recolor'
+  }
 }
 
 function dismissUpdate() {
+  if (updaterState.state === 'downloading') return
   updateDismissed.value = true
-}
-
-async function downloadUpdate() {
-  try {
-    await OpenDownloadLink(downloadURL.value)
-  } catch (e) {
-    console.error('Failed to open download link:', e)
-  }
 }
 
 async function syncSettingsToBackend() {
@@ -91,18 +89,49 @@ async function checkForUpdates() {
 }
 
 onMounted(() => {
+  bindUpdaterEvents()
   syncSettingsToBackend()
   checkForUpdates()
   SetDiscordActivity('Browsing MEW', 'Minecraft Bedrock Texture Pack Manager')
+  window.addEventListener('wheel', blockCtrlZoom, { passive: false })
 })
+
+onUnmounted(() => {
+  unbindUpdaterEvents()
+  window.removeEventListener('wheel', blockCtrlZoom)
+})
+
+function blockCtrlZoom(e) {
+  if (e.ctrlKey || e.metaKey) e.preventDefault()
+}
 </script>
 
 <template>
   <div class="app-layout">
     <div v-if="updateAvailable && !updateDismissed" class="update-banner">
       <i class="fa fa-download update-icon"></i>
-      <span>A new version (<strong>v{{ latestVersion }}</strong>) is available!</span>
-      <button class="update-btn" @click="downloadUpdate">Download</button>
+
+      <template v-if="updaterState.state === 'done'">
+        <span class="update-text">v{{ latestVersion }} downloaded</span>
+        <button class="update-btn update-install" @click="installUpdate(updaterState.path)"><i class="fa fa-play"></i> Launch new version</button>
+      </template>
+
+      <template v-else-if="updaterState.state === 'error'">
+        <span class="update-text">Update failed &mdash; {{ updaterState.error }}</span>
+        <button class="update-btn" @click="downloadUpdate(downloadURL)"><i class="fa fa-rotate-right"></i> Retry</button>
+        <button class="update-btn" @click="OpenDownloadLink(downloadURL)">View on GitHub</button>
+      </template>
+
+      <template v-else>
+        <span class="update-text">A new version (<strong>v{{ latestVersion }}</strong>) is available!</span>
+        <div v-if="updaterState.state === 'downloading'" class="update-progress">
+          <div class="update-track"><div class="update-fill" :style="{ width: updaterState.percent + '%' }"></div></div>
+          <span class="update-pct">{{ updaterState.total > 0 ? updaterState.percent + '%' : '...' }}</span>
+        </div>
+        <button v-else-if="downloadURL" class="update-btn" @click="downloadUpdate(downloadURL)"><i class="fa fa-download"></i> Download</button>
+        <button v-else class="update-btn" @click="OpenDownloadLink('https://github.com/KyarottoOwO/mew/releases')">View on GitHub</button>
+      </template>
+
       <button class="update-dismiss" @click="dismissUpdate"><i class="fa fa-xmark"></i></button>
     </div>
 
@@ -111,12 +140,14 @@ onMounted(() => {
       <HomePage v-if="currentPage === 'home'" :home-animated="homeAnimated" @navigate="switchPage" @animated="onHomeAnimated" />
       <PackPorter v-show="currentPage === 'packporter'" :active="currentPage === 'packporter'" />
       <FolderPorter v-show="currentPage === 'packFolderPorter'" :active="currentPage === 'packFolderPorter'" />
-      <RecolorTool v-show="currentPage === 'recolor'" @open-display="openDisplay" />
+      <RecolorTool v-show="currentPage === 'recolor'" :active="currentPage === 'recolor'" @open-display="openDisplay" />
       <AnimatedInventory v-show="currentPage === 'animator'" :active="currentPage === 'animator'" />
-      <FolderDisplay v-if="showRecolorPage" :check-result="checkResult" :pack-name="packName" :sidebar-width="sidebarWidth" @close="closeDisplay" />
+      <template v-if="recolorSource">
+        <RecolorEditor v-show="currentPage === 'recoloreditor'" :visible="currentPage === 'recoloreditor'" :source="recolorSource" :sidebar-width="sidebarWidth" @close="closeDisplay" />
+      </template>
       <RecentPacksPage v-if="currentPage === 'recentpacks'" />
       <SkyConverter v-show="currentPage === 'skyconverter'" :active="currentPage === 'skyconverter'" />
-      <PackViewer v-show="currentPage === 'packviewer'" :active="currentPage === 'packviewer'" />
+      <PackViewer v-show="currentPage === 'packviewer'" :active="currentPage === 'packviewer'" :open-pack-req="packViewRequest" />
       <ManifestTool v-show="currentPage === 'manifest'" :active="currentPage === 'manifest'" />
       <InfoPage v-show="currentPage === 'info'" />
       <SettingsPage v-show="currentPage === 'settings'" />
@@ -197,10 +228,71 @@ body {
   border-radius: 4px;
   cursor: pointer;
   font-size: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
 }
 
 .update-btn:hover {
   background: var(--accent-glow);
+}
+
+.update-btn + .update-btn {
+  margin-left: 0;
+}
+
+.update-install {
+  background: var(--accent);
+  color: #0e1420;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.update-install:hover {
+  background: var(--accent-light);
+  border-color: var(--accent-light);
+  color: #0e1420;
+}
+
+.update-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.update-progress {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 180px;
+  max-width: 320px;
+  flex-shrink: 1;
+}
+
+.update-track {
+  flex: 1;
+  height: 6px;
+  background: var(--bg-hover-3);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.update-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.15s ease;
+}
+
+.update-pct {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  width: 3ch;
+  text-align: right;
+  flex-shrink: 0;
 }
 
 .update-dismiss {

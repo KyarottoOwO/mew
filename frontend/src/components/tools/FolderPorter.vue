@@ -5,7 +5,6 @@ import { EventsOn } from '../../../wailsjs/runtime/runtime'
 
 import { progressStore, startPort, updateFromEvent, finish, clearProgress } from '../../utils/progressStore'
 const props = defineProps({ active: Boolean })
-const mode = ref('url')
 const url = ref('')
 const showProgress = ref(false)
 const progressList = ref([])
@@ -60,13 +59,8 @@ const isMounted = ref(false)
 
 onMounted(() => {
   isMounted.value = true
-  console.log('[FolderPorter] mounted, registering progress listener')
   progressHandler = EventsOn('progress', (data) => {
-    if (!isMounted.value || !startedPort.value) {
-      console.log('[FolderPorter] progress event received but not started or unmounted, ignoring')
-      return
-    }
-    console.log('[FolderPorter] progress event:', data.title, data.message, data.icon)
+    if (!isMounted.value || !startedPort.value) return
     const t = parseInt(data.total) || 0
     const c = parseInt(data.completed) || 0
 
@@ -92,9 +86,7 @@ onMounted(() => {
         popup('All Done!', data.message, 'success')
         showProgress.value = false
         url.value = ''
-        archiveFile.value = null
-        archiveFileName.value = ''
-        archiveFileSize.value = ''
+        clearArchive()
       }, 600)
     } else if (data.icon === 'error') {
       spinnerClass.value = 'fp-spinner fail'
@@ -122,7 +114,6 @@ onMounted(() => {
 
 onUnmounted(() => {
   isMounted.value = false
-  console.log('[FolderPorter] unmounted')
 })
 
 watch(() => props.active, (active) => {
@@ -140,6 +131,19 @@ watch(() => props.active, (active) => {
     resetProgress()
   }
 })
+
+function handleArchiveFile(f) {
+  if (startedPort.value) return
+  const lower = f.name.toLowerCase()
+  if (!lower.endsWith('.zip') && !lower.endsWith('.rar')) {
+    popup('Error', 'Please provide a .zip or .rar file.', 'error')
+    return
+  }
+  archiveFile.value = f
+  archiveFileName.value = f.name
+  archiveFileSize.value = (f.size / 1024 / 1024).toFixed(2) + ' MB'
+  startArchivePort(f)
+}
 
 function onDrop(e) {
   e.preventDefault()
@@ -159,17 +163,7 @@ function onDragLeave() {
 
 function onFileChange(e) {
   if (e.target.files[0]) handleArchiveFile(e.target.files[0])
-}
-
-function handleArchiveFile(f) {
-  const lower = f.name.toLowerCase()
-  if (!lower.endsWith('.zip') && !lower.endsWith('.rar')) {
-    popup('Error', 'Please provide a .zip or .rar file.', 'error')
-    return
-  }
-  archiveFile.value = f
-  archiveFileName.value = f.name
-  archiveFileSize.value = (f.size / 1024 / 1024).toFixed(2) + ' MB'
+  e.target.value = ''
 }
 
 function clearArchive() {
@@ -178,62 +172,61 @@ function clearArchive() {
   archiveFileSize.value = ''
 }
 
-async function confirmPort() {
-  console.log('[FolderPorter] confirmPort called, mode:', mode.value)
-  if (mode.value === 'url') {
-    const trimmedUrl = url.value.trim()
-    if (!trimmedUrl) {
-      popup('Error', 'Please paste a link first.', 'error')
-      return
-    }
-    showProgress.value = true
-    resetProgress()
-    startedPort.value = true
-    startPort('packFolderPorter', 'Connecting...')
-    console.log('[FolderPorter] calling PortFolder')
-    try {
-      await PortFolder(trimmedUrl)
-      console.log('[FolderPorter] PortFolder resolved')
-    } catch (err) {
-      console.error('[FolderPorter] PortFolder error:', err)
-      popup('Error', err.toString(), 'error')
-      startedPort.value = false
-      clearProgress()
-      showProgress.value = false
-    }
-  } else {
-    if (!archiveFile.value) {
-      popup('Error', 'Please upload a file first.', 'error')
-      return
-    }
-    showProgress.value = true
-    resetProgress()
-    startedPort.value = true
-    startPort('packFolderPorter', 'Connecting...')
-    console.log('[FolderPorter] calling PortLocalArchive')
-    try {
-      const buffer = await archiveFile.value.arrayBuffer()
-      const bytes = new Uint8Array(buffer)
-      await PortLocalArchive(Array.from(bytes), archiveFile.value.name)
-      console.log('[FolderPorter] PortLocalArchive resolved')
-    } catch (err) {
-      console.error('[FolderPorter] PortLocalArchive error:', err)
-      popup('Error', err.toString(), 'error')
-      startedPort.value = false
-      clearProgress()
-      showProgress.value = false
-    }
+function onUrlPaste() {
+  setTimeout(() => {
+    if (url.value && url.value.trim()) startUrlPort(url.value)
+  }, 0)
+}
+
+function onUrlEnter(e) {
+  startUrlPort(e.target.value)
+}
+
+async function startArchivePort(f) {
+  resetProgress()
+  showProgress.value = true
+  startedPort.value = true
+  startPort('packFolderPorter', 'Connecting...')
+  try {
+    const buffer = await f.arrayBuffer()
+    const bytes = new Uint8Array(buffer)
+    await PortLocalArchive(Array.from(bytes), f.name)
+  } catch (err) {
+    console.error('[FolderPorter] PortLocalArchive error:', err)
+    popup('Error', err.toString(), 'error')
+    startedPort.value = false
+    clearProgress()
+    showProgress.value = false
+    clearArchive()
+  }
+}
+
+async function startUrlPort(raw) {
+  const trimmed = (raw || '').trim()
+  if (!trimmed || startedPort.value) return
+  url.value = trimmed
+  resetProgress()
+  showProgress.value = true
+  startedPort.value = true
+  startPort('packFolderPorter', 'Connecting...')
+  try {
+    await PortFolder(trimmed)
+  } catch (err) {
+    console.error('[FolderPorter] PortFolder error:', err)
+    popup('Error', err.toString(), 'error')
+    startedPort.value = false
+    clearProgress()
+    showProgress.value = false
   }
 }
 
 async function cancelPorter() {
-  console.log('[FolderPorter] cancelPorter called')
   try {
     await CancelPortFolder()
-    console.log('[FolderPorter] CancelPortFolder resolved')
   } catch (e) {
     console.error('[FolderPorter] CancelPortFolder error:', e)
   }
+  startedPort.value = false
   showProgress.value = false
   url.value = ''
   clearArchive()
@@ -244,55 +237,39 @@ async function cancelPorter() {
   <div class="page active-page folderporter-page">
     <div class="porter-card">
       <h2 class="card-title">Multi-Pack Porter</h2>
-      <p class="card-desc">Port multiple packs at once from a MediaFire link or a local archive.</p>
+      <p class="card-desc">Drop an archive of packs or paste a MediaFire link &mdash; porting starts automatically, no buttons.</p>
 
       <div v-if="!showProgress">
-        <div class="mode-tabs">
-          <button :class="['mode-tab', mode === 'url' ? 'active' : '']" @click="mode = 'url'">
-            <i class="fa fa-link"></i> MediaFire Link
-          </button>
-          <button :class="['mode-tab', mode === 'file' ? 'active' : '']" @click="mode = 'file'">
-            <i class="fa fa-upload"></i> Upload Archive
-          </button>
-        </div>
+        <label ref="dropZone" class="drop-zone"
+               @drop="onDrop" @dragover="onDragOver" @dragleave="onDragLeave">
+          <input type="file" accept=".zip,.rar" class="hidden" @change="onFileChange" />
 
-        <div v-if="mode === 'url'">
-          <div class="mb-4">
-            <input v-model="url" type="text" placeholder="https://www.mediafire.com/file/... or /folder/..."
-                   class="url-input" />
+          <div v-if="!archiveFile" class="drop-zone-inner">
+            <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24"
+                 stroke-linecap="round" stroke-linejoin="round" class="drop-icon">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="17 8 12 3 7 8"></polyline>
+              <line x1="12" x2="12" y1="3" y2="15"></line>
+            </svg>
+            <span class="drop-hint">Drop a .zip or .rar of packs here</span>
+            <span class="drop-sub">or click to browse</span>
           </div>
-          <p class="card-desc">Paste a MediaFire link to a single pack or a folder of packs.</p>
-        </div>
 
-        <div v-if="mode === 'file'">
-          <label ref="dropZone" class="drop-zone"
-                 @drop="onDrop" @dragover="onDragOver" @dragleave="onDragLeave">
-            <input type="file" accept=".zip,.rar" class="hidden" @change="onFileChange" />
-
-            <div v-if="!archiveFile" class="drop-zone-inner">
-              <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24"
-                   stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                <polyline points="17 8 12 3 7 8"></polyline>
-                <line x1="12" x2="12" y1="3" y2="15"></line>
-              </svg>
-              <span class="drop-hint">Drop .zip or .rar containing packs</span>
+          <div v-else class="file-info-box">
+            <div class="file-info-row">
+              <span class="file-info-name">{{ archiveFileName }}</span>
+              <span class="file-info-size">{{ archiveFileSize }}</span>
             </div>
+          </div>
+        </label>
 
-            <div v-else class="file-info-box">
-              <div class="flex w-full items-center justify-between gap-4">
-                <p class="max-w-xs truncate text-base" style="color: var(--text-secondary);">{{ archiveFileName }}</p>
-                <p class="w-fit flex-shrink-0 px-2 py-1 text-sm" style="background: var(--bg-input); color: var(--text-primary);">{{ archiveFileSize }}</p>
-              </div>
-            </div>
-          </label>
-          <p class="card-desc mt-4">Upload a .zip or .rar that contains one or more pack .zip files inside.</p>
+        <div class="url-row">
+          <i class="fa fa-link url-icon"></i>
+          <input v-model="url" type="text"
+                 placeholder="...or paste a MediaFire folder link"
+                 class="url-input" @paste="onUrlPaste" @keyup.enter="onUrlEnter" />
         </div>
-
-        <div class="flex items-center gap-2 mt-6">
-          <button class="btn-cancel" @click="cancelPorter">Cancel</button>
-          <button class="btn-main" @click="confirmPort">Confirm</button>
-        </div>
+        <p class="card-hint">Pasting a link or pressing Enter starts porting it immediately.</p>
       </div>
 
       <div v-else>
@@ -325,7 +302,7 @@ async function cancelPorter() {
         </div>
 
         <div class="flex justify-end mt-3">
-          <button class="btn-cancel text-xs" @click="cancelPorter">Cancel</button>
+          <button class="btn-cancel text-xs" @click="cancelPorter"><i class="fa fa-ban"></i> Cancel</button>
         </div>
       </div>
     </div>
@@ -359,50 +336,6 @@ async function cancelPorter() {
   margin-bottom: 1rem;
 }
 
-.mode-tabs {
-  display: flex;
-  gap: 0.25rem;
-  margin-bottom: 1rem;
-  background: var(--bg-input);
-  border-radius: 6px;
-  padding: 3px;
-}
-
-.mode-tab {
-  flex: 1;
-  padding: 0.4rem 0.75rem;
-  background: transparent;
-  color: var(--text-dim);
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.8rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.4rem;
-}
-
-.mode-tab.active {
-  background: var(--bg-hover-2);
-  color: var(--accent);
-}
-
-.url-input {
-  width: 100%;
-  background: var(--bg-input);
-  border: 1px solid var(--border-focus);
-  color: var(--text-secondary);
-  font-size: 0.875rem;
-  padding: 0.5rem 0.75rem;
-  border-radius: 4px;
-  outline: none;
-}
-
-.url-input:focus {
-  border-color: var(--accent);
-}
-
 .drop-zone {
   display: flex;
   align-items: center;
@@ -412,7 +345,7 @@ async function cancelPorter() {
   padding: 2rem;
   cursor: pointer;
   transition: all 0.2s;
-  min-height: 100px;
+  min-height: 120px;
 }
 
 .drop-zone:hover, .drop-zone.drag-over {
@@ -424,7 +357,13 @@ async function cancelPorter() {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.4rem;
+}
+
+.drop-icon {
+  width: 28px;
+  height: 28px;
+  color: var(--accent);
 }
 
 .drop-hint {
@@ -432,9 +371,83 @@ async function cancelPorter() {
   color: var(--text-dim);
 }
 
+.drop-sub {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  opacity: 0.7;
+}
+
 .file-info-box {
   width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  pointer-events: none;
 }
+
+.file-info-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.file-info-name {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-info-size {
+  font-size: 0.75rem;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.url-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  background: var(--bg-input);
+  border: 1px solid var(--border-focus);
+  border-radius: 6px;
+  padding: 0 0.75rem;
+}
+
+.url-row:focus-within {
+  border-color: var(--accent);
+}
+
+.url-icon {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+
+.url-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  padding: 0.6rem 0;
+  outline: none;
+  min-width: 0;
+}
+
+.card-hint {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-top: 0.5rem;
+}
+
+.hidden { display: none; }
 
 .progress-track {
   width: 100%;
@@ -509,25 +522,12 @@ async function cancelPorter() {
   border-radius: 4px;
   cursor: pointer;
   font-size: 0.875rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
 }
 
 .btn-cancel:hover {
   background: var(--bg-hover-5);
 }
-
-.btn-main {
-  padding: 0.5rem 1rem;
-  background: transparent;
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.875rem;
-}
-
-.btn-main:hover {
-  background: var(--accent-glow);
-}
-
-.hidden { display: none; }
 </style>

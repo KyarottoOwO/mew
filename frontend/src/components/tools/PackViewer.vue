@@ -8,7 +8,7 @@ import { GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackArmo
 import defaultSkinImg from '../../assets/default-skin.png'
 
 import { parseBedrockCodes } from '../../utils/formatCodes'
-const props = defineProps({ active: Boolean })
+const props = defineProps({ active: Boolean, openPackReq: { type: Object, default: null } })
 
 const packList = ref([])
 const packsPath = ref('')
@@ -821,6 +821,24 @@ function disposeViewerResources(v) {
   if (!v.disposed) {
     try { v.dispose() } catch {}
   }
+  try {
+    const gl = v.renderer && v.renderer.getContext && v.renderer.getContext()
+    const lose = gl && gl.getExtension('WEBGL_lose_context')
+    if (lose) lose.loseContext()
+  } catch {}
+  skinLoadKeys.delete(v)
+}
+
+// Don't re-decode the same skin repeatedly: navigating between packs (and
+// other triggers) would otherwise re-load an identical skin URI just because a
+// different pack was selected, pinning a fresh decoded image each time.
+const skinLoadKeys = new Map()
+function loadSkinOnce(v, uri, model) {
+  if (!v || v.disposed) return false
+  const key = (uri || '') + '\u0001' + (model || '')
+  if (skinLoadKeys.get(v) === key) return false
+  skinLoadKeys.set(v, key)
+  return true
 }
 
 function clearIdlePause() {
@@ -876,6 +894,19 @@ function loadImage(uri) {
     img.onerror = () => resolve(null)
     img.src = uri
   })
+}
+
+// Pack grid shows icons at 56px; decoding the full-res pack_icon for every card
+// wastes a lot of memory, so we downscale once and drop the original data URI.
+const PACK_ICON_THUMB = 64
+async function thumbifyPackIcons(list) {
+  for (let i = 0; i < list.length; i++) {
+    const p = list[i]
+    if (p && p.iconURI) {
+      try { p.iconURI = await toThumb(p.iconURI, PACK_ICON_THUMB) } catch {}
+    }
+    if ((i & 7) === 7) await new Promise(r => setTimeout(r, 0))
+  }
 }
 
 async function toThumb(dataURI, size = 64) {
@@ -1043,9 +1074,6 @@ watch(fsViewerRef, (newRef) => {
       v.controls.target.set(0, 2, 0)
       v.controls.enableDamping = true
       v.controls.dampingFactor = 0.08
-      if (customSkinURI.value) {
-        v.loadSkin(customSkinURI.value, { model: skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value })
-      }
       applyAppearanceFs()
     } else {
       fsViewerTimer = setTimeout(tryGetViewer, 50)
@@ -1057,7 +1085,10 @@ watch(fsViewerRef, (newRef) => {
 async function applyAppearanceFs() {
   if (!fsViewerInstance) return
   const uri = customSkinURI.value || defaultSkinImg
-  await fsViewerInstance.loadSkin(uri, { model: skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value })
+  const model = skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value
+  if (loadSkinOnce(fsViewerInstance, uri, model)) {
+    await fsViewerInstance.loadSkin(uri, { model })
+  }
   const cached = currentSkyKey ? skyCache.get(currentSkyKey) : null
   const cubemap = cached || await skyBuild(selectedPack.value + '#base', lastSkyTex)
   currentSkyKey = skyKey(selectedPack.value + '#base')
@@ -1107,6 +1138,7 @@ async function loadAllPacks() {
       ...p,
       dirName: p.dirName || '',
     }))
+    thumbifyPackIcons(packList.value)
   } catch (e) {
     console.error('Failed to load packs:', e)
   }
@@ -1281,8 +1313,11 @@ function reloadItems(packName) {
 
 async function applySkin(packName) {
   if (!viewerInstance) return
-  let skinURI = customSkinURI.value || await cachedTextureFetch(packName + '|skin', () => GetPlayerSkinTexture(packName)) || defaultSkinImg
-  await viewerInstance.loadSkin(skinURI, { model: skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value })
+  const skinURI = customSkinURI.value || await cachedTextureFetch(packName + '|skin', () => GetPlayerSkinTexture(packName)) || defaultSkinImg
+  const model = skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value
+  if (loadSkinOnce(viewerInstance, skinURI, model)) {
+    await viewerInstance.loadSkin(skinURI, { model })
+  }
   resumeViewers()
   scheduleIdleGC(null, 'skin')
 }
@@ -1480,15 +1515,21 @@ function onFsResize() {
 watch(() => customSkinURI.value, async () => {
   if (fsViewerInstance) {
     const uri = customSkinURI.value || defaultSkinImg
-    await fsViewerInstance.loadSkin(uri, { model: skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value })
-    await applyAppearanceFs()
+    const model = skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value
+    if (loadSkinOnce(fsViewerInstance, uri, model)) {
+      await fsViewerInstance.loadSkin(uri, { model })
+      await applyAppearanceFs()
+    }
   }
 })
 
 watch(() => skinModel.value, async () => {
   if (fsViewerInstance) {
     const uri = customSkinURI.value || defaultSkinImg
-    await fsViewerInstance.loadSkin(uri, { model: skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value })
+    const model = skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value
+    if (loadSkinOnce(fsViewerInstance, uri, model)) {
+      await fsViewerInstance.loadSkin(uri, { model })
+    }
   }
 })
 
@@ -1498,6 +1539,10 @@ watch(() => props.active, (val) => {
   } else {
     closeModal()
   }
+})
+
+watch(() => props.openPackReq, (req) => {
+  if (req && req.name) openPack(req.name)
 })
 </script>
 
@@ -1534,7 +1579,7 @@ watch(() => props.active, (val) => {
 
       <div v-else class="pv-grid">
         <div v-for="pack in filteredPacks" :key="pack.dirName" class="pv-card" @click="openPack(pack.dirName)">
-          <img v-if="pack.iconURI" :src="pack.iconURI" class="pv-card-icon" />
+          <img v-if="pack.iconURI" :src="pack.iconURI" class="pv-card-icon" width="56" height="56" loading="lazy" decoding="async" />
           <div v-else class="pv-card-icon pv-card-placeholder">
             <i class="fa fa-box"></i>
           </div>

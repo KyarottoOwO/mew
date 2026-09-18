@@ -14,6 +14,7 @@ const skyPresets = ref(true)
 const skyPresetNames = ref('')
 const addPromoTexts = ref(false)
 const resourcePacksPath = ref('')
+const packCachePath = ref('')
 const theme = ref('dark')
 
 const detectedPaths = ref([])
@@ -38,6 +39,7 @@ async function loadSettings() {
     skyPresetNames.value = Array.isArray(s.skyPresetNames) ? s.skyPresetNames.join(', ') : ''
     addPromoTexts.value = s.addPromoTexts || false
     resourcePacksPath.value = s.resourcePacksPath || ''
+    packCachePath.value = s.packCachePath || ''
     theme.value = s.theme || 'dark'
 
     detectedPaths.value = await DetectMinecraftPaths()
@@ -84,6 +86,7 @@ async function persistSettings() {
       skyPresetNames: skyPresetNames.value.split(',').map(s => s.trim()).filter(s => s !== ''),
       addPromoTexts: addPromoTexts.value,
       resourcePacksPath: finalPath,
+      packCachePath: packCachePath.value,
       theme: theme.value,
     }
     await SaveSettings(data)
@@ -146,6 +149,23 @@ async function pickOutputDir() {
 
 function clearOutputDir() {
   customOutputDir.value = ''
+  persistSettings()
+}
+
+async function pickCacheDir() {
+  try {
+    const dir = await SelectDirectory()
+    if (dir) {
+      packCachePath.value = dir
+      persistSettings()
+    }
+  } catch (e) {
+    console.error('Directory picker failed:', e)
+  }
+}
+
+function clearCacheDir() {
+  packCachePath.value = ''
   persistSettings()
 }
 
@@ -277,6 +297,21 @@ onMounted(loadSettings)
             <div class="dir-buttons">
               <button class="btn-sm btn-main" @click="pickOutputDir"><i class="fa fa-folder-open"></i> Browse</button>
               <button v-if="customOutputDir" class="btn-sm btn-cancel" @click="clearOutputDir">Clear</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="setting-row setting-row-block">
+          <div class="setting-info">
+            <span class="setting-label">Pack Cache Path</span>
+            <span class="setting-desc">Where the Pack Editor finds cached packs. Default: %LOCALAPPDATA%\Temp\Minecraft Bedrock\minecraftpe\packcache\resource. Set this for custom clients with different paths.</span>
+          </div>
+          <div class="dir-picker">
+            <span class="dir-path" v-if="packCachePath">{{ packCachePath }}</span>
+            <span class="dir-path dir-default" v-else>Default (Minecraft Bedrock pack cache)</span>
+            <div class="dir-buttons">
+              <button class="btn-sm btn-main" @click="pickCacheDir"><i class="fa fa-folder-open"></i> Browse</button>
+              <button v-if="packCachePath" class="btn-sm btn-cancel" @click="clearCacheDir">Clear</button>
             </div>
           </div>
         </div>

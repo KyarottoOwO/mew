@@ -18,7 +18,7 @@ const navItems = [
   { id: 'home', icon: 'fa-house', label: 'Home' },
   { id: 'packporter', icon: 'fa-box-open', label: 'Pack Porter' },
   { id: 'packFolderPorter', icon: 'fa-folder-open', label: 'Multi-Pack Porter' },
-  { id: 'recolor', icon: 'fa-palette', label: 'Recolor Tool' },
+  { id: 'recolor', icon: 'fa-palette', label: 'Pack Editor' },
   { id: 'animator', icon: 'fa-video', label: 'Animated Inventory' },
   { id: 'skyconverter', icon: 'fa-cloud-sun', label: 'Sky Converter' },
   { id: 'packviewer', icon: 'fa-eye', label: 'Pack Viewer' },

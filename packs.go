@@ -94,10 +94,7 @@ type SaveImageRequest struct {
 }
 
 func (a *App) GetInstalledPacks() ResourcePacksInfo {
-	path := a.getStringSetting("resourcePacksPath")
-	if path == "" {
-		path = a.getDefaultResourcePacksPath()
-	}
+	path := a.getResourcePacksPath()
 	info := ResourcePacksInfo{Path: path}
 	if st, err := os.Stat(path); err != nil || !st.IsDir() {
 		return info
@@ -116,6 +113,34 @@ func (a *App) GetInstalledPacks() ResourcePacksInfo {
 	return info
 }
 
+type CachePackSource struct {
+	Name  string   `json:"name"`
+	Path  string   `json:"path"`
+	Found bool     `json:"found"`
+	Packs []string `json:"packs"`
+}
+
+func (a *App) GetPackCache() []CachePackSource {
+	path := a.getStringSetting("packCachePath")
+	if path == "" {
+		path = a.getDefaultPackCachePath()
+	}
+	src := CachePackSource{Name: "Minecraft Pack Cache", Path: path}
+	if st, err := os.Stat(path); err == nil && st.IsDir() {
+		src.Found = true
+		entries, err := os.ReadDir(path)
+		if err == nil {
+			for _, e := range entries {
+				if e.IsDir() {
+					src.Packs = append(src.Packs, e.Name())
+				}
+			}
+			sort.Strings(src.Packs)
+		}
+	}
+	return []CachePackSource{src}
+}
+
 func dirSize(path string) int64 {
 	var size int64
 	filepath.WalkDir(path, func(_ string, d fs.DirEntry, err error) error {
@@ -131,16 +156,12 @@ func dirSize(path string) int64 {
 	return size
 }
 
-func (a *App) GetPackListWithInfo() ([]PackListEntry, error) {
-	path := a.getStringSetting("resourcePacksPath")
-	if path == "" {
-		path = a.getDefaultResourcePacksPath()
-	}
-	if st, err := os.Stat(path); err != nil || !st.IsDir() {
+func (a *App) listPacksWithInfo(base string) ([]PackListEntry, error) {
+	if st, err := os.Stat(base); err != nil || !st.IsDir() {
 		return nil, nil
 	}
 
-	entries, err := os.ReadDir(path)
+	entries, err := os.ReadDir(base)
 	if err != nil {
 		return nil, err
 	}
@@ -151,7 +172,7 @@ func (a *App) GetPackListWithInfo() ([]PackListEntry, error) {
 			continue
 		}
 
-		dir := filepath.Join(path, e.Name())
+		dir := filepath.Join(base, e.Name())
 		st, err := os.Stat(dir)
 		if err != nil {
 			continue
@@ -192,11 +213,20 @@ func (a *App) GetPackListWithInfo() ([]PackListEntry, error) {
 	return result, nil
 }
 
-func (a *App) GetInstalledPacksDetailed() DetailedPacksInfo {
-	path := a.getStringSetting("resourcePacksPath")
-	if path == "" {
-		path = a.getDefaultResourcePacksPath()
+func (a *App) GetPackListWithInfo() ([]PackListEntry, error) {
+	path := a.getResourcePacksPath()
+	return a.listPacksWithInfo(path)
+}
+
+func (a *App) GetPackCacheList(basePath string) ([]PackListEntry, error) {
+	if basePath == "" {
+		basePath = a.getDefaultPackCachePath()
 	}
+	return a.listPacksWithInfo(basePath)
+}
+
+func (a *App) GetInstalledPacksDetailed() DetailedPacksInfo {
+	path := a.getResourcePacksPath()
 	info := DetailedPacksInfo{Path: path}
 	if st, err := os.Stat(path); err != nil || !st.IsDir() {
 		return info
@@ -242,10 +272,7 @@ func (a *App) GetInstalledPacksDetailed() DetailedPacksInfo {
 }
 
 func (a *App) DeleteInstalledPack(packName string) error {
-	path := a.getStringSetting("resourcePacksPath")
-	if path == "" {
-		path = a.getDefaultResourcePacksPath()
-	}
+	path := a.getResourcePacksPath()
 	if packName == "" || strings.Contains(packName, "..") || strings.ContainsAny(packName, `\/`) {
 		return fmt.Errorf("invalid pack name")
 	}
@@ -259,10 +286,7 @@ func (a *App) DeleteInstalledPack(packName string) error {
 }
 
 func (a *App) getPackDir(packName string) string {
-	base := a.getStringSetting("resourcePacksPath")
-	if base == "" {
-		base = a.getDefaultResourcePacksPath()
-	}
+	base := a.getResourcePacksPath()
 	return filepath.Join(base, packName)
 }
 

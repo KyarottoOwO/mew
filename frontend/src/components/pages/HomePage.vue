@@ -51,7 +51,7 @@ onMounted(() => {
           <h3 class="home-card-text">Turn Java Edition resource packs into Bedrock Edition fast and easy.</h3>
         </div>
         <div class="home-card" @click="emit('navigate', 'recolor')">
-          <div class="home-card-header">Recolor Tool</div>
+          <div class="home-card-header">Pack Editor</div>
           <h3 class="home-card-text">Edit and recolor texture packs to your liking</h3>
         </div>
       </div>

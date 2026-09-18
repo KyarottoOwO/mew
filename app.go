@@ -25,6 +25,7 @@ type App struct {
 	discordMu        sync.Mutex
 	discordIpcMu     sync.Mutex
 	discordStart     time.Time
+	thumbCache       sync.Map
 }
 
 func NewApp(debug bool) *App {

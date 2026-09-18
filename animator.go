@@ -34,6 +34,13 @@ const (
 
 const animManifestDescription = "Made with MEW"
 
+type AnimMergeTarget struct {
+	Kind     string `json:"kind"`     // "installed" | "cache" | "upload"
+	Name     string `json:"name"`     // pack dir name (installed/cache) or .mcpack file name (upload)
+	BasePath string `json:"basePath"` // cache source base path (holds the pack dir)
+	Data     []byte `json:"data"`     // upload: bytes of the .mcpack to merge into
+}
+
 func parseHexColor(hex string) color.RGBA {
 	hex = strings.TrimSpace(hex)
 	hex = strings.TrimPrefix(hex, "#")
@@ -59,14 +66,14 @@ func fitFrameToCanvas(src image.Image, transparent bool, fill color.RGBA) *image
 		return canvas
 	}
 
-	scale := math.Min(float64(animFrameWidth)/float64(srcW), float64(animFrameHeight)/float64(srcH))
+	scale := math.Max(float64(animFrameWidth)/float64(srcW), float64(animFrameHeight)/float64(srcH))
 	newW := int(math.Round(float64(srcW) * scale))
 	newH := int(math.Round(float64(srcH) * scale))
-	if newW < 1 {
-		newW = 1
+	if newW < animFrameWidth {
+		newW = animFrameWidth
 	}
-	if newH < 1 {
-		newH = 1
+	if newH < animFrameHeight {
+		newH = animFrameHeight
 	}
 
 	scaled := image.NewRGBA(image.Rect(0, 0, newW, newH))
@@ -412,8 +419,8 @@ func buildStaticImagePack(imageBytes []byte, fileName string, overlayBytes []byt
 	return mcpackPath, nil
 }
 
-func (a *App) CreateAnimatedInventory(gifBytes []byte, fileName string, frameDuration string, overlayBytes []byte, useOverlay, transparentFill bool, mergePacks []string, fillColor string) (string, error) {
-	a.logDebug(fmt.Sprintf("CreateAnimatedInventory: called, file=%s, size=%d, duration=%s, useOverlay=%v, transparent=%v, mergePacks=%v", fileName, len(gifBytes), frameDuration, useOverlay, transparentFill, mergePacks))
+func (a *App) CreateAnimatedInventory(gifBytes []byte, fileName string, frameDuration string, overlayBytes []byte, useOverlay, transparentFill bool, mergeTargets []AnimMergeTarget, fillColor string) (string, error) {
+	a.logDebug(fmt.Sprintf("CreateAnimatedInventory: called, file=%s, size=%d, duration=%s, useOverlay=%v, transparent=%v, mergeTargets=%v", fileName, len(gifBytes), frameDuration, useOverlay, transparentFill, mergeTargets))
 
 	if err := a.acquirePort(); err != nil {
 		return "", err
@@ -459,8 +466,8 @@ func (a *App) CreateAnimatedInventory(gifBytes []byte, fileName string, frameDur
 		return "", err
 	}
 
-	if len(mergePacks) > 0 {
-		if err := a.mergeAnimatedPack(mcpackPath, mergePacks); err != nil {
+	if len(mergeTargets) > 0 {
+		if err := a.mergeAnimatedPack(mcpackPath, mergeTargets); err != nil {
 			return "", err
 		}
 	} else if a.getBoolSetting("autoImport") {
@@ -476,15 +483,9 @@ func (a *App) CreateAnimatedInventory(gifBytes []byte, fileName string, frameDur
 	return mcpackPath, nil
 }
 
-func (a *App) mergeAnimatedPack(mcpackPath string, packNames []string) error {
-	bedrockPath := a.getStringSetting("resourcePacksPath")
-	if bedrockPath == "" {
-		bedrockPath = a.getDefaultResourcePacksPath()
-	}
-	a.logDebug(fmt.Sprintf("mergeAnimatedPack: bedrockPath=%s, packs=%v", bedrockPath, packNames))
-	if st, err := os.Stat(bedrockPath); err != nil || !st.IsDir() {
-		return fmt.Errorf("resource packs path not found: %s", bedrockPath)
-	}
+func (a *App) mergeAnimatedPack(mcpackPath string, targets []AnimMergeTarget) error {
+	bedrockPath := a.getResourcePacksPath()
+	a.logDebug(fmt.Sprintf("mergeAnimatedPack: bedrockPath=%s, targets=%d", bedrockPath, len(targets)))
 
 	extractDir := filepath.Join(getMewTempDir("anim_merge_temp"))
 	os.RemoveAll(extractDir)
@@ -495,74 +496,133 @@ func (a *App) mergeAnimatedPack(mcpackPath string, packNames []string) error {
 		return fmt.Errorf("failed to extract pack for merge: %w", err)
 	}
 
-	extractCount := 0
-	filepath.Walk(extractDir, func(path string, info fs.FileInfo, err error) error {
-		if err == nil && !info.IsDir() {
-			rel, _ := filepath.Rel(extractDir, path)
-			a.logDebug(fmt.Sprintf("mergeAnimatedPack: extract file: %s (%d bytes)", rel, info.Size()))
-			extractCount++
-		}
-		return nil
-	})
-	a.logDebug(fmt.Sprintf("mergeAnimatedPack: extracted %d files from mcpack", extractCount))
+	uploadRoot := filepath.Join(getMewTempDir("anim_merge_upload"))
+	os.RemoveAll(uploadRoot)
+	os.MkdirAll(uploadRoot, os.ModePerm)
+	defer os.RemoveAll(uploadRoot)
 
 	merged := 0
-	for _, name := range packNames {
-		if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `\/`) {
-			a.logDebug(fmt.Sprintf("mergeAnimatedPack: skipping invalid name: %q", name))
-			continue
-		}
-		destDir := filepath.Join(bedrockPath, name)
-		if st, err := os.Stat(destDir); err != nil || !st.IsDir() {
-			a.logDebug(fmt.Sprintf("mergeAnimatedPack: pack dir NOT found, skipping: %s (err=%v)", destDir, err))
-			continue
-		}
+	for i, target := range targets {
+		switch target.Kind {
+		case "upload":
+			name := strings.TrimSpace(target.Name)
+			if name == "" || len(target.Data) == 0 {
+				a.logDebug("mergeAnimatedPack: upload target missing name or data, skipping")
+				continue
+			}
+			packDir := filepath.Join(uploadRoot, fmt.Sprintf("upload_%d", i))
+			if mkErr := os.MkdirAll(packDir, os.ModePerm); mkErr != nil {
+				a.logDebug(fmt.Sprintf("mergeAnimatedPack: upload mkdir failed: %v", mkErr))
+				continue
+			}
+			tmpFile := filepath.Join(packDir, "pack.mcpack")
+			if wrErr := os.WriteFile(tmpFile, target.Data, 0644); wrErr != nil {
+				a.logDebug(fmt.Sprintf("mergeAnimatedPack: upload write failed: %v", wrErr))
+				continue
+			}
+			unpackDir := filepath.Join(packDir, "unpacked")
+			if uzErr := unzip(tmpFile, unpackDir); uzErr != nil {
+				a.logDebug(fmt.Sprintf("mergeAnimatedPack: upload unzip failed: %v", uzErr))
+				continue
+			}
+			rootDir, findErr := findManifestRoot(unpackDir)
+			if findErr != nil || rootDir == "" {
+				rootDir = unpackDir
+			}
+			if !a.mergeAnimIntoTarget(rootDir, extractDir) {
+				continue
+			}
+			base := strings.TrimSuffix(name, filepath.Ext(name))
+			outPath := filepath.Join(a.getOutputDir(), base+"-animated.mcpack")
+			if zipErr := zipDirToFile(unpackDir, outPath); zipErr != nil {
+				a.logDebug(fmt.Sprintf("mergeAnimatedPack: upload rezip failed: %v", zipErr))
+				continue
+			}
+			merged++
+			a.logDebug(fmt.Sprintf("mergeAnimatedPack: merged into uploaded pack and exported %s", outPath))
 
-	stripInventoryFiles(destDir)
-		a.logDebug(fmt.Sprintf("mergeAnimatedPack: stripped inventory files from %s", destDir))
+		case "cache":
+			name := strings.TrimSpace(target.Name)
+			base := strings.TrimSpace(target.BasePath)
+			if name == "" || base == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `\/`) {
+				a.logDebug(fmt.Sprintf("mergeAnimatedPack: skipping invalid cache target: %q", name))
+				continue
+			}
+			destDir := filepath.Join(base, name)
+			if st, err := os.Stat(destDir); err != nil || !st.IsDir() {
+				a.logDebug(fmt.Sprintf("mergeAnimatedPack: cache pack dir NOT found, skipping: %s (err=%v)", destDir, err))
+				continue
+			}
+			if a.mergeAnimIntoTarget(destDir, extractDir) {
+				merged++
+			}
 
-		originalUIDefs := readUIDefs(filepath.Join(destDir, "ui", "_ui_defs.json"))
-		originalGlobals := readGlobalVars(filepath.Join(destDir, "ui", "_global_variables.json"))
-
-		copied := 0
-		filepath.Walk(extractDir, func(path string, info fs.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
-				return nil
+		default: // installed
+			name := strings.TrimSpace(target.Name)
+			if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `\/`) {
+				a.logDebug(fmt.Sprintf("mergeAnimatedPack: skipping invalid name: %q", name))
+				continue
 			}
-			rel, err := filepath.Rel(extractDir, path)
-			if err != nil {
-				a.logDebug(fmt.Sprintf("mergeAnimatedPack: Rel error: %v", err))
-				return nil
+			if st, err := os.Stat(bedrockPath); err != nil || !st.IsDir() {
+				return fmt.Errorf("resource packs path not found: %s", bedrockPath)
 			}
-			base := strings.ToLower(info.Name())
-			if base == "manifest.json" || base == "pack_icon.png" {
-				return nil
+			destDir := filepath.Join(bedrockPath, name)
+			if st, err := os.Stat(destDir); err != nil || !st.IsDir() {
+				a.logDebug(fmt.Sprintf("mergeAnimatedPack: pack dir NOT found, skipping: %s (err=%v)", destDir, err))
+				continue
 			}
-			dst := filepath.Join(destDir, rel)
-			if mkErr := os.MkdirAll(filepath.Dir(dst), os.ModePerm); mkErr != nil {
-				a.logDebug(fmt.Sprintf("mergeAnimatedPack: MkdirAll failed for %s: %v", filepath.Dir(dst), mkErr))
-				return nil
+			if a.mergeAnimIntoTarget(destDir, extractDir) {
+				merged++
 			}
-			if cpErr := copyFile(path, dst); cpErr != nil {
-				a.logDebug(fmt.Sprintf("mergeAnimatedPack: copyFile FAILED %s -> %s: %v", rel, dst, cpErr))
-			}
-			copied++
-			return nil
-		})
-		if mergeErr := mergeUIDefs(filepath.Join(destDir, "ui", "_ui_defs.json"), originalUIDefs); mergeErr != nil {
-			a.logDebug(fmt.Sprintf("mergeAnimatedPack: _ui_defs merge warning: %v", mergeErr))
 		}
-		if mergeErr := mergeGlobalVars(filepath.Join(destDir, "ui", "_global_variables.json"), originalGlobals); mergeErr != nil {
-			a.logDebug(fmt.Sprintf("mergeAnimatedPack: _global_variables merge warning: %v", mergeErr))
-		}
-		merged++
-		a.logDebug(fmt.Sprintf("mergeAnimatedPack: copied %d files into %s", copied, destDir))
 	}
 
 	if merged == 0 {
 		return fmt.Errorf("none of the selected packs were found in Minecraft")
 	}
 	return nil
+}
+
+func (a *App) mergeAnimIntoTarget(destDir, extractDir string) bool {
+	stripInventoryFiles(destDir)
+	a.logDebug(fmt.Sprintf("mergeAnimatedPack: stripped inventory files from %s", destDir))
+
+	originalUIDefs := readUIDefs(filepath.Join(destDir, "ui", "_ui_defs.json"))
+	originalGlobals := readGlobalVars(filepath.Join(destDir, "ui", "_global_variables.json"))
+
+	copied := 0
+	filepath.Walk(extractDir, func(path string, info fs.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(extractDir, path)
+		if err != nil {
+			a.logDebug(fmt.Sprintf("mergeAnimatedPack: Rel error: %v", err))
+			return nil
+		}
+		base := strings.ToLower(info.Name())
+		if base == "manifest.json" || base == "pack_icon.png" {
+			return nil
+		}
+		dst := filepath.Join(destDir, rel)
+		if mkErr := os.MkdirAll(filepath.Dir(dst), os.ModePerm); mkErr != nil {
+			a.logDebug(fmt.Sprintf("mergeAnimatedPack: MkdirAll failed for %s: %v", filepath.Dir(dst), mkErr))
+			return nil
+		}
+		if cpErr := copyFile(path, dst); cpErr != nil {
+			a.logDebug(fmt.Sprintf("mergeAnimatedPack: copyFile FAILED %s -> %s: %v", rel, dst, cpErr))
+		}
+		copied++
+		return nil
+	})
+	if mergeErr := mergeUIDefs(filepath.Join(destDir, "ui", "_ui_defs.json"), originalUIDefs); mergeErr != nil {
+		a.logDebug(fmt.Sprintf("mergeAnimatedPack: _ui_defs merge warning: %v", mergeErr))
+	}
+	if mergeErr := mergeGlobalVars(filepath.Join(destDir, "ui", "_global_variables.json"), originalGlobals); mergeErr != nil {
+		a.logDebug(fmt.Sprintf("mergeAnimatedPack: _global_variables merge warning: %v", mergeErr))
+	}
+	a.logDebug(fmt.Sprintf("mergeAnimatedPack: copied %d files into %s", copied, destDir))
+	return true
 }
 
 func stripInventoryFiles(destDir string) {

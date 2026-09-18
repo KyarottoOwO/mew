@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -99,6 +102,98 @@ type MinecraftPath struct {
 	Path string `json:"path"`
 }
 
+// leviVersionPath returns the version label embedded in a levilauncher
+// resource_packs path, or "" when the path is not under levilauncher's versions.
+func leviVersionFromPath(p string) string {
+	marker := "/levilauncher.exe/versions/"
+	s := filepath.ToSlash(p)
+	idx := strings.Index(strings.ToLower(s), marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := s[idx+len(marker):]
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) == 0 || parts[0] == "" {
+		return ""
+	}
+	return parts[0]
+}
+
+func parseVersion(v string) [4]int {
+	var out [4]int
+	parts := strings.Split(strings.TrimLeft(v, "vV"), ".")
+	for i := 0; i < len(parts) && i < 4; i++ {
+		n, err := strconv.Atoi(parts[i])
+		if err == nil {
+			out[i] = n
+		}
+	}
+	return out
+}
+
+func compareVersions(a, b string) int {
+	pa := parseVersion(a)
+	pb := parseVersion(b)
+	for i := 0; i < 4; i++ {
+		if pa[i] != pb[i] {
+			if pa[i] < pb[i] {
+				return -1
+			}
+			return 1
+		}
+	}
+	return 0
+}
+
+// detectLeviResourcePacksPaths returns the levilauncher resource_packs
+// folders, newest version first.
+func detectLeviResourcePacksPaths() []MinecraftPath {
+	base := filepath.Join(os.Getenv("APPDATA"), "levilauncher.exe", "versions")
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return nil
+	}
+	type vp struct {
+		ver  [4]int
+		path MinecraftPath
+	}
+	var found []vp
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		ver := e.Name()
+		p := filepath.Join(base, ver, "Minecraft Bedrock", "Users", "Shared", "games", "com.mojang", "resource_packs")
+		if st, err := os.Stat(p); err != nil || !st.IsDir() {
+			continue
+		}
+		found = append(found, vp{ver: parseVersion(ver), path: MinecraftPath{Name: "Minecraft (LeviLauncher " + ver + ")", Path: p}})
+	}
+	sort.Slice(found, func(i, j int) bool {
+		for k := 0; k < 4; k++ {
+			if found[i].ver[k] != found[j].ver[k] {
+				return found[i].ver[k] > found[j].ver[k]
+			}
+		}
+		return false
+	})
+	var out []MinecraftPath
+	for _, f := range found {
+		out = append(out, f.path)
+	}
+	return out
+}
+
+// newestLeviResourcePacks returns the newest installed levilauncher
+// resource_packs folder (path), or "" when none exists.
+func newestLeviResourcePacks() string {
+	paths := detectLeviResourcePacksPaths()
+	if len(paths) > 0 {
+		return paths[0].Path
+	}
+	return ""
+}
+
 func (a *App) DetectMinecraftPaths() []MinecraftPath {
 	var paths []MinecraftPath
 	appData := os.Getenv("APPDATA")
@@ -114,7 +209,30 @@ func (a *App) DetectMinecraftPaths() []MinecraftPath {
 	addIfExists("Minecraft (Legacy UWP)", filepath.Join(localAppData, "Packages", "Microsoft.MinecraftUWP_8wekyb3d8bbwe", "LocalState", "games", "com.mojang", "resource_packs"))
 	addIfExists("Minecraft Preview", filepath.Join(appData, "Minecraft Bedrock Preview", "Users", "Shared", "games", "com.mojang", "resource_packs"))
 
+	paths = append(paths, detectLeviResourcePacksPaths()...)
+
 	return paths
+}
+
+// getResourcePacksPath resolves the active Bedrock resource_packs folder.
+// A configured path is honored unless it points at an outdated levilauncher
+// version — in that case the newest installed version wins.
+func (a *App) getResourcePacksPath() string {
+	if p, ok := a.settings["resourcePacksPath"].(string); ok && p != "" {
+		if st, err := os.Stat(p); err == nil && st.IsDir() {
+			if ver := leviVersionFromPath(p); ver != "" {
+				if newest := newestLeviResourcePacks(); newest != "" && newest != p && compareVersions(ver, leviVersionFromPath(newest)) < 0 {
+					a.logDebug(fmt.Sprintf("mew: resourcePacksPath %q points to older levilauncher version %s, switching to %s", p, ver, newest))
+					a.settings["resourcePacksPath"] = newest
+					a.SaveSettings(a.settings)
+					return newest
+				}
+			}
+			return p
+		}
+		a.logDebug(fmt.Sprintf("mew: configured resourcePacksPath %q not found, falling back to detection", p))
+	}
+	return a.getDefaultResourcePacksPath()
 }
 
 func (a *App) getDefaultResourcePacksPath() string {
@@ -123,6 +241,10 @@ func (a *App) getDefaultResourcePacksPath() string {
 		return detected[0].Path
 	}
 	return filepath.Join(os.Getenv("APPDATA"), "Minecraft Bedrock", "Users", "Shared", "games", "com.mojang", "resource_packs")
+}
+
+func (a *App) getDefaultPackCachePath() string {
+	return filepath.Join(os.Getenv("LOCALAPPDATA"), "Temp", "Minecraft Bedrock", "minecraftpe", "packcache", "resource")
 }
 
 func (a *App) SelectDirectory() (string, error) {

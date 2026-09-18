@@ -905,10 +905,7 @@ func (a *App) processPack(ctx context.Context, name string, data []byte, totalFi
 }
 
 func (a *App) importToBedrock(mcpackPath string) {
-	bedrockPath := a.getStringSetting("resourcePacksPath")
-	if bedrockPath == "" {
-		bedrockPath = a.getDefaultResourcePacksPath()
-	}
+	bedrockPath := a.getResourcePacksPath()
 
 	if st, err := os.Stat(bedrockPath); err != nil || !st.IsDir() {
 		log.Printf("Skipping import: resource packs path not found: %s", bedrockPath)
@@ -952,10 +949,7 @@ func (a *App) importToBedrock(mcpackPath string) {
 }
 
 func (a *App) importFromBytes(mcpackBytes []byte, packName string) {
-	bedrockPath := a.getStringSetting("resourcePacksPath")
-	if bedrockPath == "" {
-		bedrockPath = a.getDefaultResourcePacksPath()
-	}
+	bedrockPath := a.getResourcePacksPath()
 
 	if st, err := os.Stat(bedrockPath); err != nil || !st.IsDir() {
 		log.Printf("Skipping import: resource packs path not found: %s", bedrockPath)
@@ -1002,8 +996,11 @@ func (a *App) importFromBytes(mcpackBytes []byte, packName string) {
 }
 
 func (a *App) CheckPack(bytes []byte) (*CheckResult, error) {
+	a.logDebug(fmt.Sprintf("CheckPack: called, size=%d", len(bytes)))
+
 	tmpFile, err := os.CreateTemp("", "srm-check-*.zip")
 	if err != nil {
+		a.logDebug(fmt.Sprintf("CheckPack: temp file FAILED: %v", err))
 		return nil, fmt.Errorf("failed to create temp file: %v", err)
 	}
 	tmpPath := tmpFile.Name()
@@ -1014,16 +1011,31 @@ func (a *App) CheckPack(bytes []byte) (*CheckResult, error) {
 	checkDir := a.getTempDir("check_unzip")
 	os.RemoveAll(checkDir)
 	if err := unzip(tmpPath, checkDir); err != nil {
+		a.logDebug(fmt.Sprintf("CheckPack: unzip FAILED: %v", err))
 		return nil, fmt.Errorf("failed to unzip: %v", err)
 	}
+	a.logDebug(fmt.Sprintf("CheckPack: unzipped to %s", checkDir))
 
-	if _, err := os.Stat(filepath.Join(checkDir, "manifest.json")); os.IsNotExist(err) {
+	rootDir, findErr := findManifestRoot(checkDir)
+	if findErr != nil {
+		a.logDebug(fmt.Sprintf("CheckPack: findManifestRoot FAILED: %v", findErr))
+		return nil, fmt.Errorf("failed to find manifest: %v", findErr)
+	}
+	if rootDir == "" {
+		a.logDebug("CheckPack: no manifest.json found, invalid pack")
 		os.RemoveAll(checkDir)
 		return &CheckResult{Valid: false, ErrorMsg: "Please provide a valid pack."}, nil
 	}
+	if rootDir != checkDir {
+		a.logDebug(fmt.Sprintf("CheckPack: manifest found inside wrapper folder %q", rootDir))
+	}
 
-	texturesPath := filepath.Join(checkDir, "textures")
+	texturesPath := filepath.Join(rootDir, "textures")
 	var folders []string
+	if _, texStatErr := os.Stat(texturesPath); texStatErr != nil {
+		a.logDebug(fmt.Sprintf("CheckPack: no textures dir at %s, folders empty", texturesPath))
+		return &CheckResult{Folders: nil, Valid: true}, nil
+	}
 	err = filepath.WalkDir(texturesPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -1041,10 +1053,43 @@ func (a *App) CheckPack(bytes []byte) (*CheckResult, error) {
 		return nil
 	})
 	if err != nil {
+		a.logDebug(fmt.Sprintf("CheckPack: walk textures FAILED: %v", err))
 		return nil, fmt.Errorf("walk dir error: %v", err)
 	}
 
+	a.logDebug(fmt.Sprintf("CheckPack: valid, %d folder(s): %v", len(folders), folders))
 	return &CheckResult{Folders: folders, Valid: true}, nil
+}
+
+func findManifestRoot(checkDir string) (string, error) {
+	if _, err := os.Stat(filepath.Join(checkDir, "manifest.json")); err == nil {
+		return checkDir, nil
+	}
+
+	var root string
+	walkErr := filepath.WalkDir(checkDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() && path != checkDir {
+			rel, rerr := filepath.Rel(checkDir, path)
+			if rerr != nil {
+				return nil
+			}
+			if strings.Count(filepath.ToSlash(rel), "/") > 5 {
+				return filepath.SkipDir
+			}
+		}
+		if !d.IsDir() && strings.EqualFold(d.Name(), "manifest.json") {
+			root = filepath.Dir(path)
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return "", walkErr
+	}
+	return root, nil
 }
 
 func (a *App) ExportPack(name string) (string, error) {

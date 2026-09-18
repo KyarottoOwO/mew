@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
-import { GetInstalledManifestPacks, GetPackManifest, NewManifestTemplate, RegenerateUuid, ApplyManifestToPack, CreatePackFromManifest } from '../../../wailsjs/go/main/App'
+import { ApplyManifestToDir, ApplyManifestToPack, ApplyManifestToUpload, CheckPack, CreatePackFromManifest, GetInstalledManifestPacks, GetManifestFromUpload, GetPackCache, GetPackCacheList, GetPackManifest, GetPackManifestFromDir, NewManifestTemplate, RegenerateUuid } from '../../../wailsjs/go/main/App'
 import { ClipboardSetText } from '../../../wailsjs/runtime/runtime'
 
 const props = defineProps({ active: Boolean })
@@ -8,12 +8,27 @@ const props = defineProps({ active: Boolean })
 const packs = ref([])
 const loading = ref(false)
 const saving = ref(false)
-const selected = ref('')
+const sel = ref(null)
 const sourceText = ref('')
 const manifest = ref(null)
 const isNew = ref(false)
 const advanced = ref(false)
 const rawJson = ref('')
+
+const sourceTab = ref('installed')
+const mtQuery = ref('')
+
+const cacheSources = ref([])
+const cacheLoading = ref(false)
+const cacheLoaded = ref(false)
+
+const uploads = ref([])
+const uploadSeq = ref(0)
+const uploadFile = ref(null)
+const uploadInfo = ref('')
+const showUploadInfo = ref(false)
+const uploadChecking = ref(false)
+const uploadDropZone = ref(null)
 
 const formName = ref('')
 const formDesc = ref('')
@@ -164,29 +179,167 @@ async function loadPacks() {
   }
 }
 
-async function selectPack(dir, pack) {
-  selected.value = dir
+function selKey(it) {
+  if (it.kind === 'upload') return 'upload::' + (it.uid || it.name)
+  return it.kind + '::' + it.name + '::' + (it.basePath || '')
+}
+
+function isSel(it) {
+  return sel.value && selKey(sel.value) === selKey(it)
+}
+
+function matchesQuery(p) {
+  const q = mtQuery.value.trim().toLowerCase()
+  if (!q) return true
+  return (p.name || '').toLowerCase().includes(q) ||
+         (p.dirName || '').toLowerCase().includes(q) ||
+         (p.description || '').toLowerCase().includes(q)
+}
+
+const filteredInstalled = computed(() => packs.value.filter(matchesQuery))
+
+const filteredCacheSources = computed(() =>
+  cacheSources.value
+    .map(src => ({ ...src, packs: src.packs.filter(matchesQuery) }))
+    .filter(src => src.packs.length > 0)
+)
+
+async function loadCache(force = false) {
+  if (cacheLoaded.value && !force) return
+  cacheLoading.value = true
+  try {
+    const srcs = (await GetPackCache()) || []
+    const detailed = []
+    for (const src of srcs) {
+      let list = []
+      try {
+        list = (await GetPackCacheList(src.path)) || []
+      } catch (e) {
+        list = []
+      }
+      detailed.push({ ...src, packs: list })
+    }
+    cacheSources.value = detailed
+    cacheLoaded.value = true
+  } catch (err) {
+    console.error('[ManifestTool] GetPackCache error:', err)
+  }
+  cacheLoading.value = false
+}
+
+function onUploadChange(e) {
+  handleUpload(e.target.files[0])
+}
+
+function onUploadDrop(e) {
+  e.preventDefault()
+  uploadDropZone.value?.classList.remove('drag-over')
+  handleUpload(e.dataTransfer.files[0])
+}
+
+function onUploadDragOver(e) {
+  e.preventDefault()
+  uploadDropZone.value?.classList.add('drag-over')
+}
+
+function onUploadDragLeave() {
+  uploadDropZone.value?.classList.remove('drag-over')
+}
+
+function handleUpload(selectedFile) {
+  if (!selectedFile) return
+  if (!/\.mcpack$/i.test(selectedFile.name)) {
+    popup('Error', 'Must be a .mcpack file.', 'error')
+    return
+  }
+  const kb = (selectedFile.size / 1024).toFixed(1)
+  uploadInfo.value = kb + ' KB'
+  uploadFile.value = selectedFile
+  showUploadInfo.value = true
+}
+
+async function addUpload() {
+  if (!uploadFile.value) {
+    popup('Error', 'Upload a .mcpack first.', 'error')
+    return
+  }
+  uploadChecking.value = true
+  try {
+    const buffer = await uploadFile.value.arrayBuffer()
+    const bytes = Array.from(new Uint8Array(buffer))
+    const result = await CheckPack(bytes)
+    if (!result.valid) {
+      popup('Error', result.errorMsg || 'Invalid pack', 'error')
+      return
+    }
+    const u = { uid: (Date.now().toString(36) + '-' + uploadSeq.value++), name: uploadFile.value.name, file: uploadFile.value }
+    uploads.value.push(u)
+    uploadFile.value = null
+    showUploadInfo.value = false
+    uploadInfo.value = ''
+    await openItem({ kind: 'upload', name: u.name, uid: u.uid, file: u.file, label: u.name + ' (uploaded .mcpack)' })
+  } catch (err) {
+    popup('Error', err.toString(), 'error')
+  } finally {
+    uploadChecking.value = false
+  }
+}
+
+function removeUpload(i, ev) {
+  if (ev) ev.stopPropagation()
+  const u = uploads.value[i]
+  uploads.value.splice(i, 1)
+  if (u && sel.value && selKey(sel.value) === selKey({ kind: 'upload', name: u.name, uid: u.uid })) {
+    sel.value = null
+    manifest.value = null
+    sourceText.value = ''
+  }
+}
+
+async function openItem(item) {
+  sel.value = item
   loading.value = true
   try {
-    const m = await GetPackManifest(dir)
+    let m = null
+    if (item.kind === 'cache') {
+      m = await GetPackManifestFromDir(item.basePath + '/' + item.name)
+    } else if (item.kind === 'upload') {
+      const bytes = Array.from(new Uint8Array(await item.file.arrayBuffer()))
+      m = await GetManifestFromUpload(bytes)
+    } else {
+      m = await GetPackManifest(item.name)
+    }
     manifest.value = clone(m)
     isNew.value = false
     hydrateForm()
-    sourceText.value = dir
+    sourceText.value = item.label || item.name
   } catch (e) {
-    const t = await NewManifestTemplate()
-    manifest.value = t
-    isNew.value = true
-    hydrateForm()
-    formName.value = pack && pack.name ? pack.name : dir
-    sourceText.value = dir + ' (new manifest)'
+    if (item.kind === 'installed') {
+      const t = await NewManifestTemplate()
+      manifest.value = t
+      isNew.value = true
+      hydrateForm()
+      formName.value = item.displayName || item.name
+      sourceText.value = (item.label || item.name) + ' (new manifest)'
+    } else if (item.kind === 'cache') {
+      const t = await NewManifestTemplate()
+      manifest.value = t
+      isNew.value = false
+      hydrateForm()
+      formName.value = item.displayName || item.name
+      sourceText.value = (item.label || item.name) + ' (no manifest yet)'
+    } else {
+      popup('Read failed', (e && e.message) || String(e), 'error')
+      manifest.value = null
+      sel.value = null
+    }
   }
   if (advanced.value) syncRawJson()
   loading.value = false
 }
 
 async function makeNew() {
-  selected.value = ''
+  sel.value = { kind: 'installed', name: '', label: 'New pack', displayName: 'New Pack' }
   isNew.value = true
   const t = await NewManifestTemplate()
   manifest.value = t
@@ -291,7 +444,7 @@ async function save() {
       isNew.value = false
       advanced.value = false
       hydrateForm()
-      selected.value = dirName
+      sel.value = { kind: 'installed', name: dirName, label: dirName, displayName: name }
       sourceText.value = dirName
       await loadPacks()
       swal.fire({ title: 'Pack created', text: `Created "${name}" in your resource packs folder.`, icon: 'success', confirmButtonText: 'OK' })
@@ -304,15 +457,23 @@ async function save() {
     return
   }
 
-  if (!selected.value) {
+  if (!sel.value) {
     swal.fire({ title: 'No target pack', text: 'Select a pack from the list to save this manifest into.', icon: 'info', confirmButtonText: 'OK' })
     return
   }
-  const target = packs.value.find(p => p.dirName === selected.value)
-  const targetLabel = (target && target.name) || selected.value
+
+  const targetLabel = sel.value.label || sel.value.name
+  let applyMsg = ''
+  if (sel.value.kind === 'cache') {
+    applyMsg = `Overwrite manifest.json in the cache pack "${targetLabel}"? The old file will be backed up as manifest.json.bak.`
+  } else if (sel.value.kind === 'upload') {
+    applyMsg = `Apply the manifest to "${targetLabel}"? A new pack will be exported to your output folder.`
+  } else {
+    applyMsg = `Overwrite manifest.json in "${targetLabel}"? The old file will be backed up as manifest.json.bak.`
+  }
   const c = await swal.fire({
     title: 'Apply manifest?',
-    text: `Overwrite manifest.json in "${targetLabel}"? The old file will be backed up as manifest.json.bak.`,
+    text: applyMsg,
     icon: 'question',
     showCancelButton: true,
     confirmButtonText: 'Apply',
@@ -321,14 +482,23 @@ async function save() {
   if (!c.isConfirmed) return
   saving.value = true
   try {
-    await ApplyManifestToPack(selected.value, edited)
+    if (sel.value.kind === 'cache') {
+      await ApplyManifestToDir(sel.value.basePath + '/' + sel.value.name, edited)
+    } else if (sel.value.kind === 'upload') {
+      const outPath = await ApplyManifestToUpload(edited, sel.value.name)
+      swal.fire({ title: 'Pack exported', text: 'Saved to ' + outPath, icon: 'success', confirmButtonText: 'OK' })
+    } else {
+      await ApplyManifestToPack(sel.value.name, edited)
+    }
     manifest.value = clone(edited)
     isNew.value = false
     advanced.value = false
     hydrateForm()
-    sourceText.value = selected.value
+    sourceText.value = sel.value.label || sel.value.name
     await loadPacks()
-    swal.fire({ title: 'Manifest applied', text: `Saved to ${targetLabel}`, icon: 'success', confirmButtonText: 'OK' })
+    if (sel.value.kind !== 'upload') {
+      swal.fire({ title: 'Manifest applied', text: `Saved to ${targetLabel}`, icon: 'success', confirmButtonText: 'OK' })
+    }
   } catch (err) {
     console.error('[ManifestTool] apply error:', err)
     const msg = err && err.message ? err.message : String(err)
@@ -353,7 +523,10 @@ async function copyManifest() {
 }
 
 watch(() => props.active, (val) => {
-  if (val) loadPacks()
+  if (val) {
+    loadPacks()
+    loadCache()
+  }
 })
 </script>
 
@@ -372,29 +545,124 @@ watch(() => props.active, (val) => {
 
     <div class="mt-body">
       <div class="mt-list">
-        <div v-if="loading" class="mt-empty">Loading packs...</div>
-        <div v-else-if="!packs.length" class="mt-empty">No installed packs found.</div>
-        <div v-else class="mt-items">
-          <div
-            v-for="p in packs"
-            :key="p.dirName"
-            class="mt-item"
-            :class="{ active: selected === p.dirName }"
-            @click="selectPack(p.dirName, p)"
-          >
-            <img v-if="p.iconURI" :src="p.iconURI" class="mt-item-icon" alt="" />
-            <div v-else class="mt-item-icon mt-item-ph"><i class="fa fa-box"></i></div>
-            <div class="mt-item-info">
-              <span class="mt-item-name">{{ p.name }}</span>
-              <span v-if="p.description" class="mt-item-desc">{{ p.description }}</span>
-              <span class="mt-item-meta">
-                <span v-if="p.hasManifest" class="mt-badge">
-                  {{ p.moduleType || 'manifest' }}<template v-if="p.packVersion"> · {{ p.packVersion }}</template>
-                </span>
-                <span v-else class="mt-badge mt-badge-warn">no manifest</span>
-              </span>
+        <div class="mt-source-tabs">
+          <button class="mt-source-tab" :class="{ active: sourceTab === 'installed' }" @click="sourceTab = 'installed'">
+            Installed
+          </button>
+          <button class="mt-source-tab" :class="{ active: sourceTab === 'cache' }" @click="sourceTab = 'cache'">
+            Pack Cache
+          </button>
+          <button class="mt-source-tab" :class="{ active: sourceTab === 'upload' }" @click="sourceTab = 'upload'">
+            Upload
+          </button>
+        </div>
+
+        <div v-if="sourceTab !== 'upload'" class="mt-list-filter">
+          <i class="fa fa-magnifying-glass"></i>
+          <input v-model="mtQuery" class="mt-list-search" type="text" placeholder="Search packs..." />
+          <button v-if="mtQuery" class="mt-list-clear" @click="mtQuery = ''" title="Clear search">&times;</button>
+        </div>
+
+        <div class="mt-list-body">
+          <template v-if="sourceTab === 'installed'">
+            <div v-if="loading" class="mt-empty">Loading packs...</div>
+            <div v-else-if="!filteredInstalled.length" class="mt-empty">
+              {{ mtQuery ? 'No packs match "' + mtQuery + '".' : 'No installed packs found.' }}
             </div>
-          </div>
+            <div v-else class="mt-items">
+              <div
+                v-for="p in filteredInstalled"
+                :key="p.dirName"
+                class="mt-item"
+                :class="{ active: isSel({ kind: 'installed', name: p.dirName }) }"
+                @click="openItem({ kind: 'installed', name: p.dirName, label: p.dirName, displayName: p.name })"
+              >
+                <img v-if="p.iconURI" :src="p.iconURI" class="mt-item-icon" alt="" />
+                <div v-else class="mt-item-icon mt-item-ph"><i class="fa fa-box"></i></div>
+                <div class="mt-item-info">
+                  <span class="mt-item-name">{{ p.name }}</span>
+                  <span v-if="p.description" class="mt-item-desc">{{ p.description }}</span>
+                  <span class="mt-item-meta">
+                    <span v-if="p.hasManifest" class="mt-badge">
+                      {{ p.moduleType || 'manifest' }}<template v-if="p.packVersion"> · {{ p.packVersion }}</template>
+                    </span>
+                    <span v-else class="mt-badge mt-badge-warn">no manifest</span>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <template v-else-if="sourceTab === 'cache'">
+            <div v-if="cacheLoading" class="mt-empty">
+              <i class="fa fa-spinner fa-spin"></i> Scanning pack cache...
+            </div>
+            <div v-else-if="filteredCacheSources.length === 0" class="mt-empty">
+              {{ mtQuery ? 'No packs match "' + mtQuery + '".' : 'No Minecraft pack cache found.' }}
+            </div>
+            <div v-else class="mt-cache-sources">
+              <div v-for="src in filteredCacheSources" :key="src.path" class="mt-cache-source">
+                <div class="mt-cache-source-head">
+                  <span class="mt-cache-source-name">{{ src.name }}</span>
+                  <span class="mt-cache-source-path" :title="src.path">{{ src.path }}</span>
+                </div>
+                <div class="mt-items">
+                  <div
+                    v-for="p in src.packs"
+                    :key="'c-' + src.path + '-' + p.dirName"
+                    class="mt-item"
+                    :class="{ active: isSel({ kind: 'cache', name: p.dirName, basePath: src.path }) }"
+                    @click="openItem({ kind: 'cache', name: p.dirName, basePath: src.path, label: src.name + ' / ' + p.name, displayName: p.name })"
+                  >
+                    <img v-if="p.iconURI" :src="p.iconURI" class="mt-item-icon" alt="" />
+                    <div v-else class="mt-item-icon mt-item-ph"><i class="fa fa-box"></i></div>
+                    <div class="mt-item-info">
+                      <span class="mt-item-name">{{ p.name }}</span>
+                      <span v-if="p.description" class="mt-item-desc">{{ p.description }}</span>
+                      <span class="mt-item-meta">
+                        <span class="mt-badge">cache</span>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <template v-else>
+            <p class="mt-list-hint">Upload an .mcpack to read and edit its manifest. Saving exports a new <code>&lt;name&gt;-updated.mcpack</code> to your output folder.</p>
+            <label ref="uploadDropZone" class="mt-upload-zone"
+                   @drop="onUploadDrop" @dragover="onUploadDragOver" @dragleave="onUploadDragLeave">
+              <input type="file" accept=".mcpack" class="hidden" @change="onUploadChange" />
+              <div v-if="!showUploadInfo" class="mt-upload-inner">
+                <i class="fa fa-cloud-arrow-up"></i>
+                <span class="mt-upload-hint">Drop a .mcpack here or click to upload</span>
+              </div>
+              <div v-else class="mt-upload-info">
+                <span class="mt-upload-name">{{ uploadFile.name }}</span>
+                <span class="mt-upload-size">{{ uploadInfo }}</span>
+              </div>
+            </label>
+            <button class="mt-btn mt-btn-primary mt-upload-confirm" :disabled="uploadChecking || !uploadFile" @click="addUpload">
+              {{ uploadChecking ? 'Checking...' : 'Open Uploaded Pack' }}
+            </button>
+            <div v-if="uploads.length" class="mt-items">
+              <div
+                v-for="(u, i) in uploads"
+                :key="'u-' + u.uid"
+                class="mt-item"
+                :class="{ active: isSel({ kind: 'upload', name: u.name, uid: u.uid }) }"
+                @click="openItem({ kind: 'upload', name: u.name, uid: u.uid, file: u.file, label: u.name + ' (uploaded .mcpack)' })"
+              >
+                <div class="mt-item-icon mt-item-ph"><i class="fa fa-box"></i></div>
+                <div class="mt-item-info">
+                  <span class="mt-item-name">{{ u.name }}</span>
+                  <span class="mt-item-meta"><span class="mt-badge">upload</span></span>
+                </div>
+                <button class="mt-icon-btn mt-remove" title="Remove" @click="removeUpload(i, $event)"><i class="fa fa-trash"></i></button>
+              </div>
+            </div>
+          </template>
         </div>
       </div>
 
@@ -416,7 +684,7 @@ watch(() => props.active, (val) => {
               <button class="mt-btn" @click="regenerateAll" :disabled="advanced && !rawJson"><i class="fa fa-dice"></i> Regenerate UUIDs</button>
               <button class="mt-btn" @click="copyManifest"><i class="fa fa-copy"></i> Copy</button>
               <button class="mt-btn mt-btn-primary" :disabled="saving" @click="save">
-                <i class="fa fa-floppy-disk"></i> {{ isNew ? 'Make a Pack' : 'Save to Pack' }}
+                <i class="fa fa-floppy-disk"></i> {{ isNew ? 'Make a Pack' : (sel && sel.kind === 'upload' ? 'Export Pack' : 'Save to Pack') }}
               </button>
             </div>
           </div>
@@ -542,10 +810,207 @@ watch(() => props.active, (val) => {
 .mt-list {
   width: 280px;
   flex-shrink: 0;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--border-subtle);
   border-radius: 12px;
   background: var(--bg-surface);
+}
+
+.mt-source-tabs {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0.6rem 0.6rem 0;
+  flex-shrink: 0;
+}
+
+.mt-source-tab {
+  flex: 1;
+  padding: 0.4rem 0.5rem;
+  background: var(--bg-input);
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-align: center;
+  transition: all 0.15s;
+}
+
+.mt-source-tab:hover {
+  color: var(--text-secondary);
+  background: var(--bg-hover-2);
+}
+
+.mt-source-tab.active {
+  background: transparent;
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.mt-list-filter {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 0.6rem 0.6rem 0.35rem;
+  flex-shrink: 0;
+}
+
+.mt-list-filter .fa-magnifying-glass {
+  position: absolute;
+  left: 1rem;
+  font-size: 0.75rem;
+  color: var(--text-faint);
+}
+
+.mt-list-search {
+  width: 100%;
+  padding: 0.4rem 1.9rem 0.4rem 1.6rem;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.mt-list-search::placeholder {
+  color: var(--text-faint);
+}
+
+.mt-list-search:focus {
+  border-color: var(--accent);
+}
+
+.mt-list-clear {
+  position: absolute;
+  right: 0.95rem;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.25rem;
+}
+
+.mt-list-clear:hover {
+  color: var(--text-secondary);
+}
+
+.mt-list-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.mt-list-hint {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  line-height: 1.4;
+  padding: 0.75rem 0.75rem 0.4rem;
+}
+
+.mt-list-hint code {
+  color: var(--text-secondary);
+  background: var(--bg-input);
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+}
+
+.mt-cache-sources {
+  display: flex;
+  flex-direction: column;
+}
+
+.mt-cache-source-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.75rem 0.7rem 0.35rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.mt-cache-source-name {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.mt-cache-source-path {
+  font-size: 0.62rem;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mt-upload-zone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--border-medium);
+  border-radius: 8px;
+  margin: 0.75rem 0.6rem 0.5rem;
+  padding: 1rem;
+  cursor: pointer;
+  transition: all 0.15s;
+  background: var(--bg-input);
+}
+
+.mt-upload-zone:hover, .mt-upload-zone.drag-over {
+  border-color: var(--accent);
+  background: var(--accent-glow);
+}
+
+.mt-upload-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.mt-upload-inner .fa {
+  font-size: 1.4rem;
+  color: var(--text-dim);
+}
+
+.mt-upload-hint {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+.mt-upload-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.mt-upload-name {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mt-upload-size {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.mt-upload-confirm {
+  width: calc(100% - 1.2rem);
+  margin: 0 0.6rem 0.75rem;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 .mt-items {
@@ -945,4 +1410,6 @@ watch(() => props.active, (val) => {
 .mt-json-editor:focus {
   border-color: var(--border-focus);
 }
+
+.hidden { display: none; }
 </style>

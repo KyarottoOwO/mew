@@ -5,16 +5,13 @@ import { EventsOn } from '../../../wailsjs/runtime/runtime'
 
 import { progressStore, startPort, updateFromEvent, finish, clearProgress } from '../../utils/progressStore'
 const props = defineProps({ active: Boolean })
-const mode = ref('file')
 const file = ref(null)
 const fileName = ref('')
 const fileSize = ref('')
 const fileType = ref('')
 const fileModified = ref('')
-const showFileInfo = ref(false)
 const url = ref('')
 
-const fileUpload = ref(null)
 const dropZone = ref(null)
 
 const showProgress = ref(false)
@@ -26,14 +23,13 @@ const progressDone = ref(false)
 const startedPort = ref(false)
 
 function handleFile(selectedFile) {
+  if (!selectedFile || startedPort.value) return
   file.value = selectedFile
-  if (selectedFile) {
-    fileName.value = selectedFile.name
-    fileSize.value = (selectedFile.size / 1024 / 1024).toFixed(2) + ' MB'
-    fileType.value = selectedFile.type || 'application/zip'
-    fileModified.value = 'modified ' + new Date(selectedFile.lastModified).toLocaleDateString()
-    showFileInfo.value = true
-  }
+  fileName.value = selectedFile.name
+  fileSize.value = (selectedFile.size / 1024 / 1024).toFixed(2) + ' MB'
+  fileType.value = selectedFile.type || 'application/zip'
+  fileModified.value = 'modified ' + new Date(selectedFile.lastModified).toLocaleDateString()
+  startFilePort(selectedFile)
 }
 
 function onDrop(e) {
@@ -54,11 +50,17 @@ function onDragLeave() {
 
 function onFileChange(e) {
   if (e.target.files[0]) handleFile(e.target.files[0])
+  e.target.value = ''
 }
 
-function cancelSelection() {
-  file.value = null
-  showFileInfo.value = false
+function onUrlPaste() {
+  setTimeout(() => {
+    if (url.value && url.value.trim()) startUrlPort(url.value)
+  }, 0)
+}
+
+function onUrlEnter(e) {
+  startUrlPort(e.target.value)
 }
 
 function popup(title, text, icon) {
@@ -76,18 +78,50 @@ function resetProgress() {
   progressDone.value = false
 }
 
+async function startFilePort(selectedFile) {
+  resetProgress()
+  showProgress.value = true
+  startedPort.value = true
+  startPort('packporter', 'Starting...')
+  try {
+    const buffer = await selectedFile.arrayBuffer()
+    const bytes = new Uint8Array(buffer)
+    await PortPack(Array.from(bytes), selectedFile.name)
+  } catch (err) {
+    console.error('[PackPorter] PortPack error:', err)
+    popup('Error', err.toString(), 'error')
+    startedPort.value = false
+    clearProgress()
+    showProgress.value = false
+  }
+}
+
+async function startUrlPort(raw) {
+  const trimmed = (raw || '').trim()
+  if (!trimmed || startedPort.value) return
+  url.value = trimmed
+  resetProgress()
+  showProgress.value = true
+  startedPort.value = true
+  startPort('packporter', 'Starting...')
+  try {
+    await PortPackFromURL(trimmed)
+  } catch (err) {
+    console.error('[PackPorter] PortPackFromURL error:', err)
+    popup('Error', err.toString(), 'error')
+    startedPort.value = false
+    clearProgress()
+    showProgress.value = false
+  }
+}
+
 let progressHandler = null
 const isMounted = ref(false)
 
 onMounted(() => {
   isMounted.value = true
-  console.log('[PackPorter] mounted, registering progress listener')
   progressHandler = EventsOn('progress', (data) => {
-    if (!isMounted.value || !startedPort.value) {
-      console.log('[PackPorter] progress event received but not started or unmounted, ignoring')
-      return
-    }
-    console.log('[PackPorter] progress event:', data.title, data.message, data.icon)
+    if (!isMounted.value || !startedPort.value) return
     const t = parseInt(data.total) || 0
     const c = parseInt(data.completed) || 0
 
@@ -109,7 +143,10 @@ onMounted(() => {
       setTimeout(() => {
         showProgress.value = false
         file.value = null
-        showFileInfo.value = false
+        fileName.value = ''
+        fileSize.value = ''
+        fileType.value = ''
+        fileModified.value = ''
         url.value = ''
       }, 1500)
     } else if (data.icon === 'error') {
@@ -131,7 +168,6 @@ onMounted(() => {
 
 onUnmounted(() => {
   isMounted.value = false
-  console.log('[PackPorter] unmounted')
 })
 
 watch(() => props.active, (active) => {
@@ -148,126 +184,46 @@ watch(() => props.active, (active) => {
     resetProgress()
   }
 })
-
-async function confirmPort() {
-  console.log('[PackPorter] confirmPort called, mode:', mode.value)
-  resetProgress()
-  showProgress.value = true
-  startedPort.value = true
-  startPort('packporter', 'Starting...')
-
-  if (mode.value === 'url') {
-    const trimmedUrl = url.value.trim()
-    if (!trimmedUrl) {
-      popup('Error', 'Please paste a link first.', 'error')
-      startedPort.value = false
-      clearProgress()
-      showProgress.value = false
-      return
-    }
-    console.log('[PackPorter] calling PortPackFromURL')
-    try {
-      await PortPackFromURL(trimmedUrl)
-      console.log('[PackPorter] PortPackFromURL resolved')
-    } catch (err) {
-      console.error('[PackPorter] PortPackFromURL error:', err)
-      popup('Error', err.toString(), 'error')
-      startedPort.value = false
-      clearProgress()
-      showProgress.value = false
-    }
-  } else {
-    if (!file.value) {
-      popup('Error', 'Please upload a file first.', 'error')
-      startedPort.value = false
-      clearProgress()
-      showProgress.value = false
-      return
-    }
-    console.log('[PackPorter] calling PortPack with file:', file.value.name)
-    try {
-      const buffer = await file.value.arrayBuffer()
-      const bytes = new Uint8Array(buffer)
-      await PortPack(Array.from(bytes), file.value.name)
-      console.log('[PackPorter] PortPack resolved')
-    } catch (err) {
-      console.error('[PackPorter] PortPack error:', err)
-      popup('Error', err.toString(), 'error')
-      startedPort.value = false
-      clearProgress()
-      showProgress.value = false
-    }
-  }
-}
-
-function cancelUrl() {
-  url.value = ''
-}
 </script>
 
 <template>
   <div class="page active-page packporter-page">
     <div class="porter-card">
       <h2 class="card-title">Port Pack</h2>
-      <p class="card-desc">Upload a .zip/.rar pack or paste a MediaFire link to port it.</p>
+      <p class="card-desc">Drop a .zip/.rar pack or paste a MediaFire link &mdash; porting starts automatically, no buttons.</p>
 
       <div v-if="!showProgress">
-        <div class="mode-tabs">
-          <button :class="['mode-tab', mode === 'file' ? 'active' : '']" @click="mode = 'file'">
-            <i class="fa fa-upload"></i> Upload File
-          </button>
-          <button :class="['mode-tab', mode === 'url' ? 'active' : '']" @click="mode = 'url'">
-            <i class="fa fa-link"></i> Paste Link
-          </button>
-        </div>
+        <label ref="dropZone" class="drop-zone"
+               @drop="onDrop" @dragover="onDragOver" @dragleave="onDragLeave">
+          <input type="file" accept=".zip,.rar" class="hidden" @change="onFileChange" />
 
-        <div v-if="mode === 'file'">
-          <label ref="dropZone" class="drop-zone"
-                 @drop="onDrop" @dragover="onDragOver" @dragleave="onDragLeave">
-            <input ref="fileUpload" type="file" accept=".zip,.rar" class="hidden" @change="onFileChange" />
+          <div v-if="!file" class="drop-zone-inner">
+            <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24"
+                 stroke-linecap="round" stroke-linejoin="round" class="drop-icon">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="17 8 12 3 7 8"></polyline>
+              <line x1="12" x2="12" y1="3" y2="15"></line>
+            </svg>
+            <span class="drop-hint">Drop .zip or .rar here</span>
+            <span class="drop-sub">or click to browse</span>
+          </div>
 
-            <div v-if="!showFileInfo" class="drop-zone-inner">
-              <svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24"
-                   stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                <polyline points="17 8 12 3 7 8"></polyline>
-                <line x1="12" x2="12" y1="3" y2="15"></line>
-              </svg>
-              <span class="drop-hint">Drop .zip or .rar here</span>
+          <div v-else class="file-info-box">
+            <div class="file-info-row">
+              <span class="file-info-name">{{ fileName }}</span>
+              <span class="file-info-size">{{ fileSize }}</span>
             </div>
-
-            <div v-else class="file-info-box">
-              <div class="flex w-full items-center justify-between gap-4">
-                <p class="max-w-xs truncate text-base" style="color: var(--text-secondary);">{{ fileName }}</p>
-                <p class="w-fit flex-shrink-0 px-2 py-1 text-sm" style="background: var(--bg-input); color: var(--text-primary);">{{ fileSize }}</p>
-              </div>
-              <div class="mt-2 flex w-full flex-col items-start justify-between text-sm md:flex-row md:items-center gap-2" style="color: var(--text-dim);">
-                <p class="px-1 py-0.5" style="background: var(--bg-input);">{{ fileType }}</p>
-                <p>{{ fileModified }}</p>
-              </div>
-            </div>
-          </label>
-
-          <p class="card-desc mt-4">After uploading click confirm to start porting your pack.</p>
-
-          <div class="flex items-center gap-2 mt-6">
-            <button class="btn-cancel" @click="cancelSelection">Cancel</button>
-            <button class="btn-main" @click="confirmPort">Confirm</button>
+            <span class="file-info-sub">{{ fileType }} &middot; {{ fileModified }}</span>
           </div>
+        </label>
+
+        <div class="url-row">
+          <i class="fa fa-link url-icon"></i>
+          <input v-model="url" type="text"
+                 placeholder="...or paste a MediaFire link"
+                 class="url-input" @paste="onUrlPaste" @keyup.enter="onUrlEnter" />
         </div>
-
-        <div v-if="mode === 'url'">
-          <div class="mb-4">
-            <input v-model="url" type="text" placeholder="https://www.mediafire.com/file/..."
-                   class="url-input" />
-          </div>
-          <p class="card-desc">Paste a MediaFire link to a .zip or .rar pack.</p>
-
-          <div class="flex items-center gap-2 mt-6">
-            <button class="btn-cancel" @click="cancelUrl">Clear</button>
-            <button class="btn-main" @click="confirmPort">Confirm</button>
-          </div>
-        </div>
+        <p class="card-hint">Pasting a link or pressing Enter starts porting it immediately.</p>
       </div>
 
       <div v-else class="progress-section">
@@ -320,35 +276,6 @@ function cancelUrl() {
   margin-bottom: 1rem;
 }
 
-.mode-tabs {
-  display: flex;
-  gap: 0.25rem;
-  margin-bottom: 1rem;
-  background: var(--bg-input);
-  border-radius: 6px;
-  padding: 3px;
-}
-
-.mode-tab {
-  flex: 1;
-  padding: 0.4rem 0.75rem;
-  background: transparent;
-  color: var(--text-dim);
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.8rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.4rem;
-}
-
-.mode-tab.active {
-  background: var(--bg-hover-2);
-  color: var(--accent);
-}
-
 .drop-zone {
   display: flex;
   align-items: center;
@@ -358,7 +285,7 @@ function cancelUrl() {
   padding: 2rem;
   cursor: pointer;
   transition: all 0.2s;
-  min-height: 100px;
+  min-height: 120px;
 }
 
 .drop-zone:hover, .drop-zone.drag-over {
@@ -370,7 +297,13 @@ function cancelUrl() {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.4rem;
+}
+
+.drop-icon {
+  width: 28px;
+  height: 28px;
+  color: var(--accent);
 }
 
 .drop-hint {
@@ -378,23 +311,85 @@ function cancelUrl() {
   color: var(--text-dim);
 }
 
+.drop-sub {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  opacity: 0.7;
+}
+
 .file-info-box {
   width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  pointer-events: none;
+}
+
+.file-info-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.file-info-name {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-info-size {
+  font-size: 0.75rem;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.file-info-sub {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+}
+
+.url-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  background: var(--bg-input);
+  border: 1px solid var(--border-focus);
+  border-radius: 6px;
+  padding: 0 0.75rem;
+}
+
+.url-row:focus-within {
+  border-color: var(--accent);
+}
+
+.url-icon {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  flex-shrink: 0;
 }
 
 .url-input {
-  width: 100%;
-  background: var(--bg-input);
-  border: 1px solid var(--border-focus);
+  flex: 1;
+  background: transparent;
+  border: none;
   color: var(--text-secondary);
   font-size: 0.875rem;
-  padding: 0.5rem 0.75rem;
-  border-radius: 4px;
+  padding: 0.6rem 0;
   outline: none;
+  min-width: 0;
 }
 
-.url-input:focus {
-  border-color: var(--accent);
+.card-hint {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-top: 0.5rem;
 }
 
 .btn-cancel {
@@ -409,20 +404,6 @@ function cancelUrl() {
 
 .btn-cancel:hover {
   background: var(--bg-hover-5);
-}
-
-.btn-main {
-  padding: 0.5rem 1rem;
-  background: transparent;
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.875rem;
-}
-
-.btn-main:hover {
-  background: var(--accent-glow);
 }
 
 .hidden { display: none; }

@@ -50,6 +50,21 @@ export function applyHsvShift(imageData, hueShift, satShift, brightShift) {
   return imageData
 }
 
+export function applySepia(imageData) {
+  const data = imageData.data
+  for (let i = 0; i < data.length; i += 4) {
+    const a = data[i + 3]
+    if (a === 0) continue
+    const r = data[i]
+    const g = data[i + 1]
+    const b = data[i + 2]
+    data[i] = Math.min(255, Math.round(0.393 * r + 0.769 * g + 0.189 * b))
+    data[i + 1] = Math.min(255, Math.round(0.349 * r + 0.686 * g + 0.168 * b))
+    data[i + 2] = Math.min(255, Math.round(0.272 * r + 0.534 * g + 0.131 * b))
+  }
+  return imageData
+}
+
 export function upscaleNearestNeighbor(dataURI, scale) {
   return new Promise((resolve) => {
     const img = new Image()

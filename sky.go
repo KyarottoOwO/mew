@@ -300,8 +300,15 @@ func buildSkyPack(imageBytes []byte, fileName string, faceSize int, outDir, mani
 	return mcpackPath, nil
 }
 
-func (a *App) CreateSkyPack(imageBytes []byte, fileName string, faceSize int, mergePacks []string, mode string, customMap [][]int) (string, error) {
-	a.logDebug(fmt.Sprintf("CreateSkyPack: called, file=%s, size=%d, faceSize=%d, mergePacks=%v, mode=%s", fileName, len(imageBytes), faceSize, mergePacks, mode))
+type SkyMergeTarget struct {
+	Kind     string `json:"kind"`     // "installed" | "cache" | "upload"
+	Name     string `json:"name"`     // pack dir name (installed/cache) or .mcpack file name (upload)
+	BasePath string `json:"basePath"` // cache source base path (holds the pack dir)
+	Data     []byte `json:"data"`     // upload: bytes of the .mcpack to merge into
+}
+
+func (a *App) CreateSkyPack(imageBytes []byte, fileName string, faceSize int, mergeTargets []SkyMergeTarget, mode string, customMap [][]int) (string, error) {
+	a.logDebug(fmt.Sprintf("CreateSkyPack: called, file=%s, size=%d, faceSize=%d, mergeTargets=%v, mode=%s", fileName, len(imageBytes), faceSize, mergeTargets, mode))
 
 	if err := a.acquirePort(); err != nil {
 		return "", err
@@ -347,8 +354,8 @@ func (a *App) CreateSkyPack(imageBytes []byte, fileName string, faceSize int, me
 		return "", err
 	}
 
-	if len(mergePacks) > 0 {
-		if err := a.mergeSkyPack(mcpackPath, mergePacks); err != nil {
+	if len(mergeTargets) > 0 {
+		if err := a.mergeSkyPack(mcpackPath, mergeTargets); err != nil {
 			return "", err
 		}
 	} else if a.getBoolSetting("autoImport") {
@@ -364,15 +371,9 @@ func (a *App) CreateSkyPack(imageBytes []byte, fileName string, faceSize int, me
 	return mcpackPath, nil
 }
 
-func (a *App) mergeSkyPack(mcpackPath string, packNames []string) error {
-	bedrockPath := a.getStringSetting("resourcePacksPath")
-	if bedrockPath == "" {
-		bedrockPath = a.getDefaultResourcePacksPath()
-	}
-	a.logDebug(fmt.Sprintf("mergeSkyPack: bedrockPath=%s, packs=%v", bedrockPath, packNames))
-	if st, err := os.Stat(bedrockPath); err != nil || !st.IsDir() {
-		return fmt.Errorf("resource packs path not found: %s", bedrockPath)
-	}
+func (a *App) mergeSkyPack(mcpackPath string, targets []SkyMergeTarget) error {
+	bedrockPath := a.getResourcePacksPath()
+	a.logDebug(fmt.Sprintf("mergeSkyPack: bedrockPath=%s, targets=%d", bedrockPath, len(targets)))
 
 	extractDir := filepath.Join(getMewTempDir("sky_merge_temp"))
 	os.RemoveAll(extractDir)
@@ -383,45 +384,117 @@ func (a *App) mergeSkyPack(mcpackPath string, packNames []string) error {
 		return fmt.Errorf("failed to extract pack for merge: %w", err)
 	}
 
+	uploadRoot := filepath.Join(getMewTempDir("sky_merge_upload"))
+	os.RemoveAll(uploadRoot)
+	os.MkdirAll(uploadRoot, os.ModePerm)
+	defer os.RemoveAll(uploadRoot)
+
 	merged := 0
-	for _, name := range packNames {
-		if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `\/`) {
-			continue
-		}
-		destDir := filepath.Join(bedrockPath, name)
-		if st, err := os.Stat(destDir); err != nil || !st.IsDir() {
-			continue
-		}
-
-		cubemapSrc := filepath.Join(extractDir, "textures", "environment", "overworld_cubemap")
-		cubemapDst := filepath.Join(destDir, "textures", "environment", "overworld_cubemap")
-		if err := os.MkdirAll(cubemapDst, os.ModePerm); err != nil {
-			a.logDebug(fmt.Sprintf("mergeSkyPack: MkdirAll failed: %v", err))
-			continue
-		}
-
-		copied := 0
-		filepath.Walk(cubemapSrc, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
-				return nil
+	for i, target := range targets {
+		switch target.Kind {
+		case "upload":
+			name := strings.TrimSpace(target.Name)
+			if name == "" || len(target.Data) == 0 {
+				a.logDebug("mergeSkyPack: upload target missing name or data, skipping")
+				continue
 			}
-			rel, _ := filepath.Rel(cubemapSrc, path)
-			dst := filepath.Join(cubemapDst, rel)
-			if cpErr := copyFile(path, dst); cpErr != nil {
-				a.logDebug(fmt.Sprintf("mergeSkyPack: copyFile FAILED %s: %v", rel, cpErr))
+			packDir := filepath.Join(uploadRoot, fmt.Sprintf("upload_%d", i))
+			if mkErr := os.MkdirAll(packDir, os.ModePerm); mkErr != nil {
+				a.logDebug(fmt.Sprintf("mergeSkyPack: upload mkdir failed: %v", mkErr))
+				continue
 			}
-			copied++
-			return nil
-		})
+			tmpFile := filepath.Join(packDir, "pack.mcpack")
+			if wrErr := os.WriteFile(tmpFile, target.Data, 0644); wrErr != nil {
+				a.logDebug(fmt.Sprintf("mergeSkyPack: upload write failed: %v", wrErr))
+				continue
+			}
+			unpackDir := filepath.Join(packDir, "unpacked")
+			if uzErr := unzip(tmpFile, unpackDir); uzErr != nil {
+				a.logDebug(fmt.Sprintf("mergeSkyPack: upload unzip failed: %v", uzErr))
+				continue
+			}
+			rootDir, findErr := findManifestRoot(unpackDir)
+			if findErr != nil || rootDir == "" {
+				rootDir = unpackDir
+			}
+			if !mergeSkyIntoTarget(rootDir, extractDir, a) {
+				continue
+			}
+			base := strings.TrimSuffix(name, filepath.Ext(name))
+			outPath := filepath.Join(a.getOutputDir(), base+"-sky.mcpack")
+			if zipErr := zipDirToFile(unpackDir, outPath); zipErr != nil {
+				a.logDebug(fmt.Sprintf("mergeSkyPack: upload rezip failed: %v", zipErr))
+				continue
+			}
+			merged++
+			a.logDebug(fmt.Sprintf("mergeSkyPack: merged into uploaded pack and exported %s", outPath))
 
-		merged++
-		a.logDebug(fmt.Sprintf("mergeSkyPack: copied %d cubemap faces into %s", copied, destDir))
+		case "cache":
+			name := strings.TrimSpace(target.Name)
+			base := strings.TrimSpace(target.BasePath)
+			if name == "" || base == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `\/`) {
+				a.logDebug(fmt.Sprintf("mergeSkyPack: skipping invalid cache target: %q", name))
+				continue
+			}
+			destDir := filepath.Join(base, name)
+			if st, err := os.Stat(destDir); err != nil || !st.IsDir() {
+				a.logDebug(fmt.Sprintf("mergeSkyPack: cache pack dir NOT found, skipping: %s (err=%v)", destDir, err))
+				continue
+			}
+			if mergeSkyIntoTarget(destDir, extractDir, a) {
+				merged++
+			}
+
+		default: // installed
+			name := strings.TrimSpace(target.Name)
+			if name == "" || strings.Contains(name, "..") || strings.ContainsAny(name, `\/`) {
+				a.logDebug(fmt.Sprintf("mergeSkyPack: skipping invalid name: %q", name))
+				continue
+			}
+			if st, err := os.Stat(bedrockPath); err != nil || !st.IsDir() {
+				return fmt.Errorf("resource packs path not found: %s", bedrockPath)
+			}
+			destDir := filepath.Join(bedrockPath, name)
+			if st, err := os.Stat(destDir); err != nil || !st.IsDir() {
+				a.logDebug(fmt.Sprintf("mergeSkyPack: pack dir NOT found, skipping: %s (err=%v)", destDir, err))
+				continue
+			}
+			if mergeSkyIntoTarget(destDir, extractDir, a) {
+				merged++
+			}
+		}
 	}
 
 	if merged == 0 {
 		return fmt.Errorf("none of the selected packs were found in Minecraft")
 	}
 	return nil
+}
+
+func mergeSkyIntoTarget(destDir, extractDir string, a *App) bool {
+	cubemapSrc := filepath.Join(extractDir, "textures", "environment", "overworld_cubemap")
+	cubemapDst := filepath.Join(destDir, "textures", "environment", "overworld_cubemap")
+	if err := os.MkdirAll(cubemapDst, os.ModePerm); err != nil {
+		a.logDebug(fmt.Sprintf("mergeSkyPack: MkdirAll failed: %v", err))
+		return false
+	}
+
+	copied := 0
+	filepath.Walk(cubemapSrc, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		rel, _ := filepath.Rel(cubemapSrc, path)
+		dst := filepath.Join(cubemapDst, rel)
+		if cpErr := copyFile(path, dst); cpErr != nil {
+			a.logDebug(fmt.Sprintf("mergeSkyPack: copyFile FAILED %s: %v", rel, cpErr))
+		}
+		copied++
+		return nil
+	})
+
+	a.logDebug(fmt.Sprintf("mergeSkyPack: copied %d cubemap faces into %s", copied, destDir))
+	return copied > 0
 }
 
 const skySubpackDir = "assets/minecraft/mcpatcher/sky/world0"

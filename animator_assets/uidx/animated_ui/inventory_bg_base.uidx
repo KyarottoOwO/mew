@@ -9,13 +9,13 @@
 
   "inv_bg_base": {
     "type": "panel",
-    "size": [ 176, 166 ],
+    "size": [ "100%", "100%" ],
     "$overlay_texture": "textures/animated_ui/inventory_bg/inventory_overlay",
     "controls": [
       {
         "overlay": {
           "type": "image",
-          "size": [ 176, 166 ],
+          "size": [ "100%", "100%" ],
           "anchor_from": "top_left",
           "anchor_to": "top_left",
           "texture": "$overlay_texture",
@@ -30,7 +30,7 @@
           "texture": "textures/animated_ui/inventory_bg/inventory_vertical_flipbook",
           "uv": "@CrisXolt_anm_inv_bg_base.01",
           "uv_size": "$inventory_base_resolution",
-          "size": [ 176, 166 ]
+          "size": [ "100%", "100%" ]
         }
       }
     ]

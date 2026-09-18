@@ -41,10 +41,7 @@ func versionSliceToText(v interface{}) string {
 }
 
 func (a *App) GetInstalledManifestPacks() ([]ManifestPackInfo, error) {
-	base := a.getStringSetting("resourcePacksPath")
-	if base == "" {
-		base = a.getDefaultResourcePacksPath()
-	}
+	base := a.getResourcePacksPath()
 	if st, err := os.Stat(base); err != nil || !st.IsDir() {
 		return nil, nil
 	}
@@ -164,10 +161,7 @@ func (a *App) CreatePackFromManifest(manifest map[string]interface{}) (string, e
 	if folderName == "" {
 		return "", fmt.Errorf("pack name is required")
 	}
-	base := a.getStringSetting("resourcePacksPath")
-	if base == "" {
-		base = a.getDefaultResourcePacksPath()
-	}
+	base := a.getResourcePacksPath()
 	dir := filepath.Join(base, folderName)
 	if _, err := os.Stat(dir); err == nil {
 		for i := 2; ; i++ {
@@ -204,11 +198,137 @@ func (a *App) ApplyManifestToPack(packName string, manifest map[string]interface
 	if err := validateManifest(manifest); err != nil {
 		return err
 	}
+	if err := writeManifestWithBackup(dir, manifest); err != nil {
+		return err
+	}
+	a.logDebug(fmt.Sprintf("ApplyManifestToPack: wrote manifest to %s", filepath.Join(dir, "manifest.json")))
+	return nil
+}
+
+// GetPackManifestFromDir reads the manifest from an absolute pack directory.
+// This is used for pack cache sources that live outside the resource packs folder.
+func (a *App) GetPackManifestFromDir(dir string) (map[string]interface{}, error) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return nil, fmt.Errorf("no pack directory provided")
+	}
+	st, err := os.Stat(dir)
+	if err != nil || !st.IsDir() {
+		return nil, fmt.Errorf("pack directory not found: %s", dir)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		return nil, fmt.Errorf("no manifest.json in %s", dir)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("invalid manifest.json: %v", err)
+	}
+	return m, nil
+}
+
+// ApplyManifestToDir writes a manifest back into an absolute pack directory
+// (pack cache sources). The old file is backed up as manifest.json.bak.
+func (a *App) ApplyManifestToDir(dir string, manifest map[string]interface{}) error {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return fmt.Errorf("no pack directory provided")
+	}
+	st, err := os.Stat(dir)
+	if err != nil || !st.IsDir() {
+		return fmt.Errorf("pack directory not found: %s", dir)
+	}
+	if manifest == nil {
+		return fmt.Errorf("manifest is empty")
+	}
+	if err := validateManifest(manifest); err != nil {
+		return err
+	}
+	if err := writeManifestWithBackup(dir, manifest); err != nil {
+		return err
+	}
+	a.logDebug(fmt.Sprintf("ApplyManifestToDir: wrote manifest to %s", filepath.Join(dir, "manifest.json")))
+	return nil
+}
+
+// GetManifestFromUpload extracts an uploaded .mcpack and returns its manifest.
+// The extracted folder is kept so ApplyManifestToUpload can write it back later.
+func (a *App) GetManifestFromUpload(bytes []byte) (map[string]interface{}, error) {
+	if len(bytes) == 0 {
+		return nil, fmt.Errorf("no file data provided")
+	}
+	dir := a.getTempDir("manifest_unzip")
+	os.RemoveAll(dir)
+	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
+		return nil, fmt.Errorf("failed to prepare temp folder: %v", err)
+	}
+	tmpFile := filepath.Join(os.TempDir(), "mew-manifest-pack.zip")
+	if err := os.WriteFile(tmpFile, bytes, 0644); err != nil {
+		return nil, fmt.Errorf("failed to write temp file: %v", err)
+	}
+	defer os.Remove(tmpFile)
+	if err := unzip(tmpFile, dir); err != nil {
+		return nil, fmt.Errorf("failed to extract pack: %v", err)
+	}
+	root, err := findManifestRoot(dir)
+	if err != nil || root == "" {
+		return nil, fmt.Errorf("no manifest.json found in the pack")
+	}
+	data, err := os.ReadFile(filepath.Join(root, "manifest.json"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read manifest.json: %v", err)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("invalid manifest.json: %v", err)
+	}
+	return m, nil
+}
+
+// ApplyManifestToUpload writes the edited manifest into the last uploaded
+// .mcpack (see GetManifestFromUpload) and exports a new pack to the output folder.
+func (a *App) ApplyManifestToUpload(manifest map[string]interface{}, fileName string) (string, error) {
+	dir := a.getTempDir("manifest_unzip")
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		return "", fmt.Errorf("upload an .mcpack first")
+	}
+	if manifest == nil {
+		return "", fmt.Errorf("manifest is empty")
+	}
+	if err := validateManifest(manifest); err != nil {
+		return "", err
+	}
+	root, err := findManifestRoot(dir)
+	if err != nil || root == "" {
+		root = dir
+	}
+	data, err := json.MarshalIndent(manifest, "", "    ")
+	if err != nil {
+		return "", fmt.Errorf("failed to build manifest: %v", err)
+	}
+	manifestPath := filepath.Join(root, "manifest.json")
+	if old, err := os.ReadFile(manifestPath); err == nil {
+		_ = os.WriteFile(dir+"-backup.json", old, 0644)
+	}
+	if err := os.WriteFile(manifestPath, data, 0644); err != nil {
+		return "", fmt.Errorf("failed to write manifest: %v", err)
+	}
+	base := strings.TrimSuffix(fileName, filepath.Ext(fileName))
+	outPath := filepath.Join(a.getOutputDir(), base+"-updated.mcpack")
+	if err := zipDirToFile(dir, outPath); err != nil {
+		return "", fmt.Errorf("failed to create pack: %v", err)
+	}
+	a.logDebug(fmt.Sprintf("ApplyManifestToUpload: exported %s", outPath))
+	return outPath, nil
+}
+
+// writeManifestWithBackup backs up an existing manifest.json (as .bak) and
+// writes the new one into the pack directory.
+func writeManifestWithBackup(dir string, manifest map[string]interface{}) error {
 	manifestPath := filepath.Join(dir, "manifest.json")
 	if _, err := os.Stat(manifestPath); err == nil {
 		if data, err := os.ReadFile(manifestPath); err == nil {
-			backupPath := manifestPath + ".bak"
-			if err := os.WriteFile(backupPath, data, 0644); err != nil {
+			if err := os.WriteFile(manifestPath+".bak", data, 0644); err != nil {
 				return fmt.Errorf("failed to back up existing manifest: %v", err)
 			}
 		} else {
@@ -222,7 +342,6 @@ func (a *App) ApplyManifestToPack(packName string, manifest map[string]interface
 	if err := os.WriteFile(manifestPath, data, 0644); err != nil {
 		return fmt.Errorf("failed to write manifest: %v", err)
 	}
-	a.logDebug(fmt.Sprintf("ApplyManifestToPack: wrote manifest to %s", manifestPath))
 	return nil
 }
 
