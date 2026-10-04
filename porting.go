@@ -995,7 +995,7 @@ func (a *App) importFromBytes(mcpackBytes []byte, packName string) {
 	log.Printf("Imported pack to %s", destDir)
 }
 
-func (a *App) CheckPack(bytes []byte) (*CheckResult, error) {
+func (a *App) CheckPack(bytes []byte, packName string) (*CheckResult, error) {
 	a.logDebug(fmt.Sprintf("CheckPack: called, size=%d", len(bytes)))
 
 	tmpFile, err := os.CreateTemp("", "srm-check-*.zip")
@@ -1008,13 +1008,28 @@ func (a *App) CheckPack(bytes []byte) (*CheckResult, error) {
 	tmpFile.Close()
 	defer os.Remove(tmpPath)
 
-	checkDir := a.getTempDir("check_unzip")
-	os.RemoveAll(checkDir)
+	// Every upload gets its own working directory so no other tool can wipe it.
+	sessionID, err := a.createSessionDir()
+	if err != nil {
+		a.logDebug(fmt.Sprintf("CheckPack: create session FAILED: %v", err))
+		return nil, fmt.Errorf("failed to create session: %v", err)
+	}
+	checkDir, err := a.sessionDir(sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open session: %v", err)
+	}
+	discard := true
+	defer func() {
+		if discard {
+			a.DeleteSession(sessionID)
+		}
+	}()
+
 	if err := unzip(tmpPath, checkDir); err != nil {
 		a.logDebug(fmt.Sprintf("CheckPack: unzip FAILED: %v", err))
 		return nil, fmt.Errorf("failed to unzip: %v", err)
 	}
-	a.logDebug(fmt.Sprintf("CheckPack: unzipped to %s", checkDir))
+	a.logDebug(fmt.Sprintf("CheckPack: unzipped to %s (session %s)", checkDir, sessionID))
 
 	rootDir, findErr := findManifestRoot(checkDir)
 	if findErr != nil {
@@ -1023,7 +1038,6 @@ func (a *App) CheckPack(bytes []byte) (*CheckResult, error) {
 	}
 	if rootDir == "" {
 		a.logDebug("CheckPack: no manifest.json found, invalid pack")
-		os.RemoveAll(checkDir)
 		return &CheckResult{Valid: false, ErrorMsg: "Please provide a valid pack."}, nil
 	}
 	if rootDir != checkDir {
@@ -1034,31 +1048,33 @@ func (a *App) CheckPack(bytes []byte) (*CheckResult, error) {
 	var folders []string
 	if _, texStatErr := os.Stat(texturesPath); texStatErr != nil {
 		a.logDebug(fmt.Sprintf("CheckPack: no textures dir at %s, folders empty", texturesPath))
-		return &CheckResult{Folders: nil, Valid: true}, nil
-	}
-	err = filepath.WalkDir(texturesPath, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() && path != texturesPath {
-			rel, err := filepath.Rel(checkDir, path)
+	} else {
+		err = filepath.WalkDir(texturesPath, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
-			if strings.Contains(rel, "entity") {
-				return nil
+			if d.IsDir() && path != texturesPath {
+				rel, err := filepath.Rel(checkDir, path)
+				if err != nil {
+					return err
+				}
+				if strings.Contains(rel, "entity") {
+					return nil
+				}
+				folders = append(folders, rel)
 			}
-			folders = append(folders, rel)
+			return nil
+		})
+		if err != nil {
+			a.logDebug(fmt.Sprintf("CheckPack: walk textures FAILED: %v", err))
+			return nil, fmt.Errorf("walk dir error: %v", err)
 		}
-		return nil
-	})
-	if err != nil {
-		a.logDebug(fmt.Sprintf("CheckPack: walk textures FAILED: %v", err))
-		return nil, fmt.Errorf("walk dir error: %v", err)
 	}
 
-	a.logDebug(fmt.Sprintf("CheckPack: valid, %d folder(s): %v", len(folders), folders))
-	return &CheckResult{Folders: folders, Valid: true}, nil
+	a.setSessionMeta(sessionID, packName, folders)
+	discard = false
+	a.logDebug(fmt.Sprintf("CheckPack: valid, session %s, %d folder(s): %v", sessionID, len(folders), folders))
+	return &CheckResult{SessionId: sessionID, Folders: folders, Valid: true}, nil
 }
 
 func findManifestRoot(checkDir string) (string, error) {
@@ -1092,26 +1108,59 @@ func findManifestRoot(checkDir string) (string, error) {
 	return root, nil
 }
 
-func (a *App) ExportPack(name string) (string, error) {
-	baseName := "exported_pack"
-	if name != "" {
-		baseName = strings.TrimSuffix(name, filepath.Ext(name))
+// sanitizeExportBaseName turns an uploaded file name into a safe base name:
+// no path separators, no characters Windows rejects, no repeated "-recolored".
+func sanitizeExportBaseName(name string) string {
+	name = strings.TrimSpace(name)
+	if ext := filepath.Ext(name); ext != "" {
+		name = strings.TrimSuffix(name, ext)
 	}
-
-	exportName := baseName + "-recolored.mcpack"
-	zipName := baseName + "-recolored.zip"
-
-	if err := createZipFromFolder(a.getTempDir("check_unzip"), zipName); err != nil {
-		return "", fmt.Errorf("failed to create export: %v", err)
+	name = strings.Map(func(r rune) rune {
+		if strings.ContainsRune(`<>:"/\|?*`, r) || r < 0x20 {
+			return -1
+		}
+		return r
+	}, name)
+	for {
+		trimmed := strings.TrimSpace(strings.TrimSuffix(name, "-recolored"))
+		if trimmed == name {
+			break
+		}
+		name = trimmed
 	}
-
-	if err := os.Rename(zipName, exportName); err != nil {
-		return "", fmt.Errorf("failed to finalize export: %v", err)
+	name = strings.Trim(name, " .")
+	if name == "" {
+		return "exported_pack"
 	}
-
-	return fmt.Sprintf("Exported pack to %s", exportName), nil
+	return name
 }
 
-func (a *App) DeleteTemp() {
-	os.RemoveAll(a.getTempDir("check_unzip"))
+func (a *App) ExportPack(sessionId, name string) (string, error) {
+	srcDir, err := a.sessionDir(sessionId)
+	if err != nil {
+		return "", err
+	}
+
+	outDir, err := a.resolveOutputDir()
+	if err != nil {
+		return "", err
+	}
+
+	exportPath := filepath.Join(outDir, sanitizeExportBaseName(name)+"-recolored.mcpack")
+	if err := createZipFromFolder(srcDir, exportPath); err != nil {
+		return "", fmt.Errorf("failed to create export in %s: %s", outDir, exportWriteError(err, outDir))
+	}
+
+	a.touchSession(sessionId)
+	if a.getBoolSetting("autoOpenFolder") {
+		a.OpenFolder(outDir)
+	}
+	return fmt.Sprintf("Exported pack to %s", exportPath), nil
+}
+
+func exportWriteError(err error, outDir string) string {
+	if errors.Is(err, fs.ErrPermission) {
+		return fmt.Sprintf("access denied - pick a different output folder in Settings (currently %s)", outDir)
+	}
+	return err.Error()
 }

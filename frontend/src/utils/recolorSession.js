@@ -1,7 +1,10 @@
 const sessions = new Map()
 
+// Uploads are identified by their working-copy id, so re-uploading a file with
+// the same name starts a clean session while resuming an old one restores it.
 function sourceKey(source) {
-  return (source.kind || '') + ':' + (source.dirName || source.packName || '')
+  if (source.kind === 'upload') return 'upload:' + (source.sessionId || source.packName || '')
+  return (source.kind || '') + ':' + (source.dirName || '')
 }
 
 export function loadSession(source) {

@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
-import { CheckPack, GetPackListWithInfo, GetPackCache, GetPackCacheList } from '../../../wailsjs/go/main/App'
+import { CheckPack, GetPackListWithInfo, GetPackCache, GetPackCacheList, ListSessions, DeleteSession } from '../../../wailsjs/go/main/App'
 
 const props = defineProps({
   active: { type: Boolean, default: false }
@@ -18,6 +18,58 @@ const cacheLoading = ref(false)
 const cacheLoaded = ref(false)
 
 const searchQuery = ref('')
+
+// unfinished upload sessions (autosaved edits survive restarts and crashes)
+const sessions = ref([])
+
+async function loadSessions() {
+  try {
+    const list = (await ListSessions()) || []
+    sessions.value = list.filter(s => s.id)
+  } catch (_) {
+    sessions.value = []
+  }
+}
+
+function sessionLabel(s) {
+  return (s.packName || 'Uploaded Pack').replace(/\.[^.]+$/, '')
+}
+
+function sessionAgo(s) {
+  if (!s.updatedAt) return ''
+  const mins = Math.floor((Date.now() - s.updatedAt) / 60000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return mins + 'm ago'
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return hours + 'h ago'
+  return Math.floor(hours / 24) + 'd ago'
+}
+
+function resumeSession(s) {
+  emit('openDisplay', { kind: 'upload', folders: s.folders || [], packName: s.packName || 'Uploaded Pack', sessionId: s.id })
+}
+
+async function discardSession(s, ev) {
+  if (ev) ev.stopPropagation()
+  const choice = await Swal.mixin({
+    customClass: { popup: 'swal-custom-popup', confirmButton: 'custom-confirm-btn', cancelButton: 'custom-cancel-btn' },
+    buttonsStyling: false
+  }).fire({
+    title: 'Discard session?',
+    text: `The working copy of ${sessionLabel(s)} and all edits in it will be deleted.`,
+    icon: 'warning',
+    showCancelButton: true,
+    confirmButtonText: 'Discard',
+    cancelButtonText: 'Cancel'
+  })
+  if (!choice.isConfirmed) return
+  try {
+    await DeleteSession(s.id)
+  } catch (err) {
+    popup('Error', err.toString(), 'error')
+  }
+  loadSessions()
+}
 
 function matchesQuery(p) {
   const q = searchQuery.value.trim().toLowerCase()
@@ -164,12 +216,12 @@ async function confirmCheck() {
   try {
     const buffer = await file.value.arrayBuffer()
     const bytes = new Uint8Array(buffer)
-    const result = await CheckPack(Array.from(bytes))
+    const result = await CheckPack(Array.from(bytes), file.value.name)
 
     Swal.close()
 
     if (result.valid) {
-      emit('openDisplay', { kind: 'upload', folders: result.folders, packName: file.value.name })
+      emit('openDisplay', { kind: 'upload', folders: result.folders, packName: file.value.name, sessionId: result.sessionId })
     } else {
       popup('Error', result.errorMsg || 'Invalid pack', 'error')
     }
@@ -179,12 +231,13 @@ async function confirmCheck() {
   }
 }
 
-onMounted(() => { loadPacks(); loadCache() })
+onMounted(() => { loadPacks(); loadCache(); loadSessions() })
 
 watch(() => props.active, (isActive) => {
   if (isActive) {
     loadPacks(true)
     loadCache(true)
+    loadSessions()
   }
 })
 </script>
@@ -279,6 +332,22 @@ watch(() => props.active, (isActive) => {
       </div>
 
       <div v-else class="upload-section">
+        <div v-if="sessions.length" class="re-sessions">
+          <div class="re-sessions-head">
+            <span><i class="fa fa-history"></i> Unfinished edits</span>
+          </div>
+          <div v-for="s in sessions" :key="s.id" class="re-session" @click="resumeSession(s)">
+            <i class="fa fa-pencil-square-o re-session-icon"></i>
+            <div class="re-session-info">
+              <div class="re-session-name">{{ sessionLabel(s) }}</div>
+              <div class="re-session-meta">edited {{ sessionAgo(s) }}</div>
+            </div>
+            <button class="re-session-del" title="Discard session" @click="discardSession(s, $event)">
+              <i class="fa fa-trash"></i>
+            </button>
+          </div>
+        </div>
+
         <p class="card-desc">Drag and drop your pack here or click to upload.</p>
 
         <label ref="dropZone" class="drop-zone"
@@ -342,6 +411,65 @@ watch(() => props.active, (isActive) => {
   font-size: 0.875rem;
   color: var(--text-desc);
   margin-bottom: 1rem;
+}
+
+.re-sessions {
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  padding: 0.75rem;
+  margin-bottom: 1rem;
+  background: var(--bg-input);
+}
+
+.re-sessions-head {
+  font-size: 0.8125rem;
+  color: var(--text-dim);
+  margin-bottom: 0.5rem;
+}
+
+.re-session {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.5rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.re-session:hover {
+  background: var(--bg-body);
+}
+
+.re-session-icon {
+  color: var(--accent);
+}
+
+.re-session-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.re-session-name {
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.re-session-meta {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.re-session-del {
+  color: var(--text-dim);
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+}
+
+.re-session-del:hover {
+  color: #e5534b;
 }
 
 .mode-tabs {

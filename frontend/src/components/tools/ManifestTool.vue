@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
-import { ApplyManifestToDir, ApplyManifestToPack, ApplyManifestToUpload, CheckPack, CreatePackFromManifest, GetInstalledManifestPacks, GetManifestFromUpload, GetPackCache, GetPackCacheList, GetPackManifest, GetPackManifestFromDir, NewManifestTemplate, RegenerateUuid } from '../../../wailsjs/go/main/App'
+import { ApplyManifestToDir, ApplyManifestToPack, ApplyManifestToUpload, CheckPack, CreatePackFromManifest, GetInstalledManifestPacks, GetManifestFromUpload, GetPackCache, GetPackCacheList, GetPackManifest, GetPackManifestFromDir, NewManifestTemplate, RegenerateUuid, DeleteSession } from '../../../wailsjs/go/main/App'
 import { ClipboardSetText } from '../../../wailsjs/runtime/runtime'
 
 const props = defineProps({ active: Boolean })
@@ -267,7 +267,9 @@ async function addUpload() {
   try {
     const buffer = await uploadFile.value.arrayBuffer()
     const bytes = Array.from(new Uint8Array(buffer))
-    const result = await CheckPack(bytes)
+    const result = await CheckPack(bytes, uploadFile.value.name)
+    // we only needed the validation result, so don't keep a session dir around
+    if (result.sessionId) { try { await DeleteSession(result.sessionId) } catch (_) {} }
     if (!result.valid) {
       popup('Error', result.errorMsg || 'Invalid pack', 'error')
       return

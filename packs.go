@@ -80,9 +80,10 @@ type FolderImage struct {
 }
 
 type CheckResult struct {
-	Folders  []string `json:"folders"`
-	Valid    bool     `json:"valid"`
-	ErrorMsg string   `json:"errorMsg,omitempty"`
+	SessionId string   `json:"sessionId"`
+	Folders   []string `json:"folders"`
+	Valid     bool     `json:"valid"`
+	ErrorMsg  string   `json:"errorMsg,omitempty"`
 }
 
 type SaveImageRequest struct {
@@ -846,15 +847,20 @@ func (a *App) RestoreRemovedItem(name string) error {
 	return os.WriteFile(filepath.Join(dir, "removed_items.json"), data, 0644)
 }
 
-func (a *App) GetImages(folder string) ([]FolderImage, error) {
+func (a *App) GetImages(sessionId string, folder string) ([]FolderImage, error) {
 	re := regexp.MustCompile(`\\\s`)
 	folder = re.ReplaceAllString(folder, `\`)
 
-	fullPath := filepath.Join(a.getTempDir("check_unzip"), folder)
+	sessionDir, err := a.sessionDir(sessionId)
+	if err != nil {
+		return nil, err
+	}
+
+	fullPath := filepath.Join(sessionDir, filepath.FromSlash(folder))
 
 	var images []FolderImage
 
-	err := filepath.Walk(fullPath, func(path string, info fs.FileInfo, err error) error {
+	err = filepath.Walk(fullPath, func(path string, info fs.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -884,7 +890,7 @@ func (a *App) GetImages(folder string) ([]FolderImage, error) {
 			encoded := base64.StdEncoding.EncodeToString(imageData)
 			dataURI := "data:" + mimeType + ";base64," + encoded
 
-			relPath, err := filepath.Rel(a.getTempDir("check_unzip"), path)
+			relPath, err := filepath.Rel(sessionDir, path)
 			if err != nil {
 				relPath = path
 			}
@@ -903,7 +909,7 @@ func (a *App) GetImages(folder string) ([]FolderImage, error) {
 	return images, err
 }
 
-func (a *App) SaveImage(msg SaveImageRequest) (string, error) {
+func (a *App) SaveImage(sessionId string, msg SaveImageRequest) (string, error) {
 	if msg.Done {
 		return "done", nil
 	}
@@ -913,12 +919,21 @@ func (a *App) SaveImage(msg SaveImageRequest) (string, error) {
 		return "", fmt.Errorf("error decoding base64 image: %v", err)
 	}
 
+	sessionDir, err := a.sessionDir(sessionId)
+	if err != nil {
+		return "", err
+	}
+
 	var savePath string
 	if msg.RelPath != "" {
-		savePath = filepath.Join(a.getTempDir("check_unzip"), filepath.FromSlash(msg.RelPath))
+		clean, err := safeRelPath(msg.RelPath)
+		if err != nil {
+			return "", fmt.Errorf("invalid image path: %v", err)
+		}
+		savePath = filepath.Join(sessionDir, clean)
 	} else {
 		var foundPath string
-		filepath.Walk(a.getTempDir("check_unzip"), func(path string, info fs.FileInfo, err error) error {
+		filepath.Walk(sessionDir, func(path string, info fs.FileInfo, err error) error {
 			if err != nil || info.IsDir() {
 				return nil
 			}
@@ -932,16 +947,18 @@ func (a *App) SaveImage(msg SaveImageRequest) (string, error) {
 		if foundPath != "" {
 			savePath = foundPath
 		} else {
-			savePath = filepath.Join(a.getTempDir("check_unzip"), "textures", msg.ImageName)
+			savePath = filepath.Join(sessionDir, "textures", filepath.Base(msg.ImageName))
 		}
 	}
 
-	os.MkdirAll(filepath.Dir(savePath), os.ModePerm)
+	if err := os.MkdirAll(filepath.Dir(savePath), 0755); err != nil {
+		return "", fmt.Errorf("failed to create texture folder: %v", err)
+	}
 
-	err = os.WriteFile(savePath, imageData, 0644)
-	if err != nil {
+	if err := os.WriteFile(savePath, imageData, 0644); err != nil {
 		return "", fmt.Errorf("failed to save image: %v", err)
 	}
 
+	a.touchSession(sessionId)
 	return "success", nil
 }

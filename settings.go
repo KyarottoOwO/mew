@@ -67,6 +67,43 @@ func (a *App) getOutputDir() string {
 	return "."
 }
 
+// resolveOutputDir turns the configured output dir into a directory we can
+// actually write to. The app is often launched from a protected folder (e.g.
+// Program Files), which used to make every export fail with "access is denied".
+func (a *App) resolveOutputDir() (string, error) {
+	candidate := a.getOutputDir()
+	if candidate == "" {
+		candidate = "."
+	}
+	abs, err := filepath.Abs(candidate)
+	if err != nil {
+		return "", fmt.Errorf("invalid output directory %q: %v", candidate, err)
+	}
+	if err := os.MkdirAll(abs, 0755); err == nil && dirWritable(abs) {
+		return abs, nil
+	}
+
+	if home, err := os.UserHomeDir(); err == nil {
+		fallback := filepath.Join(home, "Downloads")
+		if err := os.MkdirAll(fallback, 0755); err == nil && dirWritable(fallback) {
+			a.logDebug(fmt.Sprintf("output dir %q not writable, falling back to %q", abs, fallback))
+			return fallback, nil
+		}
+	}
+	return "", fmt.Errorf("no writable output folder (tried %s and your Downloads folder)", abs)
+}
+
+func dirWritable(dir string) bool {
+	f, err := os.CreateTemp(dir, ".mew-write-test-*")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	f.Close()
+	os.Remove(name)
+	return true
+}
+
 func (a *App) getBoolSetting(key string) bool {
 	if val, ok := a.settings[key].(bool); ok {
 		return val

@@ -13,6 +13,7 @@ const portAllSkies = ref(false)
 const skyPresets = ref(true)
 const skyPresetNames = ref('')
 const addPromoTexts = ref(false)
+const recolorAutosave = ref(true)
 const resourcePacksPath = ref('')
 const packCachePath = ref('')
 const theme = ref('dark')
@@ -38,6 +39,7 @@ async function loadSettings() {
     skyPresets.value = s.skyPresets !== false
     skyPresetNames.value = Array.isArray(s.skyPresetNames) ? s.skyPresetNames.join(', ') : ''
     addPromoTexts.value = s.addPromoTexts || false
+    recolorAutosave.value = s.recolorAutosave !== false
     resourcePacksPath.value = s.resourcePacksPath || ''
     packCachePath.value = s.packCachePath || ''
     theme.value = s.theme || 'dark'
@@ -85,6 +87,7 @@ async function persistSettings() {
       skyPresets: skyPresets.value,
       skyPresetNames: skyPresetNames.value.split(',').map(s => s.trim()).filter(s => s !== ''),
       addPromoTexts: addPromoTexts.value,
+      recolorAutosave: recolorAutosave.value,
       resourcePacksPath: finalPath,
       packCachePath: packCachePath.value,
       theme: theme.value,
@@ -373,6 +376,17 @@ onMounted(loadSettings)
           </div>
           <label class="toggle">
             <input type="checkbox" v-model="addPromoTexts" @change="persistSettings" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Recolor Autosave</span>
+            <span class="setting-desc">Save texture edits shortly after you stop editing, so switching tools or crashing can't lose your work. Applies to installed packs too</span>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" v-model="recolorAutosave" @change="persistSettings" />
             <span class="toggle-slider"></span>
           </label>
         </div>

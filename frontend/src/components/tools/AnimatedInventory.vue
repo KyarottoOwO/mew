@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
-import { CheckPack, CreateAnimatedInventory, GetInstalledPacksDetailed, GetPackCache, GetPackCacheList, SetResourcePacksPath, SelectDirectory } from '../../../wailsjs/go/main/App'
+import { CheckPack, CreateAnimatedInventory, GetInstalledPacksDetailed, GetPackCache, GetPackCacheList, SetResourcePacksPath, SelectDirectory, DeleteSession } from '../../../wailsjs/go/main/App'
 import { EventsOn } from '../../../wailsjs/runtime/runtime'
 
 import { progressStore, startPort, updateFromEvent, finish, clearProgress } from '../../utils/progressStore'
@@ -272,7 +272,9 @@ async function confirmUpload() {
   try {
     const buffer = await uploadFile.value.arrayBuffer()
     const bytes = Array.from(new Uint8Array(buffer))
-    const result = await CheckPack(bytes)
+    const result = await CheckPack(bytes, uploadFile.value.name)
+    // we only needed the validation result, so don't keep a session dir around
+    if (result.sessionId) { try { await DeleteSession(result.sessionId) } catch (_) {} }
     if (result.valid) {
       toggleTarget({ kind: 'upload', name: uploadFile.value.name, basePath: '', file: uploadFile.value })
       uploadFile.value = null

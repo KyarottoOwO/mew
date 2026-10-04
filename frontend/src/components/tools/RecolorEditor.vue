@@ -1,7 +1,7 @@
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick, markRaw } from 'vue'
 import {
-  GetImages, SaveImage, ExportPack, DeleteTemp,
+  GetImages, SaveImage, ExportPack, DeleteSession, GetSettings,
   ListPackTextures, GetPackTexture, GetPackThumb, SavePackTexture,
   GetPackRoot, OpenFolder
 } from '../../../wailsjs/go/main/App'
@@ -13,7 +13,7 @@ import {
 import { loadSession, saveSession, clearSession } from '../../utils/recolorSession'
 
 const props = defineProps({
-  source: { type: Object, required: true }, // { kind: 'installed', dirName } | { kind: 'upload', folders, packName }
+  source: { type: Object, required: true }, // { kind: 'installed'|'cache', dirName, basePath } | { kind: 'upload', folders, packName, sessionId }
   sidebarWidth: { type: Number, default: 64 },
   visible: { type: Boolean, default: true }
 })
@@ -21,6 +21,7 @@ const emit = defineEmits(['close'])
 
 const isInstalled = computed(() => props.source.kind === 'installed' || props.source.kind === 'cache')
 const packBasePath = computed(() => props.source.basePath || '')
+const sessionId = computed(() => props.source.sessionId || '')
 
 const folders = ref([])
 const textures = ref([])
@@ -210,7 +211,7 @@ async function selectFolder(folder) {
       textures.value = listAll(list)
       loadInstalledThumbs()
     } else {
-      const raw = (await GetImages(isAll ? '' : folder)) || []
+      const raw = (await GetImages(sessionId.value, isAll ? '' : folder)) || []
       const mapped = raw.map(img => ({
         folder: isAll ? (img.relPath.includes('/') ? img.relPath.slice(0, img.relPath.lastIndexOf('/')) : '') : folder,
         filename: img.filename,
@@ -296,7 +297,10 @@ watch(dirty, (v) => {
 })
 
 watch(() => props.source, async (_nVal, oVal) => {
-  if (oVal) saveSessionFor(oVal)
+  if (oVal) {
+    if (dirty.value) await flushAutosave(true)
+    saveSessionFor(oVal)
+  }
   openTabs.value = []
   tabStates.clear()
   thumbs.clear()
@@ -329,6 +333,8 @@ async function switchTab(relPath) {
   const tab = openTabs.value.find(t => t.relPath === relPath)
   if (!tab) return
   if (currentTex.value && currentTex.value.relPath === relPath) return
+  // a background tab is only ever left behind once it is safely on disk
+  if (dirty.value) await flushAutosave()
   captureActiveState()
   currentTex.value = tab.tex
   const st = tabStates.get(relPath)
@@ -435,11 +441,15 @@ function resetEditor() {
   renderOverlay()
 }
 
-function closeTab(relPath) {
+async function closeTab(relPath) {
   const idx = openTabs.value.findIndex(t => t.relPath === relPath)
   if (idx === -1) return
   const isActive = !!(currentTex.value && currentTex.value.relPath === relPath)
-  if (isActive) captureActiveState()
+  if (isActive) {
+    // write pending edits before dropping the tab
+    if (dirty.value && !(await flushAutosave(true))) return
+    captureActiveState()
+  }
   openTabs.value.splice(idx, 1)
   tabStates.delete(relPath)
   if (!isActive) return
@@ -448,7 +458,8 @@ function closeTab(relPath) {
   else resetEditor()
 }
 
-function closeAllTabs() {
+async function closeAllTabs() {
+  if (currentTex.value && dirty.value && !(await flushAutosave(true))) return
   openTabs.value = []
   tabStates.clear()
   resetEditor()
@@ -582,7 +593,7 @@ function centerImage() {
   data.data[i * 4 + 2] = 0
   data.data[i * 4 + 3] = 255
   putImageData(data)
-  dirty.value = true
+  markDirty()
 }
 
 function canvasCtx() {
@@ -767,6 +778,7 @@ function actualizeDirty() {
     return
   }
   dirty.value = !equalsImageData(currentImageData(), base)
+  if (dirty.value) scheduleAutosave()
 }
 
 // ---------- pointer math ----------
@@ -873,7 +885,7 @@ function onPointerDown(e) {
     commit()
     bucketAt(x, y)
     pointer.value.down = false
-    dirty.value = true
+    markDirty()
   } else if (tool.value === 'gradient') {
     commit()
     selDrag.value = { x0: x, y0: y, x1: x, y1: y }
@@ -958,7 +970,7 @@ function onPointerUp() {
   pointer.value.down = false
   hover.value = null
   if ((pointer.value.tool === 'brush' || pointer.value.tool === 'eraser') && pointer.value.moved) {
-    dirty.value = true
+    markDirty()
   }
   if (pointer.value.tool === 'select' && selDrag.value) {
     if (pointer.value.moved) commitRectMask(selDrag.value)
@@ -1067,7 +1079,7 @@ function applyGradient(g) {
   const color1 = hexToRgb(bg.value).concat([Math.round(opacity.value * 2.55)])
   gradientFill(data, activeMask(), g.x0, g.y0, g.x1, g.y1, color0, color1, gradientMode.value)
   putImageData(data)
-  dirty.value = true
+  markDirty()
 }
 
 function rectMask(g) {
@@ -1907,7 +1919,7 @@ async function applyResize() {
   working.value = { w, h }
   syncCanvasSizes()
   fitZoom()
-  dirty.value = true
+  markDirty()
   selMask.value = null
   lastMask = null
   hsvBase = null
@@ -1928,22 +1940,92 @@ async function refreshThumb(relPath) {
   } catch (_) {}
 }
 
+async function writeTexture(relPath, filename, base64) {
+  if (isInstalled.value) {
+    await SavePackTexture(props.source.dirName, relPath, base64, packBasePath.value)
+  } else {
+    await SaveImage(sessionId.value, { imageName: filename, imagePath: '', relPath, imageData: base64, done: false })
+  }
+}
+
+// ---------- autosave ----------
+// Edits are written to the working copy shortly after the user stops editing,
+// so switching tools, closing the window or crashing cannot lose work.
+const AUTOSAVE_DELAY = 1500
+const autosaveOn = ref(true)
+let autosaveTimer = null
+let autosaveBusy = false
+
+function loadAutosaveSetting() {
+  GetSettings()
+    .then(s => { autosaveOn.value = s?.recolorAutosave !== false })
+    .catch(() => { autosaveOn.value = true })
+}
+
+function scheduleAutosave() {
+  if (!autosaveOn.value) return
+  if (!currentTex.value || !dirty.value) return
+  if (autosaveTimer) clearTimeout(autosaveTimer)
+  autosaveTimer = setTimeout(() => {
+    autosaveTimer = null
+    flushAutosave()
+  }, AUTOSAVE_DELAY)
+}
+
+function cancelAutosave() {
+  if (autosaveTimer) {
+    clearTimeout(autosaveTimer)
+    autosaveTimer = null
+  }
+}
+
+// Writes the current canvas if it differs from what is on disk. Never touches
+// `busy` (autosave must not block the UI) and stays quiet unless it fails.
+// Resolves to false only when the write actually failed, so callers can treat
+// true as "safe to move on".
+async function flushAutosave(force = false) {
+  cancelAutosave()
+  if (!force && !autosaveOn.value) return true
+  if (autosaveBusy) return true // a write is already in flight
+  if (!currentTex.value || !ready.value || !dirty.value) return true
+
+  const relPath = currentTex.value.relPath
+  const filename = currentTex.value.filename
+  const snapshot = currentImageData()
+  if (!snapshot) return true
+
+  autosaveBusy = true
+  try {
+    await writeTexture(relPath, filename, saveBase64())
+    // only treat the texture as clean if nothing changed while we were writing
+    if (currentTex.value && currentTex.value.relPath === relPath) {
+      if (equalsImageData(currentImageData(), snapshot)) {
+        savedImage = snapshot
+        dirty.value = false
+      } else {
+        scheduleAutosave()
+      }
+    }
+    return true
+  } catch (e) {
+    popup('Autosave failed', 'Your last edit could not be written to disk: ' + e.toString(), 'error')
+    return false
+  } finally {
+    autosaveBusy = false
+  }
+}
+
+function markDirty() {
+  dirty.value = true
+  scheduleAutosave()
+}
+
 async function saveReplace() {
   if (!currentTex.value || busy.value) return
   busy.value = true
   try {
-    const base64 = saveBase64()
-    if (isInstalled.value) {
-      await SavePackTexture(props.source.dirName, currentTex.value.relPath, base64, packBasePath.value)
-    } else {
-      await SaveImage({
-        imageName: currentTex.value.filename,
-        imagePath: '',
-        relPath: currentTex.value.relPath,
-        imageData: base64,
-        done: false
-      })
-    }
+    await writeTexture(currentTex.value.relPath, currentTex.value.filename, saveBase64())
+    cancelAutosave()
     dirty.value = false
     savedImage = currentImageData()
     await refreshThumb(currentTex.value.relPath)
@@ -2008,18 +2090,14 @@ async function saveAs() {
 
   busy.value = true
   try {
-    const base64 = saveBase64()
-    if (isInstalled.value) {
-      await SavePackTexture(props.source.dirName, relPath, base64, packBasePath.value)
-    } else {
-      await SaveImage({ imageName: name, imagePath: '', relPath, imageData: base64, done: false })
-    }
+    await writeTexture(relPath, name, saveBase64())
     if (isInstalled.value) {
       await selectFolder(activeFolder.value)
       const found = textures.value.find(t => t.relPath === relPath)
       if (found) await openTexture(found)
       else await openTexture({ ...currentTex.value, relPath, filename: name, folder: relPath.split('/').slice(0, -1).join('/') || '' })
     }
+    cancelAutosave()
     savedImage = currentImageData()
     dirty.value = false
     if (!isInstalled.value) await selectFolder(activeFolder.value)
@@ -2035,9 +2113,13 @@ async function exportUploaded() {
   if (busy.value) return
   busy.value = true
   try {
-    const result = await ExportPack(props.source.packName || '')
-    await DeleteTemp()
+    // make sure the export contains the pixels currently on screen
+    await flushAutosave(true)
+    const result = await ExportPack(sessionId.value, props.source.packName || '')
+    // the work is now in the .mcpack, so the working copy can go
+    if (sessionId.value) { try { await DeleteSession(sessionId.value) } catch (_) {} }
     clearSession(props.source)
+    cancelAutosave()
     popup('Exported!', result, 'success')
     emit('close')
   } catch (e) {
@@ -2046,10 +2128,42 @@ async function exportUploaded() {
   busy.value = false
 }
 
+function dirtyTabCount() {
+  return openTabs.value.filter(t => t.dirty).length
+}
+
+// Returns 'save', 'skip' or 'cancel'.
+async function askAboutPending(count) {
+  const choice = await Swal.mixin({
+    customClass: { popup: 'swal-custom-popup', confirmButton: 'custom-confirm-btn', cancelButton: 'custom-cancel-btn', denyButton: 'custom-cancel-btn' },
+    buttonsStyling: false
+  }).fire({
+    title: 'Unsaved changes',
+    text: `${count} texture${count === 1 ? ' has' : 's have'} edits that aren't written to disk yet.`,
+    icon: 'warning',
+    showCancelButton: true,
+    showDenyButton: true,
+    confirmButtonText: 'Save and close',
+    denyButtonText: 'Close without saving',
+    cancelButtonText: 'Cancel'
+  })
+  if (choice.isConfirmed) return 'save'
+  if (choice.isDenied) return 'skip'
+  return 'cancel'
+}
+
 async function handleClose() {
-  if (!isInstalled.value) {
-    try { await DeleteTemp() } catch (_) {}
+  const pending = dirtyTabCount()
+  let save = true
+  // with autosave on, every tab is already on disk by the time it is left
+  if (pending > 0 && !autosaveOn.value) {
+    const choice = await askAboutPending(pending)
+    if (choice === 'cancel') return
+    save = choice === 'save'
   }
+  if (save && currentTex.value && dirty.value) await flushAutosave(true)
+  cancelAutosave()
+  // deliberately keep the working copy: leaving the editor must not destroy work
   emit('close')
 }
 
@@ -2152,6 +2266,9 @@ function isFormFieldTarget(t) {
 }
 
 function onKey(e) {
+  // the editor stays mounted while another tool is open (v-show), so its
+  // shortcuts must not hijack the page the user is actually on
+  if (!props.visible) return
   if (pickerOpen.value && e.key === 'Escape') {
     e.preventDefault()
     closeColorPicker()
@@ -2258,6 +2375,7 @@ function onKey(e) {
 }
 
 function onPaste(e) {
+  if (!props.visible) return
   if (isFormFieldTarget(e.target)) return
   const items = e.clipboardData && e.clipboardData.items
   let hasImage = false
@@ -2321,7 +2439,7 @@ async function pasteImageFile(file) {
     activeLayerId.value = layer.id
     recomposite()
     renderOverlay()
-    dirty.value = true
+    markDirty()
   } catch (e) {
     popup('Error', 'Could not use pasted image: ' + e.toString(), 'error')
   }
@@ -2353,7 +2471,7 @@ function resizeCanvasTo(w2, h2) {
   working.value = { w: w2, h: h2 }
   syncCanvasSizes()
   fitZoom()
-  dirty.value = true
+  markDirty()
   selMask.value = null
   lastMask = null
   hsvBase = null
@@ -2530,7 +2648,7 @@ function eraseSelectedPixels() {
     for (let i = 3; i < d.length; i += 4) d[i] = 0
   }
   putImageData(data)
-  dirty.value = true
+  markDirty()
 }
 
 function cutPixels() {
@@ -2602,7 +2720,7 @@ function commitFloatingPaste() {
     const sy = Math.round(fp.y)
     tc.drawImage(fp.src, 0, 0, fp.clip.w, fp.clip.h, sx, sy, Math.max(1, Math.round(fp.w)), Math.max(1, Math.round(fp.h)))
     putImageData(tc.getImageData(0, 0, w, h))
-    dirty.value = true
+    markDirty()
   }
   floatPaste.value = null
   renderOverlay()
@@ -2637,10 +2755,14 @@ onMounted(() => {
     })
     viewportObserver.observe(viewportEl.value)
   }
+  loadAutosaveSetting()
   loadFolders().then(restoreSession)
 })
 
 onBeforeUnmount(() => {
+  // best effort: the write may not land if the process is going down anyway,
+  // but leaving via a normal unmount will save
+  if (dirty.value) flushAutosave(true)
   saveSessionToStore()
   if (viewportObserver) {
     viewportObserver.disconnect()

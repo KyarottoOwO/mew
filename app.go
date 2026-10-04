@@ -44,6 +44,7 @@ func NewApp(debug bool) *App {
 			"skyPresets":            true,
 			"skyPresetNames":        []string{"starfield", "sky1", "sky2", "starfield02", "starfield03"},
 			"addPromoTexts":         false,
+			"recolorAutosave":       true,
 		},
 		discordConns: map[string]net.Conn{},
 	}
@@ -52,6 +53,7 @@ func NewApp(debug bool) *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.GetSettings()
+	a.pruneStaleSessions()
 	if a.debug {
 		log.Println("[startup] App context initialized")
 	}
