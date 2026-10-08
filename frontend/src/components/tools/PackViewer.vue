@@ -1734,7 +1734,7 @@ watch(() => props.openPackReq, (req) => {
             <div v-else class="pv-card-icon pv-card-placeholder">
               <i class="fa fa-box"></i>
             </div>
-            <img v-if="pack.skinThumb" :src="pack.skinThumb" class="pv-card-skin" width="48" height="48" title="This pack changes the player skin" alt="Pack skin" decoding="async" />
+            <img v-if="pack.skinThumb" :src="pack.skinThumb" class="pv-card-skin" width="64" height="64" title="Pack preview: skin, diamond armor and sword" alt="Pack preview" decoding="async" />
           </div>
           <div class="pv-card-info">
             <span class="pv-card-name" v-html="parseBedrockCodes(pack.name || pack.dirName)"></span>
@@ -2204,11 +2204,10 @@ watch(() => props.openPackReq, (req) => {
 
 .pv-card-skin {
   position: absolute;
-  right: -30px;
-  bottom: -6px;
-  width: 48px;
-  height: 48px;
-  image-rendering: pixelated;
+  right: -38px;
+  bottom: -8px;
+  width: 64px;
+  height: 64px;
   filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.35));
   pointer-events: none;
 }

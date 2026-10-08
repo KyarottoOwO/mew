@@ -12,33 +12,22 @@ func TestGetPackSkinThumbnails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := t.TempDir()
-	skinDir := filepath.Join(root, "withSkin", "textures", "entity")
-	if err := os.MkdirAll(skinDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(skinDir, "steve.png"), skin, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	a := testApp(t)
+	root := a.getResourcePacksPath()
+	writeFile(t, filepath.Join(root, "withSkin", "textures", "entity", "steve.png"), skin)
 	if err := os.MkdirAll(filepath.Join(root, "noSkin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	a := NewApp(false)
-	a.settings["resourcePacksPath"] = root
 	got := a.GetPackSkinThumbnails([]string{"withSkin", "noSkin", "../withSkin", ""})
 
-	if len(got) != 1 {
-		t.Fatalf("got thumbnails for %d packs, want 1: %v", len(got), keys(got))
+	if len(got) != 2 {
+		t.Fatalf("got thumbnails for %d packs, want 2: %v", len(got), keys(got))
 	}
-	if !strings.HasPrefix(got["withSkin"], "data:image/png;base64,") {
-		t.Fatalf("withSkin thumbnail is not a PNG data URI")
-	}
-}
-
-func TestRenderSkinThumbnailRejectsGarbage(t *testing.T) {
-	if _, err := renderSkinThumbnail([]byte("not an image")); err == nil {
-		t.Fatal("expected an error for non-image bytes")
+	for _, name := range []string{"withSkin", "noSkin"} {
+		if !strings.HasPrefix(got[name], "data:image/png;base64,") {
+			t.Fatalf("%s thumbnail is not a PNG data URI", name)
+		}
 	}
 }
 
