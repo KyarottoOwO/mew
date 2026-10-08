@@ -1,12 +1,9 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import * as THREE from 'three'
-import { SkinView3d } from 'vue-skinview3d'
-import { IdleAnimation, WalkingAnimation } from 'vue-skinview3d/animations'
 import PackExporter from './PackExporter.vue'
 import JsonUiStage from './JsonUiStage.vue'
-import { GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackArmorTextures, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPlayerSkinTexture, GetPackSkinThumbnails, GetHeldItemTexture, GetDefaultSkin, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug, PackHasUiScreens } from '../../../wailsjs/go/main/App'
-import defaultSkinImg from '../../assets/default-skin.png'
+import { GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPackSkinThumbnails, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug, PackHasUiScreens, RenderSkin, RenderSkinFrames, RenderSkinGIF, ListAnimations, RenderItem, RenderItemSpin, SaveRender } from '../../../wailsjs/go/main/App'
 
 import { parseBedrockCodes } from '../../utils/formatCodes'
 const props = defineProps({ active: Boolean, openPackReq: { type: Object, default: null } })
@@ -22,11 +19,35 @@ const confirmDelete = ref(false)
 const selectedPack = ref('')
 const selectedPackInfo = ref({ name: '', description: '', iconURI: '' })
 const selectedMaterial = ref('diamond')
-// Tool in the player's right hand; its tier follows the selected armor.
-const heldTool = ref('none')
-const heldTools = ['none', 'sword', 'pickaxe', 'axe', 'shovel']
-const heldToolLabels = { none: 'Empty', sword: 'Sword', pickaxe: 'Pickaxe', axe: 'Axe', shovel: 'Shovel' }
-const HELD_TIER = { cloth: 'wood', chain: 'stone', iron: 'iron', gold: 'gold', diamond: 'diamond', netherite: 'netherite', naked: 'diamond' }
+const elytraOn = ref(false)
+const equipmentOnly = ref(false)
+
+// Each hand holds a tool of the selected tier, a flat item, or nothing.
+const HAND_EMPTY = 'none'
+const handTools = ['sword', 'pickaxe', 'axe', 'shovel', 'hoe']
+const handToolLabels = { sword: 'Sword', pickaxe: 'Pickaxe', axe: 'Axe', shovel: 'Shovel', hoe: 'Hoe' }
+const handFlat = ['bread', 'apple', 'golden_apple']
+const handFlatLabels = { bread: 'Bread', apple: 'Apple', golden_apple: 'Golden Apple' }
+const HELD_TIER = { cloth: 'wooden', chain: 'stone', iron: 'iron', gold: 'golden', diamond: 'diamond', netherite: 'netherite', naked: 'diamond' }
+const rightHand = ref(HAND_EMPTY)
+const leftHand = ref(HAND_EMPTY)
+const emptyAdjust = () => ({ offsetX: 0, offsetY: 0, offsetZ: 0, rotX: 0, rotY: 0, rotZ: 0, scale: 1 })
+const rightAdjust = reactive(emptyAdjust())
+const leftAdjust = reactive(emptyAdjust())
+const rightAdjustOpen = ref(false)
+const leftAdjustOpen = ref(false)
+
+// Sliders for the per-hand item adjustment panel.
+const ADJUST_SLIDERS = [
+  { key: 'offsetX', label: 'X', min: -4, max: 4, step: 0.05 },
+  { key: 'offsetY', label: 'Y', min: -4, max: 4, step: 0.05 },
+  { key: 'offsetZ', label: 'Z', min: -4, max: 4, step: 0.05 },
+  { key: 'rotX', label: 'RX', min: -180, max: 180, step: 1 },
+  { key: 'rotY', label: 'RY', min: -180, max: 180, step: 1 },
+  { key: 'rotZ', label: 'RZ', min: -180, max: 180, step: 1 },
+  { key: 'scale', label: 'Size', min: 0.1, max: 3, step: 0.05 },
+]
+
 const itemTextures = ref([])
 const itemCache = new Map()
 
@@ -36,11 +57,36 @@ const materialLabels = {
   chain: 'Chainmail', cloth: 'Leather', netherite: 'Netherite', naked: 'Naked'
 }
 const skinModel = ref('auto-detect')
-const animating = ref(false)
+
+// The view state, shared by the modal and fullscreen viewers: the sky camera
+// and the player render use the same yaw/pitch/zoom.
+const FOV = 35
+const viewYaw = ref(0)
+const viewPitch = ref(10)
+const viewZoom = ref(1.5) // bedrock-skin-go's Margin: smaller is closer
+
+// Animation: "" is a still; otherwise a motion or example animation name.
+const ANIM_FPS = 15
+const animationName = ref('')
+const animations = ref([])
+const animFrames = ref([])
+const animIndex = ref(0)
+let animTimer = null
+let animToken = 0
+let animDebounce = null
+
+const modalPlayerSrc = ref('')
+const fsPlayerSrc = ref('')
+let renderToken = 0
+let renderInFlight = false
+let renderAgain = false
+let destroyed = false
+let dragging = false
+let dragMoved = false
+let inertia = null
 
 const customSkinURI = ref('')
 const skinFileInput = ref(null)
-const viewerRef = ref(null)
 const modalContainer = ref(null)
 const isDebug = ref(false)
 
@@ -87,31 +133,15 @@ function toggleUiPanel() {
 let viewerInstance = null
 
 const fullscreen = ref(false)
-const fsViewerRef = ref(null)
 const fsContainerRef = ref(null)
 let fsViewerInstance = null
 
 const showExportPopup = ref(false)
 
-const IDLE_PAUSE_MS = 3000
 const IDLE_GC_MS = 10000
-const idleCleanups = new Set()
-let fsIdleCleanup = null
 
 // Cap the 3D renderer's pixel ratio to bound GPU/JS memory on HiDPI displays.
-// skinview3d defaults to devicePixelRatio (up to 2-3x), which can ~4-9x memory usage.
 const SKIN_PIXEL_RATIO = 1.5
-
-function capPixelRatio(v) {
-  if (!v || v.disposed) return
-  try {
-    if (v.pixelRatio !== SKIN_PIXEL_RATIO) v.pixelRatio = SKIN_PIXEL_RATIO
-  } catch {}
-}
-
-let viewerTimer = null
-let fsViewerTimer = null
-let modelSetupAlive = true
 
 const skySubpacks = ref([])
 const skySlider = ref(0)
@@ -246,8 +276,8 @@ async function buildSkyCubemap(key, tex, cap) {
 }
 
 function setSkyOnViewers(cubemap) {
-  if (viewerInstance) viewerInstance.scene.background = cubemap
-  if (fsViewerInstance) fsViewerInstance.scene.background = cubemap
+  if (viewerInstance) { viewerInstance.scene.background = cubemap; renderSky(viewerInstance) }
+  if (fsViewerInstance) { fsViewerInstance.scene.background = cubemap; renderSky(fsViewerInstance) }
 }
 
 function invalidateSkyCache(pack) {
@@ -418,14 +448,362 @@ async function generateSkyCubemap(skyTex, cap) {
   return cubeTexture
 }
 
-const currentAnimation = computed(() => {
-  return animating.value ? new WalkingAnimation() : new IdleAnimation()
-})
+// ---------------------------------------------------------------------------
+// Viewer: a three.js sky layer behind a bedrock-skin-go player image. The
+// backend draws the player (skin, armor, elytra, held items) exactly as the
+// game does; three.js only turns the pack's cubemap with the same camera.
+// ---------------------------------------------------------------------------
 
-const skinOptions = computed(() => ({
-  model: skinModel.value,
-  ears: false
-}))
+function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)) }
+
+function animationLabel(name) {
+  return (name || '')
+    .replace(/^animation\.player\./, '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase())
+}
+
+async function loadAnimations() {
+  try { animations.value = (await ListAnimations()) || [] } catch { animations.value = [] }
+}
+
+function handItemName(value) {
+  if (!value || value === HAND_EMPTY) return ''
+  if (handTools.includes(value)) return (HELD_TIER[selectedMaterial.value] || 'diamond') + '_' + value
+  return value
+}
+
+function handAdjust(adjust) {
+  return {
+    Offset: [Number(adjust.offsetX) || 0, Number(adjust.offsetY) || 0, Number(adjust.offsetZ) || 0],
+    Rotation: [Number(adjust.rotX) || 0, Number(adjust.rotY) || 0, Number(adjust.rotZ) || 0],
+    Scale: adjust.scale === '' || adjust.scale == null ? 1 : Number(adjust.scale),
+  }
+}
+
+function handRequest(value, adjust) {
+  return { item: handItemName(value), adjust: handAdjust(adjust) }
+}
+
+function currentRequest(size, animation = '') {
+  return {
+    pack: selectedPack.value || '',
+    model: skinModel.value === 'slim' ? 'slim' : skinModel.value === 'default' ? 'wide' : 'auto',
+    material: selectedMaterial.value === 'naked' ? 'none' : selectedMaterial.value,
+    elytra: elytraOn.value,
+    right: handRequest(rightHand.value, rightAdjust),
+    left: handRequest(leftHand.value, leftAdjust),
+    view: 'body',
+    angle: 'front',
+    camera: { yaw: viewYaw.value, pitch: viewPitch.value, fov: FOV, margin: viewZoom.value },
+    size,
+    hideSkin: equipmentOnly.value,
+    animation,
+    fps: ANIM_FPS,
+  }
+}
+
+function activeContainer() {
+  return fullscreen.value ? fsContainerRef.value : modalContainer.value
+}
+
+function playerSize() {
+  const el = activeContainer()
+  let min = 400
+  if (el) {
+    const r = el.getBoundingClientRect()
+    if (r.width > 0 && r.height > 0) min = Math.min(r.width, r.height)
+  }
+  const dpr = Math.min(window.devicePixelRatio || 1, SKIN_PIXEL_RATIO)
+  return Math.round(clamp(min * dpr, 64, 1024))
+}
+
+function setPlayerSrc(uri) {
+  modalPlayerSrc.value = uri
+  fsPlayerSrc.value = uri
+}
+
+async function renderPlayerStill() {
+  const half = dragging || dragMoved
+  const size = half ? Math.max(64, Math.round(playerSize() / 2)) : playerSize()
+  const token = ++renderToken
+  try {
+    const uri = await RenderSkin(currentRequest(size))
+    if (token !== renderToken || destroyed) return
+    setPlayerSrc(uri)
+  } catch (e) {
+    if (isDebug.value) console.error('RenderSkin failed:', e)
+  }
+}
+
+function schedulePlayerRender() {
+  if (animationName.value) { scheduleAnimationFrames(); return }
+  if (renderInFlight) { renderAgain = true; return }
+  renderInFlight = true
+  ;(async () => {
+    do {
+      renderAgain = false
+      await renderPlayerStill()
+    } while (renderAgain && !destroyed)
+    renderInFlight = false
+  })()
+}
+
+function refreshPlayer() {
+  if (animationName.value) scheduleAnimationFrames()
+  else schedulePlayerRender()
+}
+
+// Animation frames are fetched once per camera/pose change, then cycled
+// locally at ANIM_FPS.
+function showAnimationFrame() {
+  const frames = animFrames.value
+  if (!frames.length) return
+  setPlayerSrc(frames[animIndex.value % frames.length])
+}
+
+async function loadAnimationFramesNow() {
+  const name = animationName.value
+  if (!name) return
+  const token = ++animToken
+  try {
+    const frames = await RenderSkinFrames(currentRequest(320, name))
+    if (token !== animToken || destroyed) return
+    if (!frames || !frames.length) return
+    const wasEmpty = animFrames.value.length === 0
+    animFrames.value = frames
+    if (animIndex.value >= frames.length) animIndex.value = 0
+    if (wasEmpty) showAnimationFrame()
+  } catch (e) {
+    if (isDebug.value) console.error('RenderSkinFrames failed:', e)
+  }
+}
+
+function scheduleAnimationFrames() {
+  if (animDebounce) clearTimeout(animDebounce)
+  animDebounce = setTimeout(loadAnimationFramesNow, 150)
+}
+
+function startAnimationLoop() {
+  stopAnimationLoop()
+  if (!animationName.value) return
+  animTimer = setInterval(() => {
+    if (dragging || dragMoved) return
+    const len = animFrames.value.length
+    if (!len) return
+    animIndex.value = (animIndex.value + 1) % len
+    showAnimationFrame()
+  }, Math.round(1000 / ANIM_FPS))
+}
+
+function stopAnimationLoop() {
+  if (animTimer) { clearInterval(animTimer); animTimer = null }
+}
+
+async function setAnimation(name) {
+  animationName.value = name || ''
+  animIndex.value = 0
+  if (!animationName.value) {
+    stopAnimationLoop()
+    animFrames.value = []
+    schedulePlayerRender()
+    return
+  }
+  await loadAnimationFramesNow()
+  startAnimationLoop()
+}
+
+async function savePNG() {
+  try {
+    const uri = await RenderSkin(currentRequest(1024))
+    await SaveRender(uri, renderFileName('png'))
+  } catch (e) { console.error('Save PNG failed:', e) }
+}
+
+async function saveGIF() {
+  try {
+    const name = animationName.value || 'walk'
+    const uri = await RenderSkinGIF(currentRequest(512, name))
+    await SaveRender(uri, renderFileName('gif'))
+  } catch (e) { console.error('Save GIF failed:', e) }
+}
+
+function renderFileName(ext) {
+  const anim = animationName.value ? animationName.value.split('.').pop() : 'pose'
+  const pack = (selectedPack.value || 'mew').replace(/[^A-Za-z0-9._-]/g, '_')
+  return pack + '-' + selectedMaterial.value + '-' + anim + '.' + ext
+}
+
+// --- sky layer -------------------------------------------------------------
+
+function createSkyView(container) {
+  const renderer = new THREE.WebGLRenderer({ antialias: false })
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, SKIN_PIXEL_RATIO))
+  const el = renderer.domElement
+  el.style.position = 'absolute'
+  el.style.inset = '0'
+  el.style.width = '100%'
+  el.style.height = '100%'
+  el.style.display = 'block'
+  container.appendChild(el)
+  const scene = new THREE.Scene()
+  const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 100)
+  camera.position.set(0, 0, 0)
+  const v = { renderer, scene, camera, container, canvas: el, disposed: false }
+  setupSkyInteraction(v)
+  return v
+}
+
+function resizeSkyView(v, w, h) {
+  if (!v || v.disposed || w <= 0 || h <= 0) return
+  v.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, SKIN_PIXEL_RATIO))
+  v.renderer.setSize(w, h, false)
+  v.camera.aspect = w / h
+  v.camera.updateProjectionMatrix()
+}
+
+function renderSky(v) {
+  if (!v || v.disposed) return
+  const yaw = viewYaw.value * Math.PI / 180
+  const pitch = viewPitch.value * Math.PI / 180
+  v.camera.lookAt(
+    -Math.sin(yaw) * Math.cos(pitch),
+    -Math.sin(pitch),
+    -Math.cos(yaw) * Math.cos(pitch)
+  )
+  v.renderer.render(v.scene, v.camera)
+}
+
+function renderAllSkies() {
+  renderSky(viewerInstance)
+  renderSky(fsViewerInstance)
+}
+
+function ensureSkyView(which) {
+  const container = which === 'fs' ? fsContainerRef.value : modalContainer.value
+  if (!container) return null
+  let v = which === 'fs' ? fsViewerInstance : viewerInstance
+  if (!v || v.disposed || v.container !== container) {
+    if (v) disposeViewerResources(v)
+    v = createSkyView(container)
+    if (which === 'fs') fsViewerInstance = v
+    else viewerInstance = v
+  }
+  const r = container.getBoundingClientRect()
+  resizeSkyView(v, r.width, r.height)
+  return v
+}
+
+function disposeViewerResources(v) {
+  if (!v) return
+  v.disposed = true
+  try { v.scene.background = null } catch {}
+  try { v.renderer.dispose() } catch {}
+  try {
+    const gl = v.renderer && v.renderer.getContext && v.renderer.getContext()
+    const lose = gl && gl.getExtension('WEBGL_lose_context')
+    if (lose) lose.loseContext()
+  } catch {}
+  try { v.canvas.remove() } catch {}
+}
+
+function setupSkyInteraction(v) {
+  const el = v.canvas
+  el.style.touchAction = 'none'
+  el.style.cursor = 'grab'
+  const pointers = new Map()
+  let lastX = 0, lastY = 0, lastDist = 0, velX = 0, velY = 0
+
+  const pinchDist = () => {
+    const [a, b] = [...pointers.values()]
+    return Math.hypot(a.x - b.x, a.y - b.y)
+  }
+
+  el.addEventListener('pointerdown', (e) => {
+    cancelInertia()
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    try { el.setPointerCapture(e.pointerId) } catch {}
+    el.style.cursor = 'grabbing'
+    if (pointers.size === 1) {
+      dragging = true; dragMoved = false
+      lastX = e.clientX; lastY = e.clientY
+      velX = 0; velY = 0
+    } else if (pointers.size === 2) {
+      lastDist = pinchDist()
+    }
+  })
+
+  el.addEventListener('pointermove', (e) => {
+    if (!pointers.has(e.pointerId)) return
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    if (pointers.size >= 2) {
+      const d = pinchDist()
+      if (lastDist > 0 && d > 0) viewZoom.value = clamp(viewZoom.value * (lastDist / d), 0.6, 3)
+      lastDist = d
+      dragMoved = true
+      schedulePlayerRender()
+      return
+    }
+    const dx = e.clientX - lastX
+    const dy = e.clientY - lastY
+    if (!dragMoved && Math.abs(dx) + Math.abs(dy) < 3) return
+    dragMoved = true
+    dragging = true
+    viewYaw.value += dx * 0.4
+    viewPitch.value = clamp(viewPitch.value + dy * 0.4, -60, 60)
+    velX = dx * 0.4
+    velY = dy * 0.4
+    lastX = e.clientX; lastY = e.clientY
+    renderAllSkies()
+    schedulePlayerRender()
+  })
+
+  const release = (e) => {
+    if (!pointers.has(e.pointerId)) return
+    pointers.delete(e.pointerId)
+    try { el.releasePointerCapture(e.pointerId) } catch {}
+    if (pointers.size === 0) {
+      el.style.cursor = 'grab'
+      dragging = false
+      if (dragMoved && (Math.abs(velX) > 0.6 || Math.abs(velY) > 0.6)) startInertia(velX, velY)
+      else finishDrag()
+    } else if (pointers.size === 1) {
+      lastDist = 0
+    }
+  }
+  el.addEventListener('pointerup', release)
+  el.addEventListener('pointercancel', release)
+
+  el.addEventListener('wheel', (e) => {
+    e.preventDefault()
+    viewZoom.value = clamp(viewZoom.value + e.deltaY * 0.0015, 0.6, 3)
+    schedulePlayerRender()
+  }, { passive: false })
+}
+
+function startInertia(vx, vy) {
+  cancelInertia()
+  const step = () => {
+    vx *= 0.92; vy *= 0.92
+    if (Math.abs(vx) < 0.1 && Math.abs(vy) < 0.1) { inertia = null; finishDrag(); return }
+    viewYaw.value += vx
+    viewPitch.value = clamp(viewPitch.value + vy, -60, 60)
+    dragging = true
+    renderAllSkies()
+    schedulePlayerRender()
+    inertia = requestAnimationFrame(step)
+  }
+  inertia = requestAnimationFrame(step)
+}
+
+function cancelInertia() {
+  if (inertia) { cancelAnimationFrame(inertia); inertia = null }
+}
+
+function finishDrag() {
+  dragging = false
+  setTimeout(() => { if (!dragging) { dragMoved = false; schedulePlayerRender() } }, 150)
+}
 
 const filteredPickerItems = computed(() => {
   const q = pickerSearch.value.trim().toLowerCase()
@@ -645,9 +1023,7 @@ async function memDump() {
 
 function resetMem() {
   if (!confirm('Reset memory? This clears all caches/viewers and reloads the app.')) return
-  if (viewerTimer) { clearTimeout(viewerTimer); viewerTimer = null }
-  if (fsViewerTimer) { clearTimeout(fsViewerTimer); fsViewerTimer = null }
-  clearIdlePause()
+  stopAnimationLoop()
   disposeViewerResources(viewerInstance)
   disposeViewerResources(fsViewerInstance)
   viewerInstance = null
@@ -726,177 +1102,6 @@ const filteredPacks = computed(() => {
   return sorted
 })
 
-const ARMOR_LAYER1_BONES = [
-  { name: 'helmet',        size: [8, 8, 8],   pos: [0, 4, 0],  inflate: 1, uv: [0, 0] },
-  { name: 'chestplate',    size: [8, 12, 4],  pos: [0, 0, 0],  inflate: 1, uv: [16, 16] },
-  { name: 'rightArmArmor', size: [4, 12, 4],  pos: [-1, -4, 0], inflate: 1.01, uv: [40, 16], flipX: true },
-  { name: 'leftArmArmor',  size: [4, 12, 4],  pos: [1, -4, 0],  inflate: 1.01, uv: [40, 16], mirror: true },
-  { name: 'rightLeg',      size: [4, 12, 4],  pos: [0, -6, 0],  inflate: 1, uv: [0, 16], flipX: true },
-  { name: 'leftLeg',       size: [4, 12, 4],  pos: [0, -6, 0],  inflate: 1, uv: [0, 16], mirror: true },
-]
-
-const ARMOR_LAYER2_BONES = [
-  { name: 'TopOfLeggings', size: [8, 4, 4.1], pos: [0, -4, 0], inflate: 0.5, uv: [16, 23] },
-  { name: 'rightLegOverlay', size: [4, 12, 4], pos: [0, -6, 0], inflate: 0.5, uv: [0, 16], flipX: true },
-  { name: 'leftLegOverlay',  size: [4, 12, 4], pos: [0, -6, 0], inflate: 0.5, uv: [0, 16], mirror: true },
-]
-
-const ARMOR_ATTACH_MAP = {
-  helmet: 'head',
-  chestplate: 'body',
-  rightArmArmor: 'rightArm',
-  leftArmArmor: 'leftArm',
-  rightLeg: 'rightLeg',
-  leftLeg: 'leftLeg',
-  rightLegOverlay: 'rightLeg',
-  leftLegOverlay: 'leftLeg',
-  TopOfLeggings: 'body',
-}
-
-const FACE_ORDER = ['right', 'left', 'top', 'bottom', 'front', 'back']
-
-function boxUV(u, v, W, H, D, flipX) {
-  const leftU = flipX ? u + D + W : u
-  const rightU = flipX ? u : u + D + W
-  return {
-    right:  { u: rightU,    v: v + D,     w: D, h: H },
-    left:   { u: leftU,     v: v + D,     w: D, h: H },
-    top:    { u: u + D,     v: v,         w: W, h: D },
-    bottom: { u: u + D + W, v: v,         w: W, h: D },
-    front:  { u: u + D,     v: v + D,     w: W, h: H },
-    back:   { u: u + D + W + D, v: v + D, w: W, h: H },
-  }
-}
-
-function safeCrop(img, face) {
-  const canvas = document.createElement('canvas')
-  const iw = img.naturalWidth || img.width
-  const ih = img.naturalHeight || img.height
-  const sx = Math.max(0, Math.min(face.u, iw))
-  const sy = Math.max(0, Math.min(face.v, ih))
-  const sw = Math.max(0, Math.min(face.w, iw - sx))
-  const sh = Math.max(0, Math.min(face.h, ih - sy))
-  if (sw <= 0 || sh <= 0) { canvas.width = 1; canvas.height = 1; return canvas }
-  canvas.width = sw; canvas.height = sh
-  const ctx = canvas.getContext('2d')
-  ctx.imageSmoothingEnabled = false
-  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh)
-  return canvas
-}
-
-function buildMeshFromBone(img, bone, isArmor, renderOrder) {
-  const [W, H, D] = bone.size
-  const inflate = bone.inflate || 0
-  const finalSize = [W + inflate * 2, H + inflate * 2, D + inflate * 2]
-  const iw = img.naturalWidth || img.width
-  const ih = img.naturalHeight || img.height
-  const sx = iw / 64
-  const isModern = ih > 32 && ih > iw / 2
-  const sy = isModern ? ih / 64 : ih / 32
-  const u = bone.uv[0], v = bone.uv[1]
-  const faces = boxUV(u * sx, v * sy, W * sx, H * sy, D * sx, !!bone.flipX)
-  const materials = []
-  for (const fname of FACE_ORDER) {
-    let canvas = safeCrop(img, faces[fname])
-    if (bone.mirror) {
-      const flipped = document.createElement('canvas')
-      flipped.width = canvas.width; flipped.height = canvas.height
-      const fctx = flipped.getContext('2d')
-      fctx.translate(canvas.width, 0); fctx.scale(-1, 1)
-      fctx.drawImage(canvas, 0, 0); canvas = flipped
-    }
-    const tex = new THREE.CanvasTexture(canvas)
-    tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter
-    const opts = { map: tex, side: THREE.FrontSide }
-    if (isArmor) {
-      opts.side = THREE.DoubleSide
-      opts.alphaTest = 0.1
-      opts.depthWrite = true
-    } else {
-      opts.alphaTest = 0.1
-    }
-    materials.push(new THREE.MeshStandardMaterial(opts))
-  }
-  const geo = new THREE.BoxGeometry(finalSize[0], finalSize[1], finalSize[2])
-  const mesh = new THREE.Mesh(geo, materials)
-  mesh.position.set(bone.pos[0], bone.pos[1], bone.pos[2])
-  mesh.renderOrder = renderOrder
-  return mesh
-}
-
-function disposeMesh(mesh) {
-  if (!mesh) return
-  if (mesh.geometry) mesh.geometry.dispose()
-  if (Array.isArray(mesh.material)) {
-    mesh.material.forEach(m => { if (m.map) m.map.dispose(); m.dispose() })
-  } else if (mesh.material) { mesh.material.dispose() }
-}
-
-function disposeViewerResources(v) {
-  if (!v) return
-  removeArmorMeshes(v)
-  removeHeldItem(v)
-  v.scene.background = null
-  if (!v.disposed) {
-    try { v.dispose() } catch {}
-  }
-  try {
-    const gl = v.renderer && v.renderer.getContext && v.renderer.getContext()
-    const lose = gl && gl.getExtension('WEBGL_lose_context')
-    if (lose) lose.loseContext()
-  } catch {}
-  skinLoadKeys.delete(v)
-}
-
-// Don't re-decode the same skin repeatedly: navigating between packs (and
-// other triggers) would otherwise re-load an identical skin URI just because a
-// different pack was selected, pinning a fresh decoded image each time.
-const skinLoadKeys = new Map()
-function loadSkinOnce(v, uri, model) {
-  if (!v || v.disposed) return false
-  const key = (uri || '') + '\u0001' + (model || '')
-  if (skinLoadKeys.get(v) === key) return false
-  skinLoadKeys.set(v, key)
-  return true
-}
-
-function clearIdlePause() {
-  for (const c of idleCleanups) { try { c() } catch {} }
-  idleCleanups.clear()
-  if (fsIdleCleanup) { try { fsIdleCleanup() } catch {}; fsIdleCleanup = null }
-  setViewerPaused(viewerInstance, false)
-  setViewerPaused(fsViewerInstance, false)
-}
-
-function setViewerPaused(v, paused) {
-  if (!v || v.disposed) return
-  v.renderPaused = paused
-}
-
-function resumeViewers() {
-  setViewerPaused(viewerInstance, false)
-  setViewerPaused(fsViewerInstance, false)
-}
-
-function setupIdlePause(v, cleanupSet) {
-  if (!v || v.disposed) return
-  let timer = null
-  const resume = () => {
-    setViewerPaused(v, false)
-    clearTimeout(timer)
-    timer = setTimeout(() => setViewerPaused(v, true), IDLE_PAUSE_MS)
-  }
-  const evts = ['pointerdown', 'pointermove', 'wheel', 'touchstart', 'touchmove']
-  for (const evt of evts) v.canvas.addEventListener(evt, resume, { passive: true })
-  setViewerPaused(v, true)
-  const cleanup = () => {
-    clearTimeout(timer)
-    for (const evt of evts) v.canvas.removeEventListener(evt, resume)
-  }
-  if (cleanupSet) cleanupSet.add(cleanup)
-  return cleanup
-}
-
 function clearSkyCache() {
   for (const t of skyCache.values()) {
     try { t.dispose() } catch {}
@@ -961,186 +1166,56 @@ async function toThumb(dataURI, size = 64) {
   }
 }
 
-function buildArmor(v, tex1, tex2) {
-  if (!v || v.disposed) return
-  const skin = v.playerObject.skin
-  const allBones = [
-    ...(tex1 ? ARMOR_LAYER1_BONES.map(b => [b, tex1]) : []),
-    ...(tex2 ? ARMOR_LAYER2_BONES.map(b => [b, tex2]) : []),
-  ]
-  for (const [bone, tex] of allBones) {
-    const mesh = buildMeshFromBone(tex, bone, true, 10)
-    mesh.name = bone.name + '_armor'
-    const targetPart = skin[ARMOR_ATTACH_MAP[bone.name]]
-    if (targetPart) targetPart.add(mesh)
-  }
-}
-
-function removeArmorMeshes(v) {
-  if (!v || v.disposed) return
-  const skin = v.playerObject.skin
-  for (const partName of Object.keys(skin)) {
-    const part = skin[partName]
-    if (!part || !part.children) continue
-    const toRemove = part.children.filter(c => c.name && c.name.endsWith('_armor'))
-    for (const c of toRemove) { part.remove(c); disposeMesh(c) }
-  }
-}
-
-// Builds a held item the way Minecraft draws one: the sprite extruded one
-// pixel deep. Only faces that aren't hidden by a neighbouring pixel are kept,
-// so a 16x16 sword is a single small mesh.
-const HELD_ITEM_LENGTH = 10 // model units across the sprite; an arm is 12 long
-const HELD_ITEM_MAX_PX = 32
-
-function buildHeldItemMesh(img) {
-  const iw = img.naturalWidth || img.width
-  const ih = img.naturalHeight || img.height
-  const k = Math.min(1, HELD_ITEM_MAX_PX / Math.max(iw, ih))
-  const w = Math.max(1, Math.round(iw * k)), h = Math.max(1, Math.round(ih * k))
-  const c = document.createElement('canvas')
-  c.width = w; c.height = h
-  const ctx = c.getContext('2d')
-  ctx.imageSmoothingEnabled = false
-  ctx.drawImage(img, 0, 0, w, h)
-  const px = ctx.getImageData(0, 0, w, h).data
-  const solid = (x, y) => x >= 0 && y >= 0 && x < w && y < h && px[(y * w + x) * 4 + 3] > 25
-
-  const s = HELD_ITEM_LENGTH / w
-  // Grip sits near the bottom-left, where tool sprites put the handle.
-  const gx = w * 3 / 16, gy = h * 13 / 16
-  const pos = [], nrm = [], col = [], idx = []
-  const color = new THREE.Color()
-  const quad = (corners, n) => {
-    const base = pos.length / 3
-    for (const [x, y, z] of corners) {
-      pos.push(x, y, z); nrm.push(...n); col.push(color.r, color.g, color.b)
-    }
-    idx.push(base, base + 1, base + 2, base, base + 2, base + 3)
-  }
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      if (!solid(x, y)) continue
-      const i = (y * w + x) * 4
-      color.setRGB(px[i] / 255, px[i + 1] / 255, px[i + 2] / 255, THREE.SRGBColorSpace)
-      const x0 = (x - gx) * s, x1 = x0 + s
-      const y1 = (gy - y) * s, y0 = y1 - s
-      const z0 = -s / 2, z1 = s / 2
-      quad([[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], [0, 0, 1])
-      quad([[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]], [0, 0, -1])
-      if (!solid(x - 1, y)) quad([[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]], [-1, 0, 0])
-      if (!solid(x + 1, y)) quad([[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]], [1, 0, 0])
-      if (!solid(x, y - 1)) quad([[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]], [0, 1, 0])
-      if (!solid(x, y + 1)) quad([[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]], [0, -1, 0])
-    }
-  }
-  const geo = new THREE.BufferGeometry()
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
-  geo.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3))
-  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3))
-  geo.setIndex(idx)
-  return new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true }))
-}
-
-function removeHeldItem(v) {
-  if (!v || v.disposed) return
-  const arm = v.playerObject.skin.rightArm
-  for (const c of arm.children.filter(c => c.name === 'held_item')) {
-    arm.remove(c)
-    c.traverse(o => { if (o.isMesh) disposeMesh(o) })
-  }
-}
-
-function attachHeldItem(v, img) {
-  removeHeldItem(v)
-  if (!v || v.disposed || !img) return
-  const mesh = buildHeldItemMesh(img)
-  // Turn the sprite side-on so the blade points forward, then tip it down a
-  // little, like a held tool in third person.
-  mesh.rotation.y = -Math.PI / 2
-  const holder = new THREE.Group()
-  holder.name = 'held_item'
-  holder.add(mesh)
-  holder.rotation.x = Math.PI / 9
-  // The arm hangs from the shoulder; the fist is at its bottom, 10 units down.
-  holder.position.set(v.playerObject.skin.slim ? -0.5 : -1, -9, 0)
-  v.playerObject.skin.rightArm.add(holder)
-}
-
-let heldItemRequest = 0
-async function applyHeldItem(packName) {
-  const req = ++heldItemRequest
-  let img = null
-  if (packName && heldTool.value !== 'none') {
-    const name = HELD_TIER[selectedMaterial.value] + '_' + heldTool.value
-    try {
-      const uri = await cachedTextureFetch(packName + '|held|' + name, () => GetHeldItemTexture(packName, name))
-      if (uri) img = await loadImage(uri)
-    } catch (e) {
-      console.error('Failed to load held item:', e)
-    }
-  }
-  if (req !== heldItemRequest) return // a newer pick won
-  attachHeldItem(viewerInstance, img)
-  attachHeldItem(fsViewerInstance, img)
-  resumeViewers()
-}
-
-function setHeldTool(tool) {
-  heldTool.value = tool
-  applyHeldItem(selectedPack.value)
-}
-
-function getViewerSize() {
-  if (modalContainer.value) {
-    return { w: modalContainer.value.clientWidth, h: 400 }
-  }
-  return { w: 560, h: 400 }
-}
-
-function configureViewer() {
-  if (!viewerInstance) return
-  capPixelRatio(viewerInstance)
-  viewerInstance.camera.position.set(0, 8, 40)
-  viewerInstance.controls.target.set(0, 2, 0)
-  viewerInstance.controls.enableDamping = true
-  viewerInstance.controls.dampingFactor = 0.08
-  viewerInstance.controls.minDistance = 15
-  viewerInstance.controls.maxDistance = 80
-  viewerInstance.controls.update()
-}
-
 const fsIndex = ref(0)
+
+function currentSkyBase() {
+  if (!currentSkyKey) return selectedPack.value ? selectedPack.value + '#base' : null
+  return currentSkyKey.replace(/:m$/, '').replace(/:fs$/, '')
+}
 
 function openFullscreen() {
   const idx = filteredPacks.value.findIndex(p => p.dirName === selectedPack.value)
   fsIndex.value = idx >= 0 ? idx : 0
   fullscreen.value = true
-  nextTick(() => {
+  nextTick(async () => {
     measureFs()
-    applyAppearanceFs()
+    const v = ensureSkyView('fs')
+    const base = currentSkyBase()
+    if (base && lastSkyTex) {
+      try {
+        const cubemap = await skyBuild(base, lastSkyTex)
+        currentSkyKey = skyKey(base)
+        if (v) { v.scene.background = cubemap; renderSky(v) }
+      } catch {}
+    }
+    watchSkySizes()
+    if (animationName.value) { await loadAnimationFramesNow(); startAnimationLoop() }
+    else schedulePlayerRender()
     recordMem('fs open')
   })
 }
 
 async function closeFullscreen() {
+  cancelInertia()
   const wasFsKey = currentSkyKey
-  const baseKey = wasFsKey && wasFsKey.startsWith(selectedPack.value + '#')
-    ? wasFsKey.replace(/:fs$/, '')
-    : (selectedPack.value ? selectedPack.value + '#base' : null)
+  const base = currentSkyBase()
   fullscreen.value = false
-  if (baseKey && lastSkyTex) {
+  if (base && lastSkyTex) {
     try {
-      const cubemap = await skyBuild(baseKey, lastSkyTex)
-      currentSkyKey = skyKey(baseKey)
-      if (currentSkyKey !== wasFsKey) setSkyOnViewers(cubemap)
+      const cubemap = await skyBuild(base, lastSkyTex)
+      currentSkyKey = skyKey(base)
+      if (viewerInstance) { viewerInstance.scene.background = cubemap; renderSky(viewerInstance) }
     } catch {}
   }
+  disposeViewerResources(fsViewerInstance)
+  fsViewerInstance = null
   if (wasFsKey && wasFsKey.endsWith(':fs')) {
     const t = skyCache.get(wasFsKey)
     if (t) { try { t.dispose() } catch {}; skyCache.delete(wasFsKey) }
     skyPending.delete(wasFsKey)
   }
+  watchSkySizes()
+  schedulePlayerRender()
   recordMem('fs close')
 }
 
@@ -1198,78 +1273,25 @@ function measureFs() {
   }
 }
 
-watch(fsViewerRef, (newRef) => {
-  if (!newRef || !modelSetupAlive) return
-  if (fsViewerTimer) { clearTimeout(fsViewerTimer); fsViewerTimer = null }
-  const tryGetViewer = () => {
-    if (!modelSetupAlive) return
-    const v = newRef.viewer
-    if (v) {
-      if (v.disposed) return
-      fsViewerTimer = null
-      fsViewerInstance = v
-      capPixelRatio(v)
-      if (fsIdleCleanup) { fsIdleCleanup(); fsIdleCleanup = null }
-      fsIdleCleanup = setupIdlePause(v, null)
-      v.camera.position.set(0, 8, 40)
-      v.controls.target.set(0, 2, 0)
-      v.controls.enableDamping = true
-      v.controls.dampingFactor = 0.08
-      applyAppearanceFs()
-    } else {
-      fsViewerTimer = setTimeout(tryGetViewer, 50)
+let skyResizeObserver = null
+function watchSkySizes() {
+  if (skyResizeObserver) skyResizeObserver.disconnect()
+  skyResizeObserver = new ResizeObserver(() => {
+    if (viewerInstance && modalContainer.value) {
+      const r = modalContainer.value.getBoundingClientRect()
+      resizeSkyView(viewerInstance, r.width, r.height)
+      renderSky(viewerInstance)
     }
-  }
-  tryGetViewer()
-})
-
-async function applyAppearanceFs() {
-  if (!fsViewerInstance) return
-  const uri = customSkinURI.value || defaultSkinImg
-  const model = skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value
-  if (loadSkinOnce(fsViewerInstance, uri, model)) {
-    await fsViewerInstance.loadSkin(uri, { model })
-  }
-  const cached = currentSkyKey ? skyCache.get(currentSkyKey) : null
-  const cubemap = cached || await skyBuild(selectedPack.value + '#base', lastSkyTex)
-  currentSkyKey = skyKey(selectedPack.value + '#base')
-  setSkyOnViewers(cubemap)
-  await applyArmor(selectedPack.value, selectedMaterial.value)
-  resumeViewers()
+    if (fsViewerInstance && fsContainerRef.value) {
+      const r = fsContainerRef.value.getBoundingClientRect()
+      resizeSkyView(fsViewerInstance, r.width, r.height)
+      renderSky(fsViewerInstance)
+    }
+    schedulePlayerRender()
+  })
+  if (modalContainer.value) skyResizeObserver.observe(modalContainer.value)
+  if (fsContainerRef.value) skyResizeObserver.observe(fsContainerRef.value)
 }
-
-watch(viewerRef, (newRef) => {
-  if (!newRef || !modelSetupAlive) return
-  if (viewerTimer) { clearTimeout(viewerTimer); viewerTimer = null }
-  const tryGetViewer = () => {
-    if (!modelSetupAlive) return
-    const v = newRef.viewer
-    if (v) {
-      if (v.disposed) return
-      viewerTimer = null
-      viewerInstance = v
-      setupIdlePause(v, idleCleanups)
-      configureViewer()
-      const setupViewer = async () => {
-        try {
-          const defSkin = await GetDefaultSkin()
-          if (defSkin) customSkinURI.value = defSkin
-        } catch {}
-        if (viewerInstance && !viewerInstance.disposed) {
-          const uri = customSkinURI.value || defaultSkinImg
-          await viewerInstance.loadSkin(uri, { model: skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value })
-          setSkyOnViewers(await buildSkyCubemap('default', null))
-          if (selectedPack.value) await applyArmor(selectedPack.value, selectedMaterial.value)
-          resumeViewers()
-        }
-      }
-      setupViewer()
-    } else {
-      viewerTimer = setTimeout(tryGetViewer, 50)
-    }
-  }
-  tryGetViewer()
-})
 
 async function loadAllPacks() {
   try {
@@ -1316,34 +1338,39 @@ async function deletePack() {
 async function openPack(packName) {
   selectedPack.value = packName
   selectedMaterial.value = 'diamond'
+  elytraOn.value = false
+  equipmentOnly.value = false
+  rightHand.value = HAND_EMPTY
+  leftHand.value = HAND_EMPTY
+  Object.assign(rightAdjust, emptyAdjust())
+  Object.assign(leftAdjust, emptyAdjust())
+  rightAdjustOpen.value = false
+  leftAdjustOpen.value = false
+  stopAnimationLoop()
+  animationName.value = ''
+  animFrames.value = []
   showModal.value = true
   await nextTick()
+  ensureSkyView('modal')
+  watchSkySizes()
   await loadCustomItems()
-  await waitForViewer()
   await loadPackData(packName)
-}
-
-function waitForViewer(timeout = 5000) {
-  if (viewerInstance) return Promise.resolve()
-  return new Promise(resolve => {
-    const start = Date.now()
-    const check = setInterval(() => {
-      if (viewerInstance || Date.now() - start > timeout) { clearInterval(check); resolve() }
-    }, 50)
-  })
 }
 
 function closeModal() {
   showModal.value = false
   confirmDelete.value = false
   fullscreen.value = false
-  if (viewerTimer) { clearTimeout(viewerTimer); viewerTimer = null }
-  if (fsViewerTimer) { clearTimeout(fsViewerTimer); fsViewerTimer = null }
-  clearIdlePause()
+  cancelInertia()
+  stopAnimationLoop()
+  if (animDebounce) { clearTimeout(animDebounce); animDebounce = null }
+  if (skyResizeObserver) { skyResizeObserver.disconnect(); skyResizeObserver = null }
   disposeViewerResources(viewerInstance)
   disposeViewerResources(fsViewerInstance)
   viewerInstance = null
   fsViewerInstance = null
+  animationName.value = ''
+  animFrames.value = []
   setLastSkyTex(null)
   currentSkyKey = null
   skySubpacks.value = []
@@ -1389,20 +1416,26 @@ async function loadPackData(packName) {
     currentSkyKey = skyKey(packName + '#base')
     setSkyOnViewers(cubemap)
     textureCache.delete(packName + '|sky')
-    await applySkin(packName)
-    recordMem('stage:skin')
-    await applyArmor(packName, selectedMaterial.value)
-    recordMem('stage:armor')
     await loadItems(packName)
     recordMem('stage:items')
     skySubpacks.value = (await GetPackSkySubpacks(packName)) || []
     skySlider.value = 0
-    resumeViewers()
+    await applyPlayerAppearance()
     recordMem('load pack')
     armIdleGC()
     scheduleIdleGC(null, 'load pack')
   } catch (e) {
     console.error('Failed to load pack data:', e)
+  }
+}
+
+async function applyPlayerAppearance() {
+  if (animationName.value) {
+    await loadAnimationFramesNow()
+    startAnimationLoop()
+  } else {
+    renderAgain = false
+    await renderPlayerStill()
   }
 }
 
@@ -1413,7 +1446,6 @@ async function reloadPack() {
   itemCache.delete(pack)
   invalidateTextureCache(pack)
   await loadPackData(pack)
-  if (fullscreen.value && fsViewerInstance) await applyAppearanceFs()
   recordMem('reload pack')
 }
 
@@ -1433,7 +1465,6 @@ async function applySkySubpack(idx) {
   const cubemap = await skyBuild(selectedPack.value + '#' + idx, tex)
   currentSkyKey = skyKey(selectedPack.value + '#' + idx)
   setSkyOnViewers(cubemap)
-  resumeViewers()
   recordMem('sky subpack')
 }
 
@@ -1460,36 +1491,13 @@ function reloadItems(packName) {
   return loadItems(packName)
 }
 
-async function applySkin(packName) {
-  if (!viewerInstance) return
-  const skinURI = customSkinURI.value || await cachedTextureFetch(packName + '|skin', () => GetPlayerSkinTexture(packName)) || defaultSkinImg
-  const model = skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value
-  if (loadSkinOnce(viewerInstance, skinURI, model)) {
-    await viewerInstance.loadSkin(skinURI, { model })
-  }
-  resumeViewers()
-  scheduleIdleGC(null, 'skin')
-}
-
-async function applyArmor(packName, material) {
+function selectMaterial(material) {
   selectedMaterial.value = material
-  removeArmorMeshes(viewerInstance)
-  removeArmorMeshes(fsViewerInstance)
-  try {
-    const tex = await cachedTextureFetch(packName + '|armor|' + material, () => GetPackArmorTextures(packName, material))
-    let img1 = null, img2 = null
-    if (tex.layer1) img1 = await loadImage(tex.layer1)
-    if (tex.layer2) img2 = await loadImage(tex.layer2)
-    buildArmor(viewerInstance, img1, img2)
-    buildArmor(fsViewerInstance, img1, img2)
-    applyHeldItem(packName)
-    resumeViewers()
-    recordMem('material ' + material)
-    armIdleGC()
-    scheduleIdleGC(null, 'armor')
-  } catch (e) {
-    console.error('Failed to apply armor:', e)
-  }
+  if (material === 'naked') elytraOn.value = false
+  recordMem('material ' + material)
+  armIdleGC()
+  scheduleIdleGC(null, 'armor')
+  refreshPlayer()
 }
 
 function formatName(name) {
@@ -1505,6 +1513,7 @@ async function onSkinFileChange(e) {
   reader.onload = async () => {
     customSkinURI.value = reader.result
     try { await SaveDefaultSkin(reader.result) } catch (err) { console.error('Failed to save skin:', err) }
+    refreshPlayer()
   }
   reader.readAsDataURL(file)
   e.target.value = ''
@@ -1634,6 +1643,7 @@ async function removeItem(name) {
 onMounted(async () => {
   try { isDebug.value = await IsDebug() } catch {}
   loadSkyDebugConfig()
+  loadAnimations()
   await loadAllPacks()
   window.addEventListener('resize', onFsResize)
   if (isDebug.value && showMemPanel.value) startMemSampler()
@@ -1642,15 +1652,16 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  destroyed = true
   stopGCWatchdog()
   if (gcTimer) { clearTimeout(gcTimer); gcTimer = null }
   stopMemSampler()
   window.removeEventListener('resize', onFsResize)
   window.removeEventListener('keydown', onFsNavKey)
-  if (viewerTimer) { clearTimeout(viewerTimer); viewerTimer = null }
-  if (fsViewerTimer) { clearTimeout(fsViewerTimer); fsViewerTimer = null }
-  modelSetupAlive = false
-  clearIdlePause()
+  cancelInertia()
+  stopAnimationLoop()
+  if (animDebounce) { clearTimeout(animDebounce); animDebounce = null }
+  if (skyResizeObserver) { skyResizeObserver.disconnect(); skyResizeObserver = null }
   disposeViewerResources(viewerInstance)
   disposeViewerResources(fsViewerInstance)
   clearSkyCache()
@@ -1662,26 +1673,10 @@ function onFsResize() {
   if (fullscreen.value) measureFs()
 }
 
-watch(() => customSkinURI.value, async () => {
-  if (fsViewerInstance) {
-    const uri = customSkinURI.value || defaultSkinImg
-    const model = skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value
-    if (loadSkinOnce(fsViewerInstance, uri, model)) {
-      await fsViewerInstance.loadSkin(uri, { model })
-      await applyAppearanceFs()
-    }
-  }
-})
-
-watch(() => skinModel.value, async () => {
-  if (fsViewerInstance) {
-    const uri = customSkinURI.value || defaultSkinImg
-    const model = skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value
-    if (loadSkinOnce(fsViewerInstance, uri, model)) {
-      await fsViewerInstance.loadSkin(uri, { model })
-    }
-  }
-})
+// Any control that changes the player (hands, model, armor, elytra) kicks off a
+// fresh render; the sky is untouched.
+watch([rightHand, leftHand, elytraOn, equipmentOnly, skinModel, () => selectedMaterial.value], refreshPlayer)
+watch([rightAdjust, leftAdjust], refreshPlayer, { deep: true })
 
 watch(() => props.active, (val) => {
   if (val) {
@@ -1769,23 +1764,7 @@ watch(() => props.openPackReq, (req) => {
 
         <div v-show="viewerMode === 'texture'" class="pv-viewer-wrap">
           <div ref="modalContainer" class="pv-3d">
-            <SkinView3d
-              v-if="!fullscreen"
-              ref="viewerRef"
-              :width="getViewerSize().w"
-              :height="getViewerSize().h"
-              :skin-url="customSkinURI || defaultSkinImg"
-              :skin-options="skinOptions"
-              :animation="currentAnimation"
-              :background="null"
-              :fov="45"
-              :zoom="0.9"
-              :enable-rotate="true"
-              :enable-zoom="true"
-              :enable-pan="false"
-              :global-light="3"
-              :camera-light="1.2"
-            />
+            <img v-if="modalPlayerSrc" :src="modalPlayerSrc" class="pv-player-img" width="512" height="512" alt="Player preview" />
           </div>
 
           <button class="pv-nav pv-nav-prev" @click.stop="navPack(-1)" title="Previous pack"><i class="fa fa-chevron-left"></i></button>
@@ -1831,12 +1810,17 @@ watch(() => props.openPackReq, (req) => {
         <div v-show="viewerMode === 'texture'" class="pv-materials">
           <button v-for="m in materials" :key="m"
             class="pv-mat-btn" :class="{ active: selectedMaterial === m }"
-            @click="applyArmor(selectedPack, m)">
+            @click="selectMaterial(m)">
             {{ materialLabels[m] }}
           </button>
           <span class="pv-mat-sep"></span>
-          <button class="pv-mat-btn" :class="{ active: animating }" @click="animating = !animating">
-            <i class="fa fa-walking"></i> Walk
+          <button class="pv-mat-btn" :class="{ active: elytraOn }" @click="elytraOn = !elytraOn"
+            title="Wings in place of the chestplate">
+            <i class="fa fa-feather"></i> Elytra
+          </button>
+          <button class="pv-mat-btn" :class="{ active: equipmentOnly }" @click="equipmentOnly = !equipmentOnly"
+            title="Hide the skin and show only armor, wings and items">
+            <i class="fa fa-shirt"></i> Gear
           </button>
           <span class="pv-mat-sep"></span>
           <button class="pv-mat-btn" :class="{ active: skinModel === 'auto-detect' }" @click="skinModel = 'auto-detect'">
@@ -1849,10 +1833,25 @@ watch(() => props.openPackReq, (req) => {
             <i class="fa fa-person-dress"></i> Slim
           </button>
           <span class="pv-mat-sep"></span>
+          <label class="pv-anim">
+            <i class="fa fa-film"></i>
+            <select class="pv-anim-select" :value="animationName" @change="setAnimation($event.target.value)">
+              <option value="">Still</option>
+              <option v-for="a in animations" :key="a" :value="a">{{ animationLabel(a) }}</option>
+            </select>
+          </label>
+          <span class="pv-mat-sep"></span>
+          <button class="pv-mat-btn" @click="savePNG" title="Save a high-resolution PNG">
+            <i class="fa fa-image"></i> PNG
+          </button>
+          <button class="pv-mat-btn" :disabled="!animationName" @click="saveGIF" title="Save the current animation as a GIF">
+            <i class="fa fa-film"></i> GIF
+          </button>
+          <span class="pv-mat-sep"></span>
           <button class="pv-mat-btn pv-skin-btn" @click="triggerSkinUpload">
             <i class="fa fa-user-pen"></i> Change Skin
           </button>
-          <button class="pv-mat-btn pv-reload-btn" @click="reloadPack" title="Reload this pack from disk (sky, items, armor)">
+          <button class="pv-mat-btn pv-reload-btn" @click="reloadPack" title="Reload this pack from disk">
             <i class="fa fa-rotate"></i> Reload
           </button>
           <span class="pv-mat-sep"></span>
@@ -1861,13 +1860,38 @@ watch(() => props.openPackReq, (req) => {
           </button>
         </div>
         <div v-show="viewerMode === 'texture'" class="pv-materials pv-held">
-          <span class="pv-held-label"><i class="fa fa-hand"></i> Hold</span>
-          <button v-for="t in heldTools" :key="t"
-            class="pv-mat-btn" :class="{ active: heldTool === t }"
-            :title="t === 'none' ? 'Empty hand' : 'Hold the ' + HELD_TIER[selectedMaterial] + ' ' + t"
-            @click="setHeldTool(t)">
-            {{ heldToolLabels[t] }}
-          </button>
+          <span class="pv-held-label"><i class="fa fa-hand"></i> Right</span>
+          <select class="pv-hand-select" :value="rightHand" @change="rightHand = $event.target.value">
+            <option :value="HAND_EMPTY">Empty</option>
+            <option v-for="t in handTools" :key="t" :value="t">{{ handToolLabels[t] }}</option>
+            <option v-for="f in handFlat" :key="f" :value="f">{{ handFlatLabels[f] }}</option>
+          </select>
+          <button class="pv-mat-btn pv-adjust-btn" :class="{ active: rightAdjustOpen }"
+            @click="rightAdjustOpen = !rightAdjustOpen" title="Fine-tune where the item sits"><i class="fa fa-sliders"></i></button>
+          <span class="pv-held-label"><i class="fa fa-hand"></i> Left</span>
+          <select class="pv-hand-select" :value="leftHand" @change="leftHand = $event.target.value">
+            <option :value="HAND_EMPTY">Empty</option>
+            <option v-for="t in handTools" :key="t" :value="t">{{ handToolLabels[t] }}</option>
+            <option v-for="f in handFlat" :key="f" :value="f">{{ handFlatLabels[f] }}</option>
+          </select>
+          <button class="pv-mat-btn pv-adjust-btn" :class="{ active: leftAdjustOpen }"
+            @click="leftAdjustOpen = !leftAdjustOpen" title="Fine-tune where the item sits"><i class="fa fa-sliders"></i></button>
+        </div>
+        <div v-show="viewerMode === 'texture' && rightAdjustOpen" class="pv-adjust">
+          <span class="pv-adjust-title">Right hand placement</span>
+          <label v-for="s in ADJUST_SLIDERS" :key="'r' + s.key" class="pv-adjust-row">
+            <span class="pv-adjust-label">{{ s.label }}</span>
+            <input type="range" class="pv-adjust-range" :min="s.min" :max="s.max" :step="s.step" v-model.number="rightAdjust[s.key]" />
+          </label>
+          <button class="pv-mat-btn" @click="Object.assign(rightAdjust, emptyAdjust())">Reset</button>
+        </div>
+        <div v-show="viewerMode === 'texture' && leftAdjustOpen" class="pv-adjust">
+          <span class="pv-adjust-title">Left hand placement</span>
+          <label v-for="s in ADJUST_SLIDERS" :key="'l' + s.key" class="pv-adjust-row">
+            <span class="pv-adjust-label">{{ s.label }}</span>
+            <input type="range" class="pv-adjust-range" :min="s.min" :max="s.max" :step="s.step" v-model.number="leftAdjust[s.key]" />
+          </label>
+          <button class="pv-mat-btn" @click="Object.assign(leftAdjust, emptyAdjust())">Reset</button>
         </div>
         <input ref="skinFileInput" type="file" accept="image/png" class="pv-hidden-input" @change="onSkinFileChange" />
 
@@ -1896,22 +1920,7 @@ watch(() => props.openPackReq, (req) => {
 
     <div v-if="fullscreen" class="pv-fs-overlay">
       <div ref="fsContainerRef" class="pv-fs-3d">
-        <SkinView3d
-          ref="fsViewerRef"
-          :width="fsSize.w"
-          :height="fsSize.h"
-          :skin-url="customSkinURI || defaultSkinImg"
-          :skin-options="skinOptions"
-          :animation="currentAnimation"
-          :background="null"
-          :fov="45"
-          :zoom="1.1"
-          :enable-rotate="true"
-          :enable-zoom="true"
-          :enable-pan="false"
-          :global-light="3"
-          :camera-light="1.2"
-        />
+        <img v-if="fsPlayerSrc" :src="fsPlayerSrc" class="pv-player-img" width="512" height="512" alt="Player preview" />
         <button class="pv-nav pv-nav-prev" @click.stop="navPack(-1)" title="Previous pack (←)"><i class="fa fa-chevron-left"></i></button>
         <button class="pv-nav pv-nav-next" @click.stop="navPack(1)" title="Next pack (→)"><i class="fa fa-chevron-right"></i></button>
         <div v-if="skySubpacks.length > 0" class="pv-skybar pv-fs-skybar">
@@ -1926,16 +1935,35 @@ watch(() => props.openPackReq, (req) => {
       <div class="pv-fs-bar">
         <div class="pv-fs-controls">
           <button v-for="m in materials" :key="m" class="pv-mat-btn" :class="{ active: selectedMaterial === m }"
-            @click="applyArmor(selectedPack, m)">{{ materialLabels[m] }}</button>
+            @click="selectMaterial(m)">{{ materialLabels[m] }}</button>
           <span class="pv-mat-sep"></span>
-          <button class="pv-mat-btn" :class="{ active: animating }" @click="animating = !animating"><i class="fa fa-walking"></i> Walk</button>
+          <button class="pv-mat-btn" :class="{ active: elytraOn }" @click="elytraOn = !elytraOn" title="Elytra"><i class="fa fa-feather"></i></button>
+          <button class="pv-mat-btn" :class="{ active: equipmentOnly }" @click="equipmentOnly = !equipmentOnly" title="Gear only"><i class="fa fa-shirt"></i></button>
           <span class="pv-mat-sep"></span>
-          <button class="pv-mat-btn" :class="{ active: skinModel === 'auto-detect' }" @click="skinModel = 'auto-detect'"><i class="fa fa-robot"></i> Auto</button>
-          <button class="pv-mat-btn" :class="{ active: skinModel === 'default' }" @click="skinModel = 'default'"><i class="fa fa-person"></i> Wide</button>
-          <button class="pv-mat-btn" :class="{ active: skinModel === 'slim' }" @click="skinModel = 'slim'"><i class="fa fa-person-dress"></i> Slim</button>
+          <button class="pv-mat-btn" :class="{ active: skinModel === 'auto-detect' }" @click="skinModel = 'auto-detect'"><i class="fa fa-robot"></i></button>
+          <button class="pv-mat-btn" :class="{ active: skinModel === 'default' }" @click="skinModel = 'default'"><i class="fa fa-person"></i></button>
+          <button class="pv-mat-btn" :class="{ active: skinModel === 'slim' }" @click="skinModel = 'slim'"><i class="fa fa-person-dress"></i></button>
           <span class="pv-mat-sep"></span>
-          <button class="pv-mat-btn pv-skin-btn" @click="triggerSkinUpload"><i class="fa fa-user-pen"></i> Change Skin</button>
-          <button class="pv-mat-btn pv-reload-btn" @click="reloadPack" title="Reload this pack from disk (sky, items, armor)"><i class="fa fa-rotate"></i></button>
+          <select class="pv-hand-select" :value="rightHand" @change="rightHand = $event.target.value" title="Right hand">
+            <option :value="HAND_EMPTY">Right: empty</option>
+            <option v-for="t in handTools" :key="'r' + t" :value="t">{{ handToolLabels[t] }}</option>
+            <option v-for="f in handFlat" :key="'rf' + f" :value="f">{{ handFlatLabels[f] }}</option>
+          </select>
+          <select class="pv-hand-select" :value="leftHand" @change="leftHand = $event.target.value" title="Left hand">
+            <option :value="HAND_EMPTY">Left: empty</option>
+            <option v-for="t in handTools" :key="'l' + t" :value="t">{{ handToolLabels[t] }}</option>
+            <option v-for="f in handFlat" :key="'lf' + f" :value="f">{{ handFlatLabels[f] }}</option>
+          </select>
+          <span class="pv-mat-sep"></span>
+          <select class="pv-anim-select" :value="animationName" @change="setAnimation($event.target.value)">
+            <option value="">Still</option>
+            <option v-for="a in animations" :key="a" :value="a">{{ animationLabel(a) }}</option>
+          </select>
+          <span class="pv-mat-sep"></span>
+          <button class="pv-mat-btn" @click="savePNG" title="Save PNG"><i class="fa fa-image"></i></button>
+          <button class="pv-mat-btn" :disabled="!animationName" @click="saveGIF" title="Save GIF"><i class="fa fa-film"></i></button>
+          <button class="pv-mat-btn pv-skin-btn" @click="triggerSkinUpload"><i class="fa fa-user-pen"></i></button>
+          <button class="pv-mat-btn pv-reload-btn" @click="reloadPack" title="Reload this pack from disk"><i class="fa fa-rotate"></i></button>
         </div>
         <button class="pv-fs-btn pv-fs-close" @click="closeFullscreen" title="Close (Esc)"><i class="fa fa-xmark"></i></button>
       </div>
@@ -2363,13 +2391,101 @@ watch(() => props.openPackReq, (req) => {
 }
 
 .pv-3d {
+  position: relative;
   width: 100%;
   height: 400px;
   border-radius: 0;
   background: transparent;
+  overflow: hidden;
 }
 
 .pv-3d canvas { display: block; }
+
+/* The player is a transparent bedrock-skin-go render laid over the sky
+   canvas and centred in the square that fits the viewer. */
+.pv-player-img {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  z-index: 1;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  pointer-events: none;
+  image-rendering: auto;
+}
+
+.pv-anim {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--text-dim);
+}
+
+.pv-anim-select,
+.pv-hand-select {
+  padding: 0.35rem 0.5rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-body);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  max-width: 160px;
+}
+
+.pv-hand-select {
+  max-width: 130px;
+}
+
+.pv-adjust-btn {
+  padding: 0.35rem 0.55rem;
+}
+
+.pv-adjust {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem 0.8rem;
+  margin-top: 0.4rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-hover-1);
+}
+
+.pv-adjust-title {
+  width: 100%;
+  text-align: center;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.pv-adjust-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+
+.pv-adjust-label {
+  min-width: 28px;
+  text-align: right;
+}
+
+.pv-adjust-range {
+  width: 110px;
+}
+
+.pv-mat-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 
 .pv-materials {
   display: flex;
