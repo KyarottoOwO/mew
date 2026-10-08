@@ -26,6 +26,7 @@ type App struct {
 	discordIpcMu   sync.Mutex
 	discordStart   time.Time
 	thumbCache     sync.Map
+	renderCache    *renderLRU
 }
 
 func NewApp(debug bool) *App {
@@ -47,6 +48,7 @@ func NewApp(debug bool) *App {
 			"recolorAutosave":     true,
 		},
 		discordConns: map[string]net.Conn{},
+		renderCache:  newRenderLRU(64),
 	}
 }
 

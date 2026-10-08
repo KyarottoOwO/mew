@@ -367,45 +367,19 @@ func (a *App) GetPackArmorTextures(packName string, material string) (ArmorTextu
 	}
 
 	result := ArmorTextures{}
-
-	texturesDir := filepath.Join(dir, "textures", "models", "armor")
-	if st, err := os.Stat(texturesDir); err == nil && st.IsDir() {
-		if p := findFirstImage(texturesDir, material+"_1"); p != "" {
-			result.Layer1 = a.readImageAsDataURI(p)
-		}
-		if p := findFirstImage(texturesDir, material+"_2"); p != "" {
-			result.Layer2 = a.readImageAsDataURI(p)
-		}
+	if material == "" || material == "naked" {
+		return result, nil
 	}
-
-	// Any layer the pack doesn't retexture is drawn with vanilla's, as the
+	// The pack's layer when it retextures it, vanilla's otherwise, as the
 	// game itself would.
-	if vanillaArmorMaterials[material] {
-		if result.Layer1 == "" {
-			result.Layer1 = a.vanillaArmorLayer(material + "_1")
-		}
-		if result.Layer2 == "" {
-			result.Layer2 = a.vanillaArmorLayer(material + "_2")
-		}
-	}
-
+	result.Layer1 = imageToDataURI(a.armorLayer(packName, material, 1))
+	result.Layer2 = imageToDataURI(a.armorLayer(packName, material, 2))
 	return result, nil
 }
 
 // vanillaArmorMaterials are the armor sets vanilla ships textures for.
 var vanillaArmorMaterials = map[string]bool{
 	"diamond": true, "gold": true, "iron": true, "chain": true, "cloth": true, "netherite": true,
-}
-
-// vanillaArmorLayer returns a vanilla armor layer as a data URI, downloading it
-// on first use. It returns "" when the texture can't be fetched (e.g. offline).
-func (a *App) vanillaArmorLayer(name string) string {
-	data, err := a.readVanillaFile("textures/models/armor/" + name + ".png")
-	if err != nil {
-		a.logDebug(fmt.Sprintf("mew: vanilla armor %s: %v", name, err))
-		return ""
-	}
-	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(data)
 }
 
 func (a *App) GetPackSkyTextures(packName string) (SkyTextures, error) {
@@ -1148,8 +1122,8 @@ func (a *App) SaveImage(sessionId string, msg SaveImageRequest) (string, error) 
 }
 
 // heldToolRe matches the vanilla tools the Pack Viewer can put in the player's
-// hand, e.g. diamond_sword or wood_pickaxe.
-var heldToolRe = regexp.MustCompile(`^(wood|stone|iron|gold|diamond|netherite)_(sword|pickaxe|axe|shovel)$`)
+// hand, e.g. diamond_sword or wooden_pickaxe.
+var heldToolRe = regexp.MustCompile(`^(wooden|stone|iron|golden|diamond|netherite)_(sword|pickaxe|axe|shovel|hoe)$`)
 
 // GetHeldItemTexture returns the texture for a tool held in the Pack Viewer:
 // the pack's own when it retextures the tool, vanilla's otherwise.
@@ -1157,13 +1131,5 @@ func (a *App) GetHeldItemTexture(packName string, name string) (string, error) {
 	if !heldToolRe.MatchString(name) {
 		return "", fmt.Errorf("not a holdable tool: %s", name)
 	}
-	if uri, err := a.GetPackItemTexture(packName, name); err == nil && uri != "" {
-		return uri, nil
-	}
-	data, err := a.readVanillaFile("textures/items/" + name + ".png")
-	if err != nil {
-		a.logDebug(fmt.Sprintf("mew: vanilla item %s: %v", name, err))
-		return "", nil
-	}
-	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(data), nil
+	return imageToDataURI(a.itemTexture(packName, name)), nil
 }

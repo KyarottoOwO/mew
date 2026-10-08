@@ -2,45 +2,29 @@ package main
 
 import (
 	"encoding/base64"
-	"os"
+	"image/color"
 	"path/filepath"
 	"testing"
 )
 
 func TestGetPackArmorTexturesFallsBackToVanillaPerLayer(t *testing.T) {
-	t.Setenv("LOCALAPPDATA", t.TempDir())
-	packLayer := []byte("pack diamond layer 1")
-	vanillaLayer := []byte("vanilla diamond layer 2")
+	a := testApp(t)
+	root := a.getResourcePacksPath()
+	packLayer := solidPNG(t, 64, 32, color.NRGBA{255, 0, 0, 255})
+	vanillaLayer := solidPNG(t, 64, 32, color.NRGBA{0, 255, 0, 255})
 
 	// Seed the vanilla cache so the fallback never touches the network.
-	cached := filepath.Join(vanillaCacheDir(), "textures", "models", "armor", "diamond_2.png")
-	if err := os.MkdirAll(filepath.Dir(cached), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cached, vanillaLayer, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	root := t.TempDir()
-	armorDir := filepath.Join(root, "pack", "textures", "models", "armor")
-	if err := os.MkdirAll(armorDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(armorDir, "diamond_1.png"), packLayer, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	a := NewApp(false)
-	a.settings["resourcePacksPath"] = root
+	writeFile(t, filepath.Join(vanillaCacheDir(), "textures", "models", "armor", "diamond_2.png"), vanillaLayer)
+	writeFile(t, filepath.Join(root, "pack", "textures", "models", "armor", "diamond_1.png"), packLayer)
 
 	got, err := a.GetPackArmorTextures("pack", "diamond")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := dataURI(packLayer); got.Layer1 != want {
+	if img := decodeDataURI(t, got.Layer1); !isRed(img) {
 		t.Errorf("layer 1 should come from the pack")
 	}
-	if want := dataURI(vanillaLayer); got.Layer2 != want {
+	if img := decodeDataURI(t, got.Layer2); !isGreen(img) {
 		t.Errorf("layer 2 should fall back to vanilla")
 	}
 
@@ -58,33 +42,18 @@ func dataURI(b []byte) string {
 }
 
 func TestGetHeldItemTexture(t *testing.T) {
-	t.Setenv("LOCALAPPDATA", t.TempDir())
-	vanillaSword := []byte("vanilla iron sword")
-	cached := filepath.Join(vanillaCacheDir(), "textures", "items", "iron_sword.png")
-	if err := os.MkdirAll(filepath.Dir(cached), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cached, vanillaSword, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	a := testApp(t)
+	root := a.getResourcePacksPath()
+	vanillaSword := solidPNG(t, 16, 16, color.NRGBA{255, 255, 0, 255})
+	packSword := solidPNG(t, 16, 16, color.NRGBA{0, 0, 255, 255})
 
-	root := t.TempDir()
-	itemsDir := filepath.Join(root, "pack", "textures", "items")
-	if err := os.MkdirAll(itemsDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	packSword := []byte("pack diamond sword")
-	if err := os.WriteFile(filepath.Join(itemsDir, "diamond_sword.png"), packSword, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(vanillaCacheDir(), "textures", "items", "iron_sword.png"), vanillaSword)
+	writeFile(t, filepath.Join(root, "pack", "textures", "items", "diamond_sword.png"), packSword)
 
-	a := NewApp(false)
-	a.settings["resourcePacksPath"] = root
-
-	if got, _ := a.GetHeldItemTexture("pack", "diamond_sword"); got != dataURI(packSword) {
+	if uri, _ := a.GetHeldItemTexture("pack", "diamond_sword"); !isBlue(decodeDataURI(t, uri)) {
 		t.Errorf("diamond_sword should come from the pack")
 	}
-	if got, _ := a.GetHeldItemTexture("pack", "iron_sword"); got != dataURI(vanillaSword) {
+	if uri, _ := a.GetHeldItemTexture("pack", "iron_sword"); !isYellow(decodeDataURI(t, uri)) {
 		t.Errorf("iron_sword should fall back to vanilla")
 	}
 	if _, err := a.GetHeldItemTexture("pack", "../../secret"); err == nil {
