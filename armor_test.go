@@ -56,3 +56,38 @@ func TestGetPackArmorTexturesFallsBackToVanillaPerLayer(t *testing.T) {
 func dataURI(b []byte) string {
 	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(b)
 }
+
+func TestGetHeldItemTexture(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", t.TempDir())
+	vanillaSword := []byte("vanilla iron sword")
+	cached := filepath.Join(vanillaCacheDir(), "textures", "items", "iron_sword.png")
+	if err := os.MkdirAll(filepath.Dir(cached), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cached, vanillaSword, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	itemsDir := filepath.Join(root, "pack", "textures", "items")
+	if err := os.MkdirAll(itemsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	packSword := []byte("pack diamond sword")
+	if err := os.WriteFile(filepath.Join(itemsDir, "diamond_sword.png"), packSword, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := NewApp(false)
+	a.settings["resourcePacksPath"] = root
+
+	if got, _ := a.GetHeldItemTexture("pack", "diamond_sword"); got != dataURI(packSword) {
+		t.Errorf("diamond_sword should come from the pack")
+	}
+	if got, _ := a.GetHeldItemTexture("pack", "iron_sword"); got != dataURI(vanillaSword) {
+		t.Errorf("iron_sword should fall back to vanilla")
+	}
+	if _, err := a.GetHeldItemTexture("pack", "../../secret"); err == nil {
+		t.Errorf("expected an error for a name that isn't a tool")
+	}
+}

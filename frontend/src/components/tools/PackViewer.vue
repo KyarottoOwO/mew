@@ -5,7 +5,7 @@ import { SkinView3d } from 'vue-skinview3d'
 import { IdleAnimation, WalkingAnimation } from 'vue-skinview3d/animations'
 import PackExporter from './PackExporter.vue'
 import JsonUiStage from './JsonUiStage.vue'
-import { GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackArmorTextures, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPlayerSkinTexture, GetPackSkinThumbnails, GetDefaultSkin, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug, PackHasUiScreens } from '../../../wailsjs/go/main/App'
+import { GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackArmorTextures, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPlayerSkinTexture, GetPackSkinThumbnails, GetHeldItemTexture, GetDefaultSkin, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug, PackHasUiScreens } from '../../../wailsjs/go/main/App'
 import defaultSkinImg from '../../assets/default-skin.png'
 
 import { parseBedrockCodes } from '../../utils/formatCodes'
@@ -22,6 +22,11 @@ const confirmDelete = ref(false)
 const selectedPack = ref('')
 const selectedPackInfo = ref({ name: '', description: '', iconURI: '' })
 const selectedMaterial = ref('diamond')
+// Tool in the player's right hand; its tier follows the selected armor.
+const heldTool = ref('none')
+const heldTools = ['none', 'sword', 'pickaxe', 'axe', 'shovel']
+const heldToolLabels = { none: 'Empty', sword: 'Sword', pickaxe: 'Pickaxe', axe: 'Axe', shovel: 'Shovel' }
+const HELD_TIER = { cloth: 'wood', chain: 'stone', iron: 'iron', gold: 'gold', diamond: 'diamond', netherite: 'netherite', naked: 'diamond' }
 const itemTextures = ref([])
 const itemCache = new Map()
 
@@ -830,6 +835,7 @@ function disposeMesh(mesh) {
 function disposeViewerResources(v) {
   if (!v) return
   removeArmorMeshes(v)
+  removeHeldItem(v)
   v.scene.background = null
   if (!v.disposed) {
     try { v.dispose() } catch {}
@@ -979,6 +985,110 @@ function removeArmorMeshes(v) {
     const toRemove = part.children.filter(c => c.name && c.name.endsWith('_armor'))
     for (const c of toRemove) { part.remove(c); disposeMesh(c) }
   }
+}
+
+// Builds a held item the way Minecraft draws one: the sprite extruded one
+// pixel deep. Only faces that aren't hidden by a neighbouring pixel are kept,
+// so a 16x16 sword is a single small mesh.
+const HELD_ITEM_LENGTH = 10 // model units across the sprite; an arm is 12 long
+const HELD_ITEM_MAX_PX = 32
+
+function buildHeldItemMesh(img) {
+  const iw = img.naturalWidth || img.width
+  const ih = img.naturalHeight || img.height
+  const k = Math.min(1, HELD_ITEM_MAX_PX / Math.max(iw, ih))
+  const w = Math.max(1, Math.round(iw * k)), h = Math.max(1, Math.round(ih * k))
+  const c = document.createElement('canvas')
+  c.width = w; c.height = h
+  const ctx = c.getContext('2d')
+  ctx.imageSmoothingEnabled = false
+  ctx.drawImage(img, 0, 0, w, h)
+  const px = ctx.getImageData(0, 0, w, h).data
+  const solid = (x, y) => x >= 0 && y >= 0 && x < w && y < h && px[(y * w + x) * 4 + 3] > 25
+
+  const s = HELD_ITEM_LENGTH / w
+  // Grip sits near the bottom-left, where tool sprites put the handle.
+  const gx = w * 3 / 16, gy = h * 13 / 16
+  const pos = [], nrm = [], col = [], idx = []
+  const color = new THREE.Color()
+  const quad = (corners, n) => {
+    const base = pos.length / 3
+    for (const [x, y, z] of corners) {
+      pos.push(x, y, z); nrm.push(...n); col.push(color.r, color.g, color.b)
+    }
+    idx.push(base, base + 1, base + 2, base, base + 2, base + 3)
+  }
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!solid(x, y)) continue
+      const i = (y * w + x) * 4
+      color.setRGB(px[i] / 255, px[i + 1] / 255, px[i + 2] / 255, THREE.SRGBColorSpace)
+      const x0 = (x - gx) * s, x1 = x0 + s
+      const y1 = (gy - y) * s, y0 = y1 - s
+      const z0 = -s / 2, z1 = s / 2
+      quad([[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], [0, 0, 1])
+      quad([[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]], [0, 0, -1])
+      if (!solid(x - 1, y)) quad([[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]], [-1, 0, 0])
+      if (!solid(x + 1, y)) quad([[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]], [1, 0, 0])
+      if (!solid(x, y - 1)) quad([[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]], [0, 1, 0])
+      if (!solid(x, y + 1)) quad([[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]], [0, -1, 0])
+    }
+  }
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3))
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3))
+  geo.setIndex(idx)
+  return new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true }))
+}
+
+function removeHeldItem(v) {
+  if (!v || v.disposed) return
+  const arm = v.playerObject.skin.rightArm
+  for (const c of arm.children.filter(c => c.name === 'held_item')) {
+    arm.remove(c)
+    c.traverse(o => { if (o.isMesh) disposeMesh(o) })
+  }
+}
+
+function attachHeldItem(v, img) {
+  removeHeldItem(v)
+  if (!v || v.disposed || !img) return
+  const mesh = buildHeldItemMesh(img)
+  // Turn the sprite side-on so the blade points forward, then tip it down a
+  // little, like a held tool in third person.
+  mesh.rotation.y = -Math.PI / 2
+  const holder = new THREE.Group()
+  holder.name = 'held_item'
+  holder.add(mesh)
+  holder.rotation.x = Math.PI / 9
+  // The arm hangs from the shoulder; the fist is at its bottom, 10 units down.
+  holder.position.set(v.playerObject.skin.slim ? -0.5 : -1, -9, 0)
+  v.playerObject.skin.rightArm.add(holder)
+}
+
+let heldItemRequest = 0
+async function applyHeldItem(packName) {
+  const req = ++heldItemRequest
+  let img = null
+  if (packName && heldTool.value !== 'none') {
+    const name = HELD_TIER[selectedMaterial.value] + '_' + heldTool.value
+    try {
+      const uri = await cachedTextureFetch(packName + '|held|' + name, () => GetHeldItemTexture(packName, name))
+      if (uri) img = await loadImage(uri)
+    } catch (e) {
+      console.error('Failed to load held item:', e)
+    }
+  }
+  if (req !== heldItemRequest) return // a newer pick won
+  attachHeldItem(viewerInstance, img)
+  attachHeldItem(fsViewerInstance, img)
+  resumeViewers()
+}
+
+function setHeldTool(tool) {
+  heldTool.value = tool
+  applyHeldItem(selectedPack.value)
 }
 
 function getViewerSize() {
@@ -1372,6 +1482,7 @@ async function applyArmor(packName, material) {
     if (tex.layer2) img2 = await loadImage(tex.layer2)
     buildArmor(viewerInstance, img1, img2)
     buildArmor(fsViewerInstance, img1, img2)
+    applyHeldItem(packName)
     resumeViewers()
     recordMem('material ' + material)
     armIdleGC()
@@ -1747,6 +1858,15 @@ watch(() => props.openPackReq, (req) => {
           <span class="pv-mat-sep"></span>
           <button class="pv-mat-btn" @click="showExportPopup = true" title="Export this pack as a .mcpack file">
             <i class="fa fa-file-export"></i> Export .mcpack
+          </button>
+        </div>
+        <div v-show="viewerMode === 'texture'" class="pv-materials pv-held">
+          <span class="pv-held-label"><i class="fa fa-hand"></i> Hold</span>
+          <button v-for="t in heldTools" :key="t"
+            class="pv-mat-btn" :class="{ active: heldTool === t }"
+            :title="t === 'none' ? 'Empty hand' : 'Hold the ' + HELD_TIER[selectedMaterial] + ' ' + t"
+            @click="setHeldTool(t)">
+            {{ heldToolLabels[t] }}
           </button>
         </div>
         <input ref="skinFileInput" type="file" accept="image/png" class="pv-hidden-input" @change="onSkinFileChange" />
@@ -2257,6 +2377,17 @@ watch(() => props.openPackReq, (req) => {
   flex-wrap: wrap;
   gap: 0.35rem;
   justify-content: center;
+}
+
+.pv-held {
+  align-items: center;
+  margin-top: 0.4rem;
+}
+
+.pv-held-label {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-right: 0.25rem;
 }
 
 .pv-mat-btn {

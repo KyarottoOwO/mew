@@ -1146,3 +1146,24 @@ func (a *App) SaveImage(sessionId string, msg SaveImageRequest) (string, error) 
 	a.touchSession(sessionId)
 	return "success", nil
 }
+
+// heldToolRe matches the vanilla tools the Pack Viewer can put in the player's
+// hand, e.g. diamond_sword or wood_pickaxe.
+var heldToolRe = regexp.MustCompile(`^(wood|stone|iron|gold|diamond|netherite)_(sword|pickaxe|axe|shovel)$`)
+
+// GetHeldItemTexture returns the texture for a tool held in the Pack Viewer:
+// the pack's own when it retextures the tool, vanilla's otherwise.
+func (a *App) GetHeldItemTexture(packName string, name string) (string, error) {
+	if !heldToolRe.MatchString(name) {
+		return "", fmt.Errorf("not a holdable tool: %s", name)
+	}
+	if uri, err := a.GetPackItemTexture(packName, name); err == nil && uri != "" {
+		return uri, nil
+	}
+	data, err := a.readVanillaFile("textures/items/" + name + ".png")
+	if err != nil {
+		a.logDebug(fmt.Sprintf("mew: vanilla item %s: %v", name, err))
+		return "", nil
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(data), nil
+}
