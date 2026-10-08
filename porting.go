@@ -1164,3 +1164,36 @@ func exportWriteError(err error, outDir string) string {
 	}
 	return err.Error()
 }
+
+// ExportCachePacks exports server/cached packs to the output directory.
+func (a *App) ExportCachePacks(packNames []string, basePath string) ([]string, error) {
+	a.logDebug(fmt.Sprintf("ExportCachePacks: called, packs=%d", len(packNames)))
+	if len(packNames) == 0 {
+		return nil, fmt.Errorf("no packs selected")
+	}
+	if basePath == "" {
+		basePath = a.getDefaultPackCachePath()
+	}
+	outDir := a.getOutputDir()
+	if err := os.MkdirAll(outDir, os.ModePerm); err != nil {
+		return nil, fmt.Errorf("failed to create output directory: %v", err)
+	}
+	var written []string
+	for _, packName := range packNames {
+		if packName == "" || strings.Contains(packName, "..") || strings.ContainsAny(packName, `\/`) {
+			return nil, fmt.Errorf("invalid pack name: %s", packName)
+		}
+		packDir := filepath.Join(basePath, packName)
+		st, err := os.Stat(packDir)
+		if err != nil || !st.IsDir() {
+			return nil, fmt.Errorf("pack not found: %s", packName)
+		}
+		outFile := filepath.Join(outDir, packName+".mcpack")
+		if err := zipDirToFile(packDir, outFile); err != nil {
+			return nil, fmt.Errorf("failed to export pack %s: %v", packName, err)
+		}
+		a.logDebug(fmt.Sprintf("ExportCachePacks: wrote %s", outFile))
+		written = append(written, outFile)
+	}
+	return written, nil
+}
