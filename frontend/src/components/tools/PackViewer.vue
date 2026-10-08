@@ -746,13 +746,13 @@ function setupSkyInteraction(v) {
     }
     const dx = e.clientX - lastX
     const dy = e.clientY - lastY
-    if (!dragMoved && Math.abs(dx) + Math.abs(dy) < 3) return
+    if (!dragMoved && Math.abs(dx) + Math.abs(dy) < 2) return
     dragMoved = true
     dragging = true
-    viewYaw.value += dx * 0.4
-    viewPitch.value = clamp(viewPitch.value + dy * 0.4, -60, 60)
-    velX = dx * 0.4
-    velY = dy * 0.4
+    viewYaw.value += dx * 0.3
+    viewPitch.value = clamp(viewPitch.value + dy * 0.3, -60, 60)
+    velX = dx * 0.3
+    velY = dy * 0.3
     lastX = e.clientX; lastY = e.clientY
     renderAllSkies()
     schedulePlayerRender()
@@ -784,11 +784,10 @@ function setupSkyInteraction(v) {
 function startInertia(vx, vy) {
   cancelInertia()
   const step = () => {
-    vx *= 0.92; vy *= 0.92
-    if (Math.abs(vx) < 0.1 && Math.abs(vy) < 0.1) { inertia = null; finishDrag(); return }
+    vx *= 0.94; vy *= 0.94
+    if (Math.abs(vx) < 0.08 && Math.abs(vy) < 0.08) { inertia = null; finishDrag(); return }
     viewYaw.value += vx
     viewPitch.value = clamp(viewPitch.value + vy, -60, 60)
-    dragging = true
     renderAllSkies()
     schedulePlayerRender()
     inertia = requestAnimationFrame(step)
