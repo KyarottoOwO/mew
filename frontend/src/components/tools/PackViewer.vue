@@ -5,7 +5,7 @@ import { SkinView3d } from 'vue-skinview3d'
 import { IdleAnimation, WalkingAnimation } from 'vue-skinview3d/animations'
 import PackExporter from './PackExporter.vue'
 import JsonUiStage from './JsonUiStage.vue'
-import { GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackArmorTextures, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPlayerSkinTexture, GetDefaultSkin, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug, PackHasUiScreens } from '../../../wailsjs/go/main/App'
+import { GetPackListWithInfo, GetInstalledPacks, GetPackCacheList, GetPackPreviewInfo, GetPackArmorTextures, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPlayerSkinTexture, GetDefaultSkin, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug, PackHasUiScreens, GetPackPreviewInfoFromCache, GetPackArmorTexturesFromCache, GetPackItemTexturesFromCache, GetPackSkyTexturesFromCache, GetPlayerSkinTextureFromCache, GetPackSkySubpacksFromCache, GetPackSkySubpackTexturesFromCache, GetPackItemTextureNamesFromCache, GetPackItemTextureFromCache, PackHasUiScreensFromCache, ExportCachePacks } from '../../../wailsjs/go/main/App'
 import defaultSkinImg from '../../assets/default-skin.png'
 
 import { parseBedrockCodes } from '../../utils/formatCodes'
@@ -16,6 +16,10 @@ const packsPath = ref('')
 const loading = ref(true)
 const searchQuery = ref('')
 const sortBy = ref('name')
+const showServerPacks = ref(false)
+const cachePackList = ref([])
+const serverPacksPath = ref('')
+const exportingServer = ref(false)
 
 const showModal = ref(false)
 const confirmDelete = ref(false)
@@ -434,6 +438,13 @@ function formatSize(bytes) {
   return (bytes / 1048576).toFixed(1) + ' MB'
 }
 
+function popup(title, text, icon) {
+  Swal.mixin({
+    customClass: { popup: 'swal-custom-popup', confirmButton: 'custom-confirm-btn' },
+    buttonsStyling: false
+  }).fire({ title, text, icon, confirmButtonText: 'OK' })
+}
+
 let gcTimer = null
 let lastActivity = Date.now()
 let idleGCArmed = false
@@ -694,18 +705,16 @@ watch(showMemPanel, (on) => {
 })
 
 const filteredPacks = computed(() => {
-  let list = packList.value
-
+  const list = showServerPacks.value ? cachePackList.value : packList.value
   const q = searchQuery.value.trim().toLowerCase()
   if (q) {
-    list = list.filter(p => {
+    return list.filter(p => {
       const name = (p.name || '').toLowerCase()
       const desc = (p.description || '').toLowerCase()
       const dir = (p.dirName || '').toLowerCase()
       return name.includes(q) || desc.includes(q) || dir.includes(q)
     })
   }
-
   const sorted = [...list]
   switch (sortBy.value) {
     case 'name':
@@ -1155,13 +1164,34 @@ async function loadAllPacks() {
   } catch (e) {
     console.error('Failed to load packs:', e)
   }
+  try {
+    const cacheSources = await GetPackCacheList()
+    if (cacheSources && cacheSources.length > 0) {
+      serverPacksPath.value = cacheSources[0].path || ''
+      const cacheList = await GetPackCacheList(cacheSources[0].path)
+      cachePackList.value = (cacheList || []).map(p => ({
+        ...p,
+        dirName: p.dirName || '',
+      }))
+      thumbifyPackIcons(cachePackList.value)
+    }
+  } catch (e) {
+    console.error('Failed to load server packs:', e)
+  }
   loading.value = false
 }
 
 function openPackFolder() {
-  if (!packsPath.value || !selectedPack.value) return
-  const sep = packsPath.value.includes('\\') ? '\\' : '/'
-  OpenFolder(packsPath.value + sep + selectedPack.value)
+  const basePath = showServerPacks.value ? serverPacksPath.value : packsPath.value
+  if (!basePath || !selectedPack.value) return
+  const sep = basePath.includes('\\') ? '\\' : '/'
+  OpenFolder(basePath + sep + selectedPack.value)
+}
+
+function openCachePackFolder() {
+  if (!serverPacksPath.value || !selectedPack.value) return
+  const sep = serverPacksPath.value.includes('\\') ? '\\' : '/'
+  OpenFolder(serverPacksPath.value + sep + selectedPack.value)
 }
 
 async function deletePack() {
@@ -1191,6 +1221,142 @@ async function openPack(packName) {
   await loadCustomItems()
   await waitForViewer()
   await loadPackData(packName)
+}
+
+async function openCachePack(packName) {
+  closeModal()
+  selectedPack.value = packName
+  selectedMaterial.value = 'diamond'
+  showModal.value = true
+  await nextTick()
+  await loadCustomItems()
+  await waitForViewer()
+  await loadCachePackData(packName)
+}
+
+async function loadCachePackData(packName) {
+  try {
+    hasScreens.value = false
+    if (lastLoadedPack && lastLoadedPack !== packName) {
+      invalidateSkyCache(lastLoadedPack)
+      itemCache.delete(lastLoadedPack)
+      invalidateTextureCache(lastLoadedPack)
+    }
+    lastLoadedPack = packName
+    const basePath = serverPacksPath.value
+    const [info, skyTex, packHasScreens] = await Promise.all([
+      GetPackPreviewInfoFromCache(packName, basePath),
+      cachedTextureFetch(packName + '|sky', () => GetPackSkyTexturesFromCache(packName, basePath)),
+      PackHasUiScreensFromCache(packName, basePath),
+    ])
+    hasScreens.value = !!packHasScreens
+    if (!hasScreens.value) viewerMode.value = 'texture'
+    recordMem('stage:info')
+    selectedPackInfo.value = info
+    setLastSkyTex(skyTex)
+    const cubemap = await skyBuild(packName + '#base', skyTex)
+    recordMem('stage:sky')
+    currentSkyKey = skyKey(packName + '#base')
+    setSkyOnViewers(cubemap)
+    textureCache.delete(packName + '|sky')
+    await loadCacheSkin(packName, basePath)
+    recordMem('stage:skin')
+    await loadCacheArmor(packName, basePath, selectedMaterial.value)
+    recordMem('stage:armor')
+    await loadCacheItems(packName, basePath)
+    recordMem('stage:items')
+    skySubpacks.value = (await GetPackSkySubpacksFromCache(packName, basePath)) || []
+    skySlider.value = 0
+    resumeViewers()
+    recordMem('load cache pack')
+    armIdleGC()
+    scheduleIdleGC(null, 'load cache pack')
+  } catch (e) {
+    console.error('Failed to load cache pack data:', e)
+  }
+}
+
+async function loadCacheSkin(packName, basePath) {
+  if (!viewerInstance) return
+  const skinURI = customSkinURI.value || await cachedTextureFetch(packName + '|skin', () => GetPlayerSkinTextureFromCache(packName, basePath)) || defaultSkinImg
+  const model = skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value
+  if (loadSkinOnce(viewerInstance, skinURI, model)) {
+    await viewerInstance.loadSkin(skinURI, { model })
+  }
+  resumeViewers()
+  scheduleIdleGC(null, 'skin')
+}
+
+async function loadCacheArmor(packName, basePath, material) {
+  selectedMaterial.value = material
+  removeArmorMeshes(viewerInstance)
+  removeArmorMeshes(fsViewerInstance)
+  try {
+    const tex = await cachedTextureFetch(packName + '|armor|' + material, () => GetPackArmorTexturesFromCache(packName, material, basePath))
+    let img1 = null, img2 = null
+    if (tex.layer1) img1 = await loadImage(tex.layer1)
+    if (tex.layer2) img2 = await loadImage(tex.layer2)
+    buildArmor(viewerInstance, img1, img2)
+    buildArmor(fsViewerInstance, img1, img2)
+    resumeViewers()
+    recordMem('material ' + material)
+    armIdleGC()
+    scheduleIdleGC(null, 'armor')
+  } catch (e) {
+    console.error('Failed to apply armor:', e)
+  }
+}
+
+async function loadCacheItems(packName, basePath) {
+  if (itemCache.has(packName)) {
+    itemTextures.value = itemCache.get(packName)
+    return
+  }
+  const thmb = await cachedTextureFetch(packName + '|itemthumbs|' + selectedMaterial.value, async () => {
+    const items = await GetPackItemTexturesFromCache(packName, selectedMaterial.value, basePath)
+    return Promise.all((items || []).map(async itm => itm && itm.dataURI ? { ...itm, dataURI: await toThumb(itm.dataURI) } : itm))
+  }) || []
+  itemTextures.value = thmb
+  itemCache.set(packName, thmb)
+  pruneItemCache()
+  scheduleIdleGC(null, 'items')
+}
+
+async function reloadCachePack(packName, basePath) {
+  invalidateSkyCache(packName)
+  itemCache.delete(packName)
+  invalidateTextureCache(packName)
+  await loadCachePackData(packName)
+  if (fullscreen.value && fsViewerInstance) {
+    const uri = customSkinURI.value || defaultSkinImg
+    const model = skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value
+    if (loadSkinOnce(fsViewerInstance, uri, model)) {
+      await fsViewerInstance.loadSkin(uri, { model })
+    }
+    const cached = currentSkyKey ? skyCache.get(currentSkyKey) : null
+    const cubemap = cached || await skyBuild(packName + '#base', lastSkyTex)
+    currentSkyKey = skyKey(packName + '#base')
+    setSkyOnViewers(cubemap)
+    await loadCacheArmor(packName, basePath, selectedMaterial.value)
+    resumeViewers()
+  }
+  recordMem('reload cache pack')
+}
+
+async function exportSelectedServerPacks() {
+  if (exportingServer.value || !showServerPacks.value) return
+  const names = filteredPacks.value.map(p => p.dirName)
+  if (!names.length) return
+  exportingServer.value = true
+  try {
+    const written = await ExportCachePacks(names, serverPacksPath.value)
+    popup('Exported', `Exported ${written.length} server pack(s) to ${written.length === 1 ? written[0] : 'the output folder'}`, 'success')
+  } catch (err) {
+    console.error('ExportCachePacks error:', err)
+    popup('Export Failed', String(err?.toString ? err.toString() : err), 'error')
+  } finally {
+    exportingServer.value = false
+  }
 }
 
 function waitForViewer(timeout = 5000) {
@@ -1401,7 +1567,10 @@ async function openItemPicker() {
   pickerLoaded.clear()
   pickerSearch.value = ''
   try {
-    const names = await GetPackItemTextureNames(selectedPack.value)
+    const packName = selectedPack.value
+    const names = showServerPacks.value
+      ? await GetPackItemTextureNamesFromCache(packName, serverPacksPath.value)
+      : await GetPackItemTextureNames(packName)
     pickerNames.value = names || []
   } catch (err) {
     console.error('Failed to load item names:', err)
@@ -1439,7 +1608,13 @@ async function loadPickerTexture(name) {
   if (pickerLoaded.has(name) || pickerTextures.has(name)) return
   pickerLoaded.add(name)
   try {
-    const dataURI = await cachedTextureFetch(selectedPack.value + '|picker|' + name, () => GetPackItemTexture(selectedPack.value, name))
+    const packName = selectedPack.value
+    const dataURI = await cachedTextureFetch(packName + '|picker|' + name, async () => {
+      if (showServerPacks.value) {
+        return GetPackItemTextureFromCache(packName, name, serverPacksPath.value)
+      }
+      return GetPackItemTexture(packName, name)
+    })
     if (dataURI) pickerTextures.set(name, dataURI)
     loadPickerThumb(name, dataURI)
   } catch (err) {
@@ -1567,10 +1742,15 @@ watch(() => props.openPackReq, (req) => {
 
 <template>
   <div class="pv-page page">
-    <div v-if="packList.length === 0 && !loading" class="pv-empty">
+    <div v-if="!loading && !showServerPacks && packList.length === 0" class="pv-empty">
       <i class="fa fa-box-open pv-empty-icon"></i>
       <p>No installed packs found.</p>
       <p class="pv-empty-sub">Install a pack from the Pack Porter first.</p>
+    </div>
+    <div v-else-if="!loading && showServerPacks && cachePackList.length === 0" class="pv-empty">
+      <i class="fa fa-server pv-empty-icon"></i>
+      <p>No server packs found.</p>
+      <p class="pv-empty-sub">Download a resource pack from a server to see it here.</p>
     </div>
 
     <template v-else>
@@ -1581,6 +1761,9 @@ watch(() => props.openPackReq, (req) => {
           <span v-if="searchQuery" class="pv-search-clear" @click="searchQuery = ''"><i class="fa fa-xmark"></i></span>
         </div>
         <div class="pv-toolbar-right">
+          <button class="pv-sort-btn" :class="{ active: showServerPacks }" @click="showServerPacks = !showServerPacks; closeModal()" title="Toggle server packs from cache">
+            <i class="fa fa-server"></i> Server Packs
+          </button>
           <span class="pv-count">{{ filteredPacks.length }} pack{{ filteredPacks.length !== 1 ? 's' : '' }}</span>
           <div class="pv-sort">
             <button v-for="opt in [{v:'name',icon:'fa-arrow-down-a-z'},{v:'date',icon:'fa-clock'},{v:'size',icon:'fa-hard-drive'}]"
@@ -1597,7 +1780,7 @@ watch(() => props.openPackReq, (req) => {
       </div>
 
       <div v-else class="pv-grid">
-        <div v-for="pack in filteredPacks" :key="pack.dirName" class="pv-card" @click="openPack(pack.dirName)">
+        <div v-for="pack in filteredPacks" :key="pack.dirName" class="pv-card" @click="showServerPacks ? openCachePack(pack.dirName) : openPack(pack.dirName)">
           <img v-if="pack.iconURI" :src="pack.iconURI" class="pv-card-icon" width="56" height="56" loading="lazy" decoding="async" />
           <div v-else class="pv-card-icon pv-card-placeholder">
             <i class="fa fa-box"></i>
@@ -1626,7 +1809,10 @@ watch(() => props.openPackReq, (req) => {
             <button v-if="hasScreens" class="pv-modal-menubtn" :class="{ active: viewerMode === 'ui' }" :title="viewerMode === 'ui' ? 'Back to texture viewer' : 'Open UI renderer'" @click="toggleUiPanel"><i class="fa fa-bars-staggered"></i></button>
             <button class="pv-modal-folder" @click="openFullscreen" title="Fullscreen preview"><i class="fa fa-expand"></i></button>
             <button class="pv-modal-folder" @click="openPackFolder" title="Open pack folder"><i class="fa fa-folder-open"></i></button>
-            <button class="pv-modal-delete" :class="{ confirming: confirmDelete }" @click="deletePack" :title="confirmDelete ? 'Click again to delete' : 'Delete pack'">
+            <button v-if="showServerPacks" class="pv-modal-folder" :class="{ 'pv-export-btn': true, 'pv-export-active': !exportingServer }" @click="exportSelectedServerPacks" :disabled="exportingServer" title="Export all visible server packs">
+              <i :class="exportingServer ? 'fa fa-circle-notch fa-spin' : 'fa fa-file-export'"></i>
+            </button>
+            <button v-if="!showServerPacks" class="pv-modal-delete" :class="{ confirming: confirmDelete }" @click="deletePack" :title="confirmDelete ? 'Click again to delete' : 'Delete pack'">
               <i :class="confirmDelete ? 'fa fa-triangle-exclamation' : 'fa fa-trash'"></i>
             </button>
             <button class="pv-modal-close" @click="closeModal"><i class="fa fa-xmark"></i></button>
@@ -1718,11 +1904,11 @@ watch(() => props.openPackReq, (req) => {
           <button class="pv-mat-btn pv-skin-btn" @click="triggerSkinUpload">
             <i class="fa fa-user-pen"></i> Change Skin
           </button>
-          <button class="pv-mat-btn pv-reload-btn" @click="reloadPack" title="Reload this pack from disk (sky, items, armor)">
+          <button class="pv-mat-btn pv-reload-btn" @click="showServerPacks ? reloadCachePack(selectedPack, serverPacksPath) : reloadPack()" title="Reload this pack from disk (sky, items, armor)">
             <i class="fa fa-rotate"></i> Reload
           </button>
           <span class="pv-mat-sep"></span>
-          <button class="pv-mat-btn" @click="showExportPopup = true" title="Export this pack as a .mcpack file">
+          <button v-if="!showServerPacks" class="pv-mat-btn" @click="showExportPopup = true" title="Export this pack as a .mcpack file">
             <i class="fa fa-file-export"></i> Export .mcpack
           </button>
         </div>
@@ -1792,7 +1978,7 @@ watch(() => props.openPackReq, (req) => {
           <button class="pv-mat-btn" :class="{ active: skinModel === 'slim' }" @click="skinModel = 'slim'"><i class="fa fa-person-dress"></i> Slim</button>
           <span class="pv-mat-sep"></span>
           <button class="pv-mat-btn pv-skin-btn" @click="triggerSkinUpload"><i class="fa fa-user-pen"></i> Change Skin</button>
-          <button class="pv-mat-btn pv-reload-btn" @click="reloadPack" title="Reload this pack from disk (sky, items, armor)"><i class="fa fa-rotate"></i></button>
+          <button class="pv-mat-btn pv-reload-btn" @click="showServerPacks ? reloadCachePack(selectedPack, serverPacksPath) : reloadPack()" title="Reload this pack from disk (sky, items, armor)"><i class="fa fa-rotate"></i></button>
         </div>
         <button class="pv-fs-btn pv-fs-close" @click="closeFullscreen" title="Close (Esc)"><i class="fa fa-xmark"></i></button>
       </div>
@@ -2170,7 +2356,8 @@ watch(() => props.openPackReq, (req) => {
 
 .pv-modal-folder,
 .pv-modal-delete,
-.pv-modal-close {
+.pv-modal-close,
+.pv-export-btn {
   width: 32px;
   height: 32px;
   border-radius: 8px;
@@ -2190,6 +2377,17 @@ watch(() => props.openPackReq, (req) => {
   background: var(--bg-hover-1);
   color: var(--text-primary);
   border-color: var(--border-focus);
+}
+
+.pv-export-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pv-export-btn:not(:disabled):hover {
+  background: var(--accent-active-bg);
+  color: var(--accent-light);
+  border-color: var(--accent);
 }
 
 .pv-modal-delete:hover {
