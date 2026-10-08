@@ -527,7 +527,6 @@ func (a *App) GetPackSkySubpackTextures(packName string, subpackName string) (Sk
 	return a.readSkyCubemap(cubemapDir, envDir), nil
 }
 
-
 func (a *App) GetPackItemTextures(packName string, material string) ([]ItemTexture, error) {
 	dir := a.getPackDir(packName)
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
@@ -729,6 +728,164 @@ func (a *App) GetPlayerSkinTexture(packName string) string {
 	}
 
 	return ""
+}
+
+func (a *App) GetPackMenuFiles(packName string) ([]string, error) {
+	dir := a.getPackDir(packName)
+	uiDir := filepath.Join(dir, "ui")
+	if st, err := os.Stat(uiDir); err != nil || !st.IsDir() {
+		return nil, nil
+	}
+
+	var files []string
+	err := filepath.Walk(uiDir, func(path string, info fs.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(info.Name()))
+		if ext != ".json" {
+			return nil
+		}
+		rel, _ := filepath.Rel(uiDir, path)
+		rel = filepath.ToSlash(rel)
+		files = append(files, rel)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func (a *App) GetPackMenuContent(packName string, filePath string) (string, error) {
+	dir := a.getPackDir(packName)
+	guard := filepath.Clean(filePath)
+	if strings.ContainsAny(guard, "/\\") || guard == "." || guard == ".." || strings.HasPrefix(guard, "..") {
+		return "", fmt.Errorf("invalid path")
+	}
+	contentPath := filepath.Join(dir, "ui", guard)
+	data, err := os.ReadFile(contentPath)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+type UiResource struct {
+	Path     string `json:"path"`
+	Content  string `json:"content"`
+	IsBinary bool   `json:"isBinary"`
+}
+
+var screenTypeRe = regexp.MustCompile(`"type"\s*:\s*"screen"`)
+
+func (a *App) PackHasUiScreens(packName string) bool {
+	dir := a.getPackDir(packName)
+	uiDir := filepath.Join(dir, "ui")
+	if st, err := os.Stat(uiDir); err != nil || !st.IsDir() {
+		return false
+	}
+
+	found := false
+	_ = filepath.Walk(uiDir, func(path string, info fs.FileInfo, err error) error {
+		if found {
+			return fs.SkipAll
+		}
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		if strings.ToLower(filepath.Ext(info.Name())) != ".json" {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		if screenTypeRe.Match(data) {
+			found = true
+		}
+		return nil
+	})
+	return found
+}
+
+var (
+	uiEagerRe = regexp.MustCompile(`(?i)^(ui/.+\.json|texts/.+|pack\.json)$`)
+	uiImageRe = regexp.MustCompile(`(?i)^textures/.+\.(png|tga|jpe?g)$`)
+	uiBytesRe = regexp.MustCompile(`(?i)^textures/(ui|gui)/`)
+)
+
+func (a *App) GetPackAllUiResources(packName string) ([]UiResource, error) {
+	dir := a.getPackDir(packName)
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		return nil, nil
+	}
+
+	var resources []UiResource
+	uiDefs := []string{}
+	err := filepath.Walk(dir, func(path string, info fs.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		rel, _ := filepath.Rel(dir, path)
+		rel = filepath.ToSlash(rel)
+
+		isEager := uiEagerRe.MatchString(rel)
+		isImg := uiImageRe.MatchString(rel)
+		if !isEager && !isImg {
+			return nil
+		}
+
+		// Text files (ui json, texts, pack.json) are staged eagerly.
+		if isEager {
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil
+			}
+			resources = append(resources, UiResource{
+				Path:    rel,
+				Content: string(data),
+			})
+			if strings.HasPrefix(rel, "ui/") && strings.HasSuffix(rel, ".json") && rel != "ui/_ui_defs.json" && rel != "ui/_global_variables.json" {
+				uiDefs = append(uiDefs, rel)
+			}
+			return nil
+		}
+
+		// Images: only ship bytes for ui/gui textures up front; the rest
+		// are registered as pending and fetched on demand via GetPackFileBytes.
+		res := UiResource{Path: rel, IsBinary: true}
+		if uiBytesRe.MatchString(rel) {
+			if data, readErr := os.ReadFile(path); readErr == nil {
+				res.Content = base64.StdEncoding.EncodeToString(data)
+			}
+		}
+		resources = append(resources, res)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(resources, func(i, j int) bool { return resources[i].Path < resources[j].Path })
+
+	// Packs commonly ship ui definitions without listing them in _ui_defs.json
+	// (SUBWAYRED's startup_screen.json is one). The renderer skips anything
+	// unregistered, so list every ui definition the pack ships. The defs file
+	// and the variables file are excluded: they are staged, but listing them
+	// makes the renderer treat variables as controls.
+	sort.Strings(uiDefs)
+	available := map[string]bool{}
+	for _, r := range resources {
+		available[r.Path] = true
+	}
+	for i := range resources {
+		if resources[i].Path == "ui/_ui_defs.json" {
+			resources[i].Content = string(rewriteUiDefs([]byte(resources[i].Content), available, uiDefs))
+			break
+		}
+	}
+	return resources, nil
 }
 
 func (a *App) GetDefaultSkin() string {

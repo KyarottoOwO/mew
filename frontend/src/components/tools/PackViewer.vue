@@ -4,7 +4,8 @@ import * as THREE from 'three'
 import { SkinView3d } from 'vue-skinview3d'
 import { IdleAnimation, WalkingAnimation } from 'vue-skinview3d/animations'
 import PackExporter from './PackExporter.vue'
-import { GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackArmorTextures, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPlayerSkinTexture, GetDefaultSkin, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug } from '../../../wailsjs/go/main/App'
+import JsonUiStage from './JsonUiStage.vue'
+import { GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackArmorTextures, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPlayerSkinTexture, GetDefaultSkin, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug, PackHasUiScreens } from '../../../wailsjs/go/main/App'
 import defaultSkinImg from '../../assets/default-skin.png'
 
 import { parseBedrockCodes } from '../../utils/formatCodes'
@@ -66,6 +67,18 @@ const pickerLoading = ref(false)
 const pickerSearch = ref('')
 let pickerObserver = null
 
+const hasScreens = ref(false)
+// Which panel the pack modal shows: the 3d texture viewer or the JSON-UI renderer.
+const viewerMode = ref('texture')
+
+function toggleUiPanel() {
+  if (viewerMode.value === 'ui') {
+    viewerMode.value = 'texture'
+    return
+  }
+  if (!selectedPack.value || !hasScreens.value) return
+  viewerMode.value = 'ui'
+}
 let viewerInstance = null
 
 const fullscreen = ref(false)
@@ -1218,20 +1231,26 @@ function closeModal() {
   pickerLoaded.clear()
   pickerSearch.value = ''
   showItemPicker.value = false
+  viewerMode.value = 'texture'
 }
 
 async function loadPackData(packName) {
   try {
+    hasScreens.value = false
     if (lastLoadedPack && lastLoadedPack !== packName) {
       invalidateSkyCache(lastLoadedPack)
       itemCache.delete(lastLoadedPack)
       invalidateTextureCache(lastLoadedPack)
     }
     lastLoadedPack = packName
-    const [info, skyTex] = await Promise.all([
+    const [info, skyTex, packHasScreens] = await Promise.all([
       GetPackPreviewInfo(packName),
       cachedTextureFetch(packName + '|sky', () => GetPackSkyTextures(packName)),
+      PackHasUiScreens(packName),
     ])
+    hasScreens.value = !!packHasScreens
+    // A pack without screens cannot use the renderer panel.
+    if (!hasScreens.value) viewerMode.value = 'texture'
     recordMem('stage:info')
     selectedPackInfo.value = info
     setLastSkyTex(skyTex)
@@ -1593,7 +1612,7 @@ watch(() => props.openPackReq, (req) => {
     </template>
 
     <div v-if="showModal" class="pv-modal-overlay" @click.self="closeModal">
-      <div class="pv-modal">
+      <div class="pv-modal" :class="{ 'pv-modal-wide': viewerMode === 'ui' }">
         <div class="pv-modal-head">
           <div class="pv-modal-pack">
             <img v-if="selectedPackInfo.iconURI" :src="selectedPackInfo.iconURI" class="pv-modal-icon" />
@@ -1604,6 +1623,7 @@ watch(() => props.openPackReq, (req) => {
           </div>
           <div class="pv-modal-actions">
             <button v-if="isDebug" class="pv-modal-skybtn" :class="{ active: showSkyDebug }" @click="showSkyDebug = !showSkyDebug" title="Sky debug"><i class="fa fa-cloud-sun"></i></button>
+            <button v-if="hasScreens" class="pv-modal-menubtn" :class="{ active: viewerMode === 'ui' }" :title="viewerMode === 'ui' ? 'Back to texture viewer' : 'Open UI renderer'" @click="toggleUiPanel"><i class="fa fa-bars-staggered"></i></button>
             <button class="pv-modal-folder" @click="openFullscreen" title="Fullscreen preview"><i class="fa fa-expand"></i></button>
             <button class="pv-modal-folder" @click="openPackFolder" title="Open pack folder"><i class="fa fa-folder-open"></i></button>
             <button class="pv-modal-delete" :class="{ confirming: confirmDelete }" @click="deletePack" :title="confirmDelete ? 'Click again to delete' : 'Delete pack'">
@@ -1613,7 +1633,7 @@ watch(() => props.openPackReq, (req) => {
           </div>
         </div>
 
-        <div class="pv-viewer-wrap">
+        <div v-show="viewerMode === 'texture'" class="pv-viewer-wrap">
           <div ref="modalContainer" class="pv-3d">
             <SkinView3d
               v-if="!fullscreen"
@@ -1672,7 +1692,9 @@ watch(() => props.openPackReq, (req) => {
           </div>
         </div>
 
-        <div class="pv-materials">
+        <JsonUiStage v-if="viewerMode === 'ui'" :pack="selectedPack" @close="viewerMode = 'texture'" />
+
+        <div v-show="viewerMode === 'texture'" class="pv-materials">
           <button v-for="m in materials" :key="m"
             class="pv-mat-btn" :class="{ active: selectedMaterial === m }"
             @click="applyArmor(selectedPack, m)">
@@ -1706,7 +1728,7 @@ watch(() => props.openPackReq, (req) => {
         </div>
         <input ref="skinFileInput" type="file" accept="image/png" class="pv-hidden-input" @change="onSkinFileChange" />
 
-        <div class="pv-items-section">
+        <div v-show="viewerMode === 'texture'" class="pv-items-section">
           <div class="pv-items-grid">
             <div v-for="item in itemTextures" :key="item.name"
               class="pv-item-card">
@@ -2093,6 +2115,14 @@ watch(() => props.openPackReq, (req) => {
   flex-direction: column;
   gap: 0.75rem;
   padding: 1rem;
+}
+
+/* The UI renderer needs room and a definite height so its own panels can size
+   against it; the default modal is a small scrolling card. */
+.pv-modal-wide {
+  max-width: min(1500px, 95vw);
+  height: 90vh;
+  overflow: hidden;
 }
 
 .pv-modal-head {
@@ -2529,7 +2559,35 @@ watch(() => props.openPackReq, (req) => {
 .pv-modal-skybtn.active {
   background: var(--accent-active-bg);
   color: var(--accent-light);
-  border-color: var(--accent-light);
+  border-color: var(--accent);
+}
+
+.pv-modal-menubtn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-body);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.15s;
+  font-size: 14px;
+}
+
+.pv-modal-menubtn:hover {
+  background: var(--bg-hover-2);
+  color: var(--text-primary);
+  border-color: var(--border-focus);
+}
+
+.pv-modal-menubtn.active {
+  background: var(--accent-active-bg);
+  color: var(--accent-light);
+  border-color: var(--accent);
 }
 
 .pv-sky-debug {
