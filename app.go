@@ -12,39 +12,39 @@ import (
 )
 
 type App struct {
-	ctx             context.Context
-	cancelFolder    context.CancelFunc
-	settings        map[string]interface{}
-	debug           bool
-	portMu          sync.Mutex
-	activePort      bool
-	discordStop      chan struct{}
-	discordConns     map[string]net.Conn
-	discordState     string
-	discordDetails   string
-	discordMu        sync.Mutex
-	discordIpcMu     sync.Mutex
-	discordStart     time.Time
-	thumbCache       sync.Map
+	ctx            context.Context
+	cancelFolder   context.CancelFunc
+	settings       map[string]interface{}
+	debug          bool
+	portMu         sync.Mutex
+	activePort     bool
+	discordStop    chan struct{}
+	discordConns   map[string]net.Conn
+	discordState   string
+	discordDetails string
+	discordMu      sync.Mutex
+	discordIpcMu   sync.Mutex
+	discordStart   time.Time
+	thumbCache     sync.Map
 }
 
 func NewApp(debug bool) *App {
 	return &App{
 		debug: debug,
 		settings: map[string]interface{}{
-			"autoImport":            false,
-			"autoOpenFolder":        false,
-			"deleteOriginals":       false,
-			"deleteMcpack":          false,
-			"discordRPC":            true,
-			"customOutputDir":       "",
-			"manifestDescription":   "",
-			"resourcePacksPath":     "",
-			"portAllSkies":          false,
-			"skyPresets":            true,
-			"skyPresetNames":        []string{"starfield", "sky1", "sky2", "starfield02", "starfield03"},
-			"addPromoTexts":         false,
-			"recolorAutosave":       true,
+			"autoImport":          false,
+			"autoOpenFolder":      false,
+			"deleteOriginals":     false,
+			"deleteMcpack":        false,
+			"discordRPC":          true,
+			"customOutputDir":     "",
+			"manifestDescription": "",
+			"resourcePacksPath":   "",
+			"portAllSkies":        false,
+			"skyPresets":          true,
+			"skyPresetNames":      []string{"starfield", "sky1", "sky2", "starfield02", "starfield03"},
+			"addPromoTexts":       false,
+			"recolorAutosave":     true,
 		},
 		discordConns: map[string]net.Conn{},
 	}

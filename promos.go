@@ -9,13 +9,13 @@ var promoAssets embed.FS
 
 const (
 	promoLoadingMessagesFile = "loading_messages.json"
-	promoSplashesFile         = "splashes.json"
+	promoSplashesFile        = "splashes.json"
 )
 
 func promoFiles() (map[string][]byte, error) {
 	files := map[string][]byte{
 		promoLoadingMessagesFile: {},
-		promoSplashesFile:         {},
+		promoSplashesFile:        {},
 	}
 	for name := range files {
 		data, err := promoAssets.ReadFile("assets/" + name)
