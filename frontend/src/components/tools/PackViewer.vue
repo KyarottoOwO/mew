@@ -1188,6 +1188,12 @@ function openPackFolder() {
   OpenFolder(basePath + sep + selectedPack.value)
 }
 
+function openCachePackFolder() {
+  if (!serverPacksPath.value || !selectedPack.value) return
+  const sep = serverPacksPath.value.includes('\\') ? '\\' : '/'
+  OpenFolder(serverPacksPath.value + sep + selectedPack.value)
+}
+
 async function deletePack() {
   if (!selectedPack.value) return
   if (!confirmDelete.value) {
@@ -1755,7 +1761,7 @@ watch(() => props.openPackReq, (req) => {
           <span v-if="searchQuery" class="pv-search-clear" @click="searchQuery = ''"><i class="fa fa-xmark"></i></span>
         </div>
         <div class="pv-toolbar-right">
-          <button class="pv-sort-btn" :class="{ active: showServerPacks }" @click="showServerPacks = !showServerPacks" title="Toggle server packs from cache">
+          <button class="pv-sort-btn" :class="{ active: showServerPacks }" @click="showServerPacks = !showServerPacks; closeModal()" title="Toggle server packs from cache">
             <i class="fa fa-server"></i> Server Packs
           </button>
           <span class="pv-count">{{ filteredPacks.length }} pack{{ filteredPacks.length !== 1 ? 's' : '' }}</span>
