@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, watch } from 'vue'
 import { GetSettings, SaveSettings, SelectDirectory, DetectMinecraftPaths, ClearCache, OpenMewDataDir } from '../../../wailsjs/go/main/App'
+import { BACKGROUNDS, DEFAULT_BACKGROUND_ID, BACKGROUND_SETTING_KEY, normalizeBackgroundId, backgroundSwatchStyle } from '../../utils/backgrounds'
 
 const autoImport = ref(false)
 const autoOpenFolder = ref(false)
@@ -17,6 +18,7 @@ const recolorAutosave = ref(true)
 const resourcePacksPath = ref('')
 const packCachePath = ref('')
 const theme = ref('dark')
+const viewerBackground = ref(DEFAULT_BACKGROUND_ID)
 
 const detectedPaths = ref([])
 const selectedMinecraftPath = ref('')
@@ -43,6 +45,7 @@ async function loadSettings() {
     resourcePacksPath.value = s.resourcePacksPath || ''
     packCachePath.value = s.packCachePath || ''
     theme.value = s.theme || 'dark'
+    viewerBackground.value = normalizeBackgroundId(s[BACKGROUND_SETTING_KEY])
 
     detectedPaths.value = await DetectMinecraftPaths()
 
@@ -91,6 +94,7 @@ async function persistSettings() {
       resourcePacksPath: finalPath,
       packCachePath: packCachePath.value,
       theme: theme.value,
+      [BACKGROUND_SETTING_KEY]: viewerBackground.value,
     }
     await SaveSettings(data)
 
@@ -102,6 +106,11 @@ async function persistSettings() {
 }
 
 function onThemeChange() {
+  persistSettings()
+}
+
+function setViewerBackground(id) {
+  viewerBackground.value = normalizeBackgroundId(id)
   persistSettings()
 }
 
@@ -211,6 +220,19 @@ onMounted(loadSettings)
             <option value="dark">Dark</option>
             <option value="light">Light</option>
           </select>
+        </div>
+
+        <div class="setting-row setting-row-block">
+          <div class="setting-info">
+            <span class="setting-label">Viewer Background</span>
+            <span class="setting-desc">Sky shown in the Pack Viewer when a pack ships no sky of its own. A pack's own sky always takes precedence.</span>
+          </div>
+          <div class="bg-swatches">
+            <button v-for="bg in BACKGROUNDS" :key="bg.id"
+              class="bg-swatch" :class="{ active: viewerBackground === bg.id }"
+              :style="backgroundSwatchStyle(bg)" :title="bg.name"
+              @click="setViewerBackground(bg.id)"></button>
+          </div>
         </div>
 
         <div class="setting-row">
@@ -618,5 +640,31 @@ onMounted(loadSettings)
 
 .text-input::placeholder {
   color: var(--text-faint);
+}
+
+.bg-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.bg-swatch {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 8px;
+  border: 2px solid var(--border-strong);
+  cursor: pointer;
+  transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
+}
+
+.bg-swatch:hover {
+  transform: translateY(-1px);
+  border-color: var(--accent-light);
+}
+
+.bg-swatch.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 </style>

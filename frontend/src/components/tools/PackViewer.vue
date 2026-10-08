@@ -3,9 +3,10 @@ import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from
 import * as THREE from 'three'
 import PackExporter from './PackExporter.vue'
 import JsonUiStage from './JsonUiStage.vue'
-import { GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPackSkinThumbnails, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug, PackHasUiScreens, RenderSkin, RenderSkinFrames, RenderSkinGIF, ListAnimations, RenderItem, RenderItemSpin, SaveRender } from '../../../wailsjs/go/main/App'
+import { GetSettings, SaveSettings, GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPackSkinThumbnails, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug, PackHasUiScreens, RenderSkin, RenderSkinFrames, RenderSkinGIF, ListAnimations, RenderItem, RenderItemSpin, SaveRender } from '../../../wailsjs/go/main/App'
 
 import { parseBedrockCodes } from '../../utils/formatCodes'
+import { BACKGROUNDS, DEFAULT_BACKGROUND_ID, BACKGROUND_SETTING_KEY, normalizeBackgroundId, backgroundById, backgroundSwatchStyle as swatchStyle } from '../../utils/backgrounds'
 import { EventsOn } from '../../../wailsjs/runtime/runtime'
 const props = defineProps({ active: Boolean, openPackReq: { type: Object, default: null } })
 
@@ -167,6 +168,39 @@ const ANIM_MAX_SIZE = 512
 
 const skySubpacks = ref([])
 const skySlider = ref(0)
+
+// Built-in backgrounds come from utils/backgrounds so the Settings tab offers
+// the same list. A pack's own cubemap or subpack sky always takes precedence.
+const BACKGROUND_PREFIX = 'bg:'
+const backgroundId = ref(DEFAULT_BACKGROUND_ID)
+// The choice is an app setting (Settings -> Background) so the settings page
+// and this viewer always agree. Loaded fresh whenever a pack is opened.
+async function loadBackgroundSetting() {
+  try {
+    const s = await GetSettings()
+    backgroundId.value = normalizeBackgroundId(s && s[BACKGROUND_SETTING_KEY])
+  } catch {
+    backgroundId.value = DEFAULT_BACKGROUND_ID
+  }
+}
+async function persistBackgroundSetting(id) {
+  try {
+    const s = (await GetSettings()) || {}
+    s[BACKGROUND_SETTING_KEY] = id
+    await SaveSettings(s)
+  } catch {}
+}
+// True when the loaded pack ships a sky of its own (a base cubemap or
+// subpacks). The viewer then shows that and ignores the background choice.
+const packHasSky = ref(false)
+
+function backgroundKey() { return BACKGROUND_PREFIX + backgroundId.value }
+function currentBackgroundPreset() {
+  return backgroundById(backgroundId.value)
+}
+function hasCubemapFaces(tex) {
+  return !!(tex && (tex.cubemap0 || tex.cubemap1 || tex.cubemap2 || tex.cubemap3 || tex.cubemap4 || tex.cubemap5))
+}
 
 const SKY_FACE_META = [
   { key: 0, label: 'Left',     threeFace: '-X', bedrock: 'cubemap_0' },
@@ -371,31 +405,62 @@ function loadImageToCanvas(uri) {
   })
 }
 
-async function generateSkyCubemap(skyTex, cap) {
-  function makeCanvas(s, draw) {
-    const c = document.createElement('canvas')
-    c.width = s; c.height = s
-    draw(c.getContext('2d'), s)
-    return c
-  }
-
-  function skyGradient(ctx, s, topColor, bottomColor) {
-    const g = ctx.createLinearGradient(0, 0, 0, s)
-    g.addColorStop(0, topColor)
-    g.addColorStop(1, bottomColor)
+// One face of a preset background: a vertical gradient from the zenith through
+// the horizon to the nadir on the sides, flat zenith on the top and flat nadir
+// on the bottom. `stars` sprinkles points, as vanilla's night skies have.
+function backgroundFace(size, preset, kind) {
+  const zenith = preset.zenith || preset.solid || '#3a7cc2'
+  const horizon = preset.horizon || preset.solid || '#bcd9f2'
+  const nadir = preset.nadir || preset.solid || '#6f8f6a'
+  const c = document.createElement('canvas')
+  c.width = size; c.height = size
+  const ctx = c.getContext('2d')
+  if (kind === 'top') {
+    ctx.fillStyle = zenith
+  } else if (kind === 'bottom') {
+    ctx.fillStyle = nadir
+  } else {
+    const g = ctx.createLinearGradient(0, 0, 0, size)
+    g.addColorStop(0, zenith)
+    g.addColorStop(0.55, horizon)
+    g.addColorStop(1, nadir)
     ctx.fillStyle = g
-    ctx.fillRect(0, 0, s, s)
   }
+  ctx.fillRect(0, 0, size, size)
+  if (preset.stars && kind !== 'bottom') {
+    for (let i = 0; i < 140; i++) {
+      ctx.globalAlpha = 0.25 + Math.random() * 0.7
+      ctx.fillStyle = '#ffffff'
+      ctx.beginPath()
+      ctx.arc(Math.random() * size, Math.random() * size, 0.4 + Math.random() * 1.3, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    ctx.globalAlpha = 1
+  }
+  return c
+}
 
-  function fallbackFace(s, topColor, bottomColor) {
-    return makeCanvas(s, (ctx, sz) => {
-      skyGradient(ctx, sz, topColor, bottomColor)
-      for (let i = 0; i < 30; i++) {
-        ctx.fillStyle = `rgba(255,255,255,${0.2 + Math.random() * 0.6})`
-        ctx.fillRect(Math.random() * sz, Math.random() * sz, 1 + Math.random() * 2, 1 + Math.random() * 2)
-      }
-    })
-  }
+// A whole preset background as a cube, in three.js face order (+X, -X, +Y, -Y,
+// +Z, -Z). Built at 512 so stars stay crisp when stretched over the cube.
+function buildBackgroundCubemap(preset, cap) {
+  const size = (cap && Number.isFinite(cap)) ? Math.min(512, cap) : 512
+  const faces = [
+    backgroundFace(size, preset, 'side'),
+    backgroundFace(size, preset, 'side'),
+    backgroundFace(size, preset, 'top'),
+    backgroundFace(size, preset, 'bottom'),
+    backgroundFace(size, preset, 'side'),
+    backgroundFace(size, preset, 'side'),
+  ]
+  const cube = new THREE.CubeTexture(faces)
+  cube.needsUpdate = true
+  return cube
+}
+
+async function generateSkyCubemap(skyTex, cap) {
+  // The background choice is carried as a pseudo-texture, so the same build
+  // path and cache serve it as serve a pack's cubemap.
+  if (skyTex && skyTex.background) return buildBackgroundCubemap(skyTex.background, cap)
 
   // Three.js CubeTexture order: +X, -X, +Y, -Y, +Z, -Z
   // Bedrock: 0=left, 1=north(behind player), 2=right, 3=behind camera, 4=top, 5=bottom
@@ -446,13 +511,16 @@ async function generateSkyCubemap(skyTex, cap) {
   const native = Math.max(...faceDims, 128)
   const size = (cap && Number.isFinite(cap)) ? Math.min(native, cap) : native
 
+  // Faces the pack does not supply fall back to the chosen background, so a
+  // partial cubemap still reads as a sky.
+  const bg = currentBackgroundPreset()
   const fallbacks = [
-    fallbackFace(size, '#0e1e3d', '#3a7cc2'),
-    fallbackFace(size, '#0c1a35', '#3a7cc2'),
-    fallbackFace(size, '#070d1f', '#1a4a8a'),
-    fallbackFace(size, '#7ec8e3', '#dceefb'),
-    fallbackFace(size, '#10203f', '#2e6db3'),
-    fallbackFace(size, '#0b1630', '#2e6db3'),
+    backgroundFace(size, bg, 'side'),   // +X
+    backgroundFace(size, bg, 'side'),   // -X
+    backgroundFace(size, bg, 'top'),    // +Y
+    backgroundFace(size, bg, 'bottom'), // -Y
+    backgroundFace(size, bg, 'side'),   // +Z
+    backgroundFace(size, bg, 'side'),   // -Z
   ]
 
   const cubeFaces = faceMap.map((img, i) => {
@@ -1507,6 +1575,7 @@ function closeModal() {
   currentSkyKey = null
   skySubpacks.value = []
   skySlider.value = 0
+  packHasSky.value = false
   itemTextures.value = []
   itemCache.clear()
   clearSkyCache()
@@ -1542,16 +1611,27 @@ async function loadPackData(packName) {
     if (!hasScreens.value) viewerMode.value = 'texture'
     recordMem('stage:info')
     selectedPackInfo.value = info
-    setLastSkyTex(skyTex)
-    const cubemap = await skyBuild(packName + '#base', skyTex)
-    recordMem('stage:sky')
-    currentSkyKey = skyKey(packName + '#base')
-    setSkyOnViewers(cubemap)
     textureCache.delete(packName + '|sky')
-    await loadItems(packName)
-    recordMem('stage:items')
+    // Which sky? The pack's own wins: a base cubemap, or a subpack when the
+    // base has none. Only a pack with no sky at all falls back to the user's
+    // chosen background. The background lives in the app settings.
+    await loadBackgroundSetting()
     skySubpacks.value = (await GetPackSkySubpacks(packName)) || []
     skySlider.value = 0
+    packHasSky.value = hasCubemapFaces(skyTex) || skySubpacks.value.length > 0
+    if (hasCubemapFaces(skyTex)) {
+      setLastSkyTex(skyTex)
+      const cubemap = await skyBuild(packName + '#base', skyTex)
+      currentSkyKey = skyKey(packName + '#base')
+      setSkyOnViewers(cubemap)
+    } else if (skySubpacks.value.length > 0) {
+      await applySkySubpack(0)
+    } else {
+      await applyBackground()
+    }
+    recordMem('stage:sky')
+    await loadItems(packName)
+    recordMem('stage:items')
     await applyPlayerAppearance()
     recordMem('load pack')
     armIdleGC()
@@ -1598,6 +1678,26 @@ async function applySkySubpack(idx) {
   currentSkyKey = skyKey(selectedPack.value + '#' + idx)
   setSkyOnViewers(cubemap)
   recordMem('sky subpack')
+}
+
+// Show the user's chosen background. A pack's own sky takes precedence, so
+// this does nothing while one is loaded - the menu is disabled for that case.
+async function applyBackground() {
+  if (packHasSky.value) return
+  const preset = currentBackgroundPreset()
+  const key = backgroundKey()
+  setLastSkyTex({ background: preset })
+  const cubemap = await skyBuild(key, lastSkyTex)
+  currentSkyKey = skyKey(key)
+  setSkyOnViewers(cubemap)
+  recordMem('background ' + preset.id)
+}
+
+function setBackground(id) {
+  if (packHasSky.value) return
+  backgroundId.value = normalizeBackgroundId(id)
+  persistBackgroundSetting(backgroundId.value)
+  return applyBackground()
 }
 
 async function loadItems(packName) {
@@ -2012,6 +2112,19 @@ watch(() => props.openPackReq, (req) => {
             <input type="range" class="pv-skybar-slider" min="0" :max="skySubpacks.length - 1" step="1"
               v-model.number="skySlider" @input="skySlider = Number(skySlider); applySkySubpack(Number(skySlider))" />
           </div>
+          <div v-else class="pv-skybar pv-bgbar" :class="{ 'pv-bgbar-locked': packHasSky }">
+            <div class="pv-skybar-head">
+              <div class="pv-skybar-label"><i class="fa fa-image"></i> Background</div>
+              <div v-if="packHasSky" class="pv-skybar-current"><i class="fa fa-lock"></i> Pack sky</div>
+              <div v-else class="pv-skybar-current">{{ currentBackgroundPreset().name }}</div>
+            </div>
+            <div class="pv-bgbar-options">
+              <button v-for="bg in BACKGROUNDS" :key="bg.id"
+                class="pv-bg-swatch" :class="{ active: backgroundId === bg.id }"
+                :style="swatchStyle(bg)" :disabled="packHasSky" :title="bg.name"
+                @click="setBackground(bg.id)"></button>
+            </div>
+          </div>
         </div>
 
         <JsonUiStage v-if="viewerMode === 'ui'" :pack="selectedPack" @close="viewerMode = 'texture'" />
@@ -2145,6 +2258,19 @@ watch(() => props.openPackReq, (req) => {
           </div>
           <input type="range" class="pv-skybar-slider" min="0" :max="skySubpacks.length - 1" step="1"
             v-model.number="skySlider" @input="skySlider = Number(skySlider); applySkySubpack(Number(skySlider))" />
+        </div>
+        <div v-else class="pv-skybar pv-fs-skybar pv-bgbar" :class="{ 'pv-bgbar-locked': packHasSky }">
+          <div class="pv-skybar-head">
+            <div class="pv-skybar-label"><i class="fa fa-image"></i> Background</div>
+            <div v-if="packHasSky" class="pv-skybar-current"><i class="fa fa-lock"></i> Pack sky</div>
+            <div v-else class="pv-skybar-current">{{ currentBackgroundPreset().name }}</div>
+          </div>
+          <div class="pv-bgbar-options">
+            <button v-for="bg in BACKGROUNDS" :key="bg.id"
+              class="pv-bg-swatch" :class="{ active: backgroundId === bg.id }"
+              :style="swatchStyle(bg)" :disabled="packHasSky" :title="bg.name"
+              @click="setBackground(bg.id)"></button>
+          </div>
         </div>
       </div>
       <div class="pv-fs-bar">
@@ -3415,6 +3541,39 @@ watch(() => props.openPackReq, (req) => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.pv-bgbar-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.pv-bg-swatch {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 8px;
+  border: 2px solid var(--border-subtle);
+  cursor: pointer;
+  transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
+}
+
+.pv-bg-swatch:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: var(--accent-light);
+}
+
+.pv-bg-swatch.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.pv-bg-swatch:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.pv-bgbar-locked .pv-skybar-current i { margin-right: 0.25rem; }
 
 .pv-fs-overlay {
   position: fixed;
