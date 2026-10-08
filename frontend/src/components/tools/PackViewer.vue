@@ -6,7 +6,7 @@ import JsonUiStage from './JsonUiStage.vue'
 import { GetSettings, SaveSettings, GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPackSkinThumbnails, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug, PackHasUiScreens, RenderSkin, RenderSkinFrames, RenderSkinGIF, ListAnimations, RenderItem, RenderItemSpin, SaveRender } from '../../../wailsjs/go/main/App'
 
 import { parseBedrockCodes } from '../../utils/formatCodes'
-import { BACKGROUNDS, DEFAULT_BACKGROUND_ID, BACKGROUND_SETTING_KEY, normalizeBackgroundId, backgroundById, backgroundSwatchStyle as swatchStyle } from '../../utils/backgrounds'
+import { BACKGROUNDS, DEFAULT_BACKGROUND_ID, BACKGROUND_SETTING_KEY, DEFAULT_SKY_PACK_KEY, DEFAULT_SKY_SUBPACK_KEY, normalizeBackgroundId, backgroundById, backgroundSwatchStyle as swatchStyle } from '../../utils/backgrounds'
 import { EventsOn } from '../../../wailsjs/runtime/runtime'
 const props = defineProps({ active: Boolean, openPackReq: { type: Object, default: null } })
 
@@ -167,7 +167,8 @@ const SKIN_PIXEL_RATIO = 1.5
 const ANIM_MAX_SIZE = 512
 
 const skySubpacks = ref([])
-const skySlider = ref(0)
+const defaultSkyPack = ref('')
+const defaultSkySubpack = ref('')
 
 // Built-in backgrounds come from utils/backgrounds so the Settings tab offers
 // the same list. A pack's own cubemap or subpack sky always takes precedence.
@@ -179,8 +180,12 @@ async function loadBackgroundSetting() {
   try {
     const s = await GetSettings()
     backgroundId.value = normalizeBackgroundId(s && s[BACKGROUND_SETTING_KEY])
+    defaultSkyPack.value = (s && typeof s[DEFAULT_SKY_PACK_KEY] === 'string') ? s[DEFAULT_SKY_PACK_KEY] : ''
+    defaultSkySubpack.value = (s && typeof s[DEFAULT_SKY_SUBPACK_KEY] === 'string') ? s[DEFAULT_SKY_SUBPACK_KEY] : ''
   } catch {
     backgroundId.value = DEFAULT_BACKGROUND_ID
+    defaultSkyPack.value = ''
+    defaultSkySubpack.value = ''
   }
 }
 async function persistBackgroundSetting(id) {
@@ -1684,6 +1689,29 @@ async function applySkySubpack(idx) {
 // this does nothing while one is loaded - the menu is disabled for that case.
 async function applyBackground() {
   if (packHasSky.value) return
+  // Try custom default sky pack first
+  if (defaultSkyPack.value) {
+    try {
+      const tex = await cachedTextureFetch(defaultSkyPack.value + (defaultSkySubpack.value ? '|' + defaultSkySubpack.value : '') + '|defaultsky', async () => {
+        if (defaultSkySubpack.value) {
+          return await GetPackSkySubpackTextures(defaultSkyPack.value, defaultSkySubpack.value)
+        } else {
+          return await GetPackSkyTextures(defaultSkyPack.value)
+        }
+      })
+      if (hasCubemapFaces(tex)) {
+        setLastSkyTex(tex)
+        const key = defaultSkyPack.value + (defaultSkySubpack.value ? '#' + defaultSkySubpack.value : '#default')
+        const cubemap = await skyBuild(key, tex)
+        currentSkyKey = skyKey(key)
+        setSkyOnViewers(cubemap)
+        recordMem('background custom sky')
+        return
+      }
+    } catch (e) {
+      if (isDebug.value) console.warn('Failed to load default sky pack:', e)
+    }
+  }
   const preset = currentBackgroundPreset()
   const key = backgroundKey()
   setLastSkyTex({ background: preset })

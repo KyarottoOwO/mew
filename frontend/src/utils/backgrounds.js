@@ -18,6 +18,8 @@ export const DEFAULT_BACKGROUND_ID = BACKGROUNDS[0].id
 
 // The app settings key the choice is stored under.
 export const BACKGROUND_SETTING_KEY = 'viewerBackground'
+export const DEFAULT_SKY_PACK_KEY = 'defaultSkyPack'
+export const DEFAULT_SKY_SUBPACK_KEY = 'defaultSkySubpack'
 
 export function normalizeBackgroundId(id) {
   return BACKGROUNDS.some(b => b.id === id) ? id : DEFAULT_BACKGROUND_ID

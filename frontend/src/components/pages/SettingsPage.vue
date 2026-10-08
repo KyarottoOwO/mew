@@ -19,6 +19,10 @@ const resourcePacksPath = ref('')
 const packCachePath = ref('')
 const theme = ref('dark')
 const viewerBackground = ref(DEFAULT_BACKGROUND_ID)
+const defaultSkyPack = ref('')
+const defaultSkySubpack = ref('')
+const installedPacks = ref([])
+const skySubpacks = ref([])
 
 const detectedPaths = ref([])
 const selectedMinecraftPath = ref('')
@@ -46,6 +50,12 @@ async function loadSettings() {
     packCachePath.value = s.packCachePath || ''
     theme.value = s.theme || 'dark'
     viewerBackground.value = normalizeBackgroundId(s[BACKGROUND_SETTING_KEY])
+    defaultSkyPack.value = s[DEFAULT_SKY_PACK_KEY] || ''
+    defaultSkySubpack.value = s[DEFAULT_SKY_SUBPACK_KEY] || ''
+    await loadInstalledPacks()
+    await loadSkySubpacks()
+    defaultSkyPack.value = s.defaultSkyPack || ''
+    defaultSkySubpack.value = s.defaultSkySubpack || ''
 
     detectedPaths.value = await DetectMinecraftPaths()
 
@@ -95,6 +105,8 @@ async function persistSettings() {
       packCachePath: packCachePath.value,
       theme: theme.value,
       [BACKGROUND_SETTING_KEY]: viewerBackground.value,
+      defaultSkyPack: defaultSkyPack.value,
+      defaultSkySubpack: defaultSkySubpack.value,
     }
     await SaveSettings(data)
 
@@ -109,9 +121,40 @@ function onThemeChange() {
   persistSettings()
 }
 
-function setViewerBackground(id) {
-  viewerBackground.value = normalizeBackgroundId(id)
-  persistSettings()
+async function loadInstalledPacks() {
+  try {
+    installedPacks.value = await GetInstalledPacks() || []
+  } catch (e) {
+    console.error('Failed to load installed packs:', e)
+    installedPacks.value = []
+  }
+}
+
+async function loadSkySubpacks() {
+  if (!defaultSkyPack.value) {
+    skySubpacks.value = []
+    return
+  }
+  try {
+    skySubpacks.value = await GetPackSkySubpacks(defaultSkyPack.value) || []
+    if (defaultSkySubpack.value && !skySubpacks.value.find(sp => sp.folderName === defaultSkySubpack.value)) {
+      defaultSkySubpack.value = ''
+      await persistSettings()
+    }
+  } catch (e) {
+    console.error('Failed to load sky subpacks:', e)
+    skySubpacks.value = []
+  }
+}
+
+async function onDefaultSkyPackChange() {
+  defaultSkySubpack.value = ''
+  await loadSkySubpacks()
+  await persistSettings()
+}
+
+async function onDefaultSkySubpackChange() {
+  await persistSettings()
 }
 
 watch([portAllSkies, skyPresets], ([all, presets]) => {
@@ -233,6 +276,28 @@ onMounted(loadSettings)
               :style="backgroundSwatchStyle(bg)" :title="bg.name"
               @click="setViewerBackground(bg.id)"></button>
           </div>
+        </div>
+
+        <div class="setting-row setting-row-block">
+          <div class="setting-info">
+            <span class="setting-label">Default Sky Pack</span>
+            <span class="setting-desc">Optional: Use a custom pack's sky as fallback when a pack has no sky (e.g. Reimagined SkyCubemaps).</span>
+          </div>
+          <select v-model="defaultSkyPack" class="select-input" @change="onDefaultSkyPackChange">
+            <option value="">None (use gradient presets)</option>
+            <option v-for="p in installedPacks" :key="p.dirName" :value="p.dirName">{{ p.displayName || p.dirName }}</option>
+          </select>
+        </div>
+
+        <div v-if="defaultSkyPack && skySubpacks.length > 0" class="setting-row setting-row-block">
+          <div class="setting-info">
+            <span class="setting-label">Default Sky Subpack</span>
+            <span class="setting-desc">Select which subpack's cubemap to use.</span>
+          </div>
+          <select v-model="defaultSkySubpack" class="select-input" @change="onDefaultSkySubpackChange">
+            <option value="">First available</option>
+            <option v-for="sp in skySubpacks" :key="sp.folderName" :value="sp.folderName">{{ sp.name || sp.folderName }}</option>
+          </select>
         </div>
 
         <div class="setting-row">
