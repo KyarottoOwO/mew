@@ -66,7 +66,7 @@ const viewPitch = ref(10)
 const viewZoom = ref(1.5) // bedrock-skin-go's Margin: smaller is closer
 
 // Animation: "" is a still; otherwise a motion or example animation name.
-const ANIM_FPS = 15
+const ANIM_FPS = 20
 const animationName = ref('')
 const animations = ref([])
 const animFrames = ref([])
@@ -518,7 +518,26 @@ function playerSize() {
   return Math.round(clamp(min * dpr, 64, 1024))
 }
 
-function setPlayerSrc(uri) {
+// Decode a data URI before showing it, so swapping frames never flashes.
+const decodedSrc = new Set()
+function decodeSrc(uri) {
+  if (!uri || decodedSrc.has(uri)) return Promise.resolve()
+  return new Promise(resolve => {
+    const img = new Image()
+    img.onload = () => {
+      decodedSrc.add(uri)
+      if (decodedSrc.size > 400) decodedSrc.clear()
+      resolve()
+    }
+    img.onerror = () => resolve()
+    img.src = uri
+  })
+}
+
+async function setPlayerSrc(uri) {
+  if (!uri) return
+  await decodeSrc(uri)
+  if (destroyed) return
   modalPlayerSrc.value = uri
   fsPlayerSrc.value = uri
 }
@@ -562,9 +581,16 @@ function showAnimationFrame() {
   setPlayerSrc(frames[animIndex.value % frames.length])
 }
 
+let animFetching = false
+let animPending = false
+let animLastFetch = 0
+
 async function loadAnimationFramesNow() {
   const name = animationName.value
   if (!name) return
+  if (animFetching) { animPending = true; return }
+  animFetching = true
+  animLastFetch = performance.now()
   const token = ++animToken
   try {
     const frames = await RenderSkinFrames(currentRequest(320, name))
@@ -573,22 +599,30 @@ async function loadAnimationFramesNow() {
     const wasEmpty = animFrames.value.length === 0
     animFrames.value = frames
     if (animIndex.value >= frames.length) animIndex.value = 0
+    // Warm the browser cache so the first swap has no blank flash.
+    frames.forEach(decodeSrc)
     if (wasEmpty) showAnimationFrame()
   } catch (e) {
     if (isDebug.value) console.error('RenderSkinFrames failed:', e)
+  } finally {
+    animFetching = false
+    if (animPending) { animPending = false; loadAnimationFramesNow() }
   }
 }
 
+// Reload frames for the current camera at most every 250 ms, so a long drag
+// keeps playing and continuously catches up instead of waiting for the drag
+// to stop.
 function scheduleAnimationFrames() {
   if (animDebounce) clearTimeout(animDebounce)
-  animDebounce = setTimeout(loadAnimationFramesNow, 150)
+  const wait = Math.max(0, 250 - (performance.now() - animLastFetch))
+  animDebounce = setTimeout(loadAnimationFramesNow, wait)
 }
 
 function startAnimationLoop() {
   stopAnimationLoop()
   if (!animationName.value) return
   animTimer = setInterval(() => {
-    if (dragging || dragMoved) return
     const len = animFrames.value.length
     if (!len) return
     animIndex.value = (animIndex.value + 1) % len
