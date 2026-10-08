@@ -583,17 +583,15 @@ function showAnimationFrame() {
 
 let animFetching = false
 let animPending = false
-let animLastFetch = 0
 
 async function loadAnimationFramesNow() {
   const name = animationName.value
   if (!name) return
   if (animFetching) { animPending = true; return }
   animFetching = true
-  animLastFetch = performance.now()
   const token = ++animToken
   try {
-    const frames = await RenderSkinFrames(currentRequest(320, name))
+    const frames = await RenderSkinFrames(currentRequest(256, name))
     if (token !== animToken || destroyed) return
     if (!frames || !frames.length) return
     const wasEmpty = animFrames.value.length === 0
@@ -610,13 +608,12 @@ async function loadAnimationFramesNow() {
   }
 }
 
-// Reload frames for the current camera at most every 250 ms, so a long drag
-// keeps playing and continuously catches up instead of waiting for the drag
-// to stop.
+// Reload frames for the current camera once the rotation settles. During a
+// drag the existing frames keep playing; re-rendering every frame mid-drag is
+// far too expensive and stutters.
 function scheduleAnimationFrames() {
   if (animDebounce) clearTimeout(animDebounce)
-  const wait = Math.max(0, 250 - (performance.now() - animLastFetch))
-  animDebounce = setTimeout(loadAnimationFramesNow, wait)
+  animDebounce = setTimeout(loadAnimationFramesNow, 220)
 }
 
 function startAnimationLoop() {
