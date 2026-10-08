@@ -1607,6 +1607,72 @@ function closeItemPicker() {
   scheduleIdleGC(null, 'picker close')
 }
 
+// --- item 3D dialog ---------------------------------------------------------
+const showItem3D = ref(false)
+const item3DName = ref('')
+const item3DLoading = ref(false)
+const item3DError = ref('')
+const item3DFront = ref('')
+const item3DIso = ref('')
+const item3DSpin = ref('')
+
+async function openItem3D(name) {
+  item3DName.value = name
+  item3DLoading.value = true
+  item3DError.value = ''
+  item3DFront.value = ''
+  item3DIso.value = ''
+  item3DSpin.value = ''
+  showItem3D.value = true
+  await nextTick()
+  loadItem3D()
+  recordMem('item 3d open')
+}
+
+async function loadItem3D() {
+  const pack = selectedPack.value
+  const item = item3DName.value
+  if (!pack || !item) return
+  try {
+    const [front, iso, spin] = await Promise.all([
+      RenderItem(pack, item, 'front', 256),
+      RenderItem(pack, item, 'iso', 256),
+      RenderItemSpin(pack, item, 256),
+    ])
+    item3DFront.value = front
+    item3DIso.value = iso
+    item3DSpin.value = spin
+  } catch (e) {
+    item3DError.value = String(e?.message || e)
+  } finally {
+    item3DLoading.value = false
+  }
+}
+
+function closeItem3D() {
+  showItem3D.value = false
+  item3DName.value = ''
+  item3DFront.value = ''
+  item3DIso.value = ''
+  item3DSpin.value = ''
+  item3DError.value = ''
+}
+
+function itemFileName(name, label) {
+  const pack = (selectedPack.value || 'mew').replace(/[^A-Za-z0-9._-]/g, '_')
+  return pack + '-' + name.replace(/[^A-Za-z0-9._-]/g, '_') + '-' + label
+}
+
+async function saveItemPNG(uri, label) {
+  try { await SaveRender(uri, itemFileName(item3DName.value, label + '.png')) }
+  catch (e) { console.error('Save item PNG failed:', e) }
+}
+
+async function saveItemSpin() {
+  try { await SaveRender(item3DSpin.value, itemFileName(item3DName.value, 'spin.gif')) }
+  catch (e) { console.error('Save item spin failed:', e) }
+}
+
 async function selectPickerItem(name) {
   const gridNames = itemTextures.value.map(i => i.name)
   if (gridNames.includes(name)) return
@@ -1904,6 +1970,9 @@ watch(() => props.openPackReq, (req) => {
                 <button class="pv-item-remove" @click.stop="removeItem(item.name)">
                   <i class="fa fa-xmark"></i>
                 </button>
+                <button class="pv-item-3d" @click.stop="openItem3D(item.name)" title="See this item in 3D">
+                  <i class="fa fa-cube"></i>
+                </button>
               </div>
               <span class="pv-item-label">{{ formatName(item.name) }}</span>
             </div>
@@ -1996,6 +2065,36 @@ watch(() => props.openPackReq, (req) => {
             <div v-if="itemTextures.some(i => i.name === item)" class="pv-picker-item-check">
               <i class="fa fa-check"></i>
             </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="showItem3D" class="pv-picker-overlay" @click.self="closeItem3D">
+      <div class="pv-item3d" @click.stop>
+        <div class="pv-picker-head">
+          <h3 class="pv-picker-title">3D: {{ formatName(item3DName) }}</h3>
+          <button class="pv-modal-close" @click="closeItem3D"><i class="fa fa-xmark"></i></button>
+        </div>
+        <div v-if="item3DLoading" class="pv-picker-loading">
+          <div class="pv-spinner"></div>
+        </div>
+        <div v-else-if="item3DError" class="pv-item3d-error">{{ item3DError }}</div>
+        <div v-else class="pv-item3d-body">
+          <div class="pv-item3d-cell">
+            <div class="pv-item3d-frame"><img :src="item3DFront" class="pv-item3d-img" alt="Front view" /></div>
+            <span class="pv-item3d-cap">Front</span>
+            <button class="pv-mat-btn" @click="saveItemPNG(item3DFront, 'front')"><i class="fa fa-image"></i> Save PNG</button>
+          </div>
+          <div class="pv-item3d-cell">
+            <div class="pv-item3d-frame"><img :src="item3DIso" class="pv-item3d-img" alt="Isometric view" /></div>
+            <span class="pv-item3d-cap">Iso</span>
+            <button class="pv-mat-btn" @click="saveItemPNG(item3DIso, 'iso')"><i class="fa fa-image"></i> Save PNG</button>
+          </div>
+          <div class="pv-item3d-cell">
+            <div class="pv-item3d-frame"><img :src="item3DSpin" class="pv-item3d-img" alt="Spinning view" /></div>
+            <span class="pv-item3d-cap">Spin</span>
+            <button class="pv-mat-btn" @click="saveItemSpin"><i class="fa fa-film"></i> Save GIF</button>
           </div>
         </div>
       </div>
@@ -2608,7 +2707,29 @@ watch(() => props.openPackReq, (req) => {
   line-height: 1;
 }
 
-.pv-item-card:hover .pv-item-remove {
+.pv-item-3d {
+  position: absolute;
+  top: -4px;
+  left: -4px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: none;
+  background: #2980b9;
+  color: #fff;
+  font-size: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+  padding: 0;
+  line-height: 1;
+}
+
+.pv-item-card:hover .pv-item-remove,
+.pv-item-card:hover .pv-item-3d {
   opacity: 1;
 }
 
@@ -2680,6 +2801,63 @@ watch(() => props.openPackReq, (req) => {
   padding: 3rem;
   color: var(--text-dim);
   font-size: 0.85rem;
+}
+
+.pv-item3d {
+  background: var(--bg-body);
+  border: 1px solid var(--border-default);
+  border-radius: 14px;
+  width: 90vw;
+  max-width: 560px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.pv-item3d-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  justify-content: center;
+  padding: 1rem;
+  overflow: auto;
+}
+
+.pv-item3d-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.pv-item3d-frame {
+  width: 160px;
+  height: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-hover-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.pv-item3d-img {
+  max-width: 100%;
+  max-height: 100%;
+  image-rendering: pixelated;
+}
+
+.pv-item3d-cap {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.pv-item3d-error {
+  color: #f44;
+  padding: 1rem;
+  text-align: center;
 }
 
 .pv-picker-search {
