@@ -713,8 +713,14 @@ func (a *App) GetPackItemTexture(packName string, name string) (string, error) {
 }
 
 func (a *App) GetPlayerSkinTexture(packName string) string {
-	dir := a.getPackDir(packName)
+	if p := findPackSkin(a.getPackDir(packName)); p != "" {
+		return a.readImageAsDataURI(p)
+	}
+	return ""
+}
 
+// findPackSkin returns the path of the player skin a pack overrides, or "".
+func findPackSkin(dir string) string {
 	candidates := []string{
 		filepath.Join(dir, "textures", "entity", "player", "steve.png"),
 		filepath.Join(dir, "textures", "entity", "player.png"),
@@ -723,10 +729,9 @@ func (a *App) GetPlayerSkinTexture(packName string) string {
 
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
-			return a.readImageAsDataURI(p)
+			return p
 		}
 	}
-
 	return ""
 }
 

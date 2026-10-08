@@ -1,15 +1,16 @@
 module github.com/kyarottoOwO/mew
 
-go 1.26.0
+go 1.26.5
 
 require (
+	github.com/THEBOSS9345/bedrock-skin-go v0.2.2
 	github.com/google/uuid v1.6.0
 	github.com/nwaples/rardecode/v2 v2.2.5
 	github.com/swim-services/swim_porter v0.16.3
 	github.com/trapcodeio/go-strip-json-comments v1.0.11
 	github.com/wailsapp/wails/v2 v2.13.0
 	github.com/woozymasta/tga v1.3.2
-	golang.org/x/image v0.40.0
+	golang.org/x/image v0.44.0
 	golang.org/x/sys v0.47.0
 	gopkg.in/natefinch/npipe.v2 v2.0.0-20160621034901-c1b8fa8bdcce
 )
@@ -19,6 +20,8 @@ require (
 	github.com/bep/debounce v1.2.1 // indirect
 	github.com/crazy3lf/colorconv v1.2.0 // indirect
 	github.com/disintegration/imaging v1.6.2 // indirect
+	github.com/fogleman/fauxgl v0.0.0-20250110135958-abf826acbbbd // indirect
+	github.com/fogleman/simplify v0.0.0-20170216171241-d32f302d5046 // indirect
 	github.com/gameparrot/fastpng v0.0.0-20250305185850-d72e123a2123 // indirect
 	github.com/gameparrot/tga v1.0.0 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
@@ -47,6 +50,6 @@ require (
 	github.com/wailsapp/mimetype v1.4.1 // indirect
 	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/net v0.54.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 )

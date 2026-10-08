@@ -5,7 +5,7 @@ import { SkinView3d } from 'vue-skinview3d'
 import { IdleAnimation, WalkingAnimation } from 'vue-skinview3d/animations'
 import PackExporter from './PackExporter.vue'
 import JsonUiStage from './JsonUiStage.vue'
-import { GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackArmorTextures, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPlayerSkinTexture, GetDefaultSkin, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug, PackHasUiScreens } from '../../../wailsjs/go/main/App'
+import { GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackArmorTextures, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPlayerSkinTexture, GetPackSkinThumbnails, GetDefaultSkin, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug, PackHasUiScreens } from '../../../wailsjs/go/main/App'
 import defaultSkinImg from '../../assets/default-skin.png'
 
 import { parseBedrockCodes } from '../../utils/formatCodes'
@@ -922,6 +922,24 @@ async function thumbifyPackIcons(list) {
   }
 }
 
+// Packs that override the player skin get a small 3D render of it on their
+// card, drawn by the backend. Fetched in batches so the grid fills in quickly.
+async function loadSkinThumbs(list) {
+  const BATCH = 16
+  for (let i = 0; i < list.length; i += BATCH) {
+    const batch = list.slice(i, i + BATCH)
+    try {
+      const thumbs = await GetPackSkinThumbnails(batch.map(p => p.dirName).filter(Boolean))
+      for (const p of batch) {
+        if (thumbs && thumbs[p.dirName]) p.skinThumb = thumbs[p.dirName]
+      }
+    } catch (e) {
+      console.error('Failed to load skin thumbnails:', e)
+      return
+    }
+  }
+}
+
 async function toThumb(dataURI, size = 64) {
   try {
     const img = await loadImage(dataURI)
@@ -1150,8 +1168,10 @@ async function loadAllPacks() {
     packList.value = (list || []).map(p => ({
       ...p,
       dirName: p.dirName || '',
+      skinThumb: '',
     }))
     thumbifyPackIcons(packList.value)
+    loadSkinThumbs(packList.value)
   } catch (e) {
     console.error('Failed to load packs:', e)
   }
@@ -1598,9 +1618,12 @@ watch(() => props.openPackReq, (req) => {
 
       <div v-else class="pv-grid">
         <div v-for="pack in filteredPacks" :key="pack.dirName" class="pv-card" @click="openPack(pack.dirName)">
-          <img v-if="pack.iconURI" :src="pack.iconURI" class="pv-card-icon" width="56" height="56" loading="lazy" decoding="async" />
-          <div v-else class="pv-card-icon pv-card-placeholder">
-            <i class="fa fa-box"></i>
+          <div class="pv-card-art">
+            <img v-if="pack.iconURI" :src="pack.iconURI" class="pv-card-icon" width="56" height="56" loading="lazy" decoding="async" />
+            <div v-else class="pv-card-icon pv-card-placeholder">
+              <i class="fa fa-box"></i>
+            </div>
+            <img v-if="pack.skinThumb" :src="pack.skinThumb" class="pv-card-skin" width="48" height="48" title="This pack changes the player skin" alt="Pack skin" decoding="async" />
           </div>
           <div class="pv-card-info">
             <span class="pv-card-name" v-html="parseBedrockCodes(pack.name || pack.dirName)"></span>
@@ -2052,6 +2075,22 @@ watch(() => props.openPackReq, (req) => {
   border-radius: 10px;
   object-fit: cover;
   border: 1px solid var(--border-subtle);
+}
+
+.pv-card-art {
+  position: relative;
+  display: flex;
+}
+
+.pv-card-skin {
+  position: absolute;
+  right: -30px;
+  bottom: -6px;
+  width: 48px;
+  height: 48px;
+  image-rendering: pixelated;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.35));
+  pointer-events: none;
 }
 
 .pv-card-placeholder {
