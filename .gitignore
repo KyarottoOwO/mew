@@ -14,6 +14,7 @@
 !*.vue
 !*.png
 !*.ico
+!*.wasm
 !go.sum
 !go.work
 !go.work.sum

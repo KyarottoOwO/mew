@@ -1,0 +1,7 @@
+{
+  "screen": "example.example_screen",
+  "layers": {
+    "base": ["manifest.json", "ui/_global_variables.json", "ui/_ui_defs.json", "ui/example_common.json", "ui/example_screen.json"],
+    "overlay": ["manifest.json", "ui/example_screen.json"]
+  }
+}
