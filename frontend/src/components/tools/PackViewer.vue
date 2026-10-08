@@ -6,6 +6,7 @@ import JsonUiStage from './JsonUiStage.vue'
 import { GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPackSkinThumbnails, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug, PackHasUiScreens, RenderSkin, RenderSkinFrames, RenderSkinGIF, ListAnimations, RenderItem, RenderItemSpin, SaveRender } from '../../../wailsjs/go/main/App'
 
 import { parseBedrockCodes } from '../../utils/formatCodes'
+import { EventsOn } from '../../../wailsjs/runtime/runtime'
 const props = defineProps({ active: Boolean, openPackReq: { type: Object, default: null } })
 
 const packList = ref([])
@@ -28,7 +29,7 @@ const handTools = ['sword', 'pickaxe', 'axe', 'shovel', 'hoe']
 const handToolLabels = { sword: 'Sword', pickaxe: 'Pickaxe', axe: 'Axe', shovel: 'Shovel', hoe: 'Hoe' }
 const handFlat = ['bread', 'apple', 'golden_apple']
 const handFlatLabels = { bread: 'Bread', apple: 'Apple', golden_apple: 'Golden Apple' }
-const HELD_TIER = { cloth: 'wooden', chain: 'stone', iron: 'iron', gold: 'golden', diamond: 'diamond', netherite: 'netherite', naked: 'diamond' }
+const HELD_TIER = { cloth: 'stone', chain: 'stone', iron: 'iron', gold: 'gold', diamond: 'diamond', netherite: 'netherite', naked: 'diamond' }
 const rightHand = ref(HAND_EMPTY)
 const leftHand = ref(HAND_EMPTY)
 const emptyAdjust = () => ({ offsetX: 0, offsetY: 0, offsetZ: 0, rotX: 0, rotY: 0, rotZ: 0, scale: 1 })
@@ -51,7 +52,7 @@ const ADJUST_SLIDERS = [
 const itemTextures = ref([])
 const itemCache = new Map()
 
-const materials = ['diamond', 'gold', 'iron', 'chain', 'cloth', 'netherite', 'naked']
+const materials = ['naked', 'cloth', 'chain', 'iron', 'gold', 'diamond', 'netherite']
 const materialLabels = {
   diamond: 'Diamond', gold: 'Gold', iron: 'Iron',
   chain: 'Chainmail', cloth: 'Leather', netherite: 'Netherite', naked: 'Naked'
@@ -66,11 +67,19 @@ const viewPitch = ref(10)
 const viewZoom = ref(1.5) // bedrock-skin-go's Margin: smaller is closer
 
 // Animation: "" is a still; otherwise a motion or example animation name.
-const ANIM_FPS = 20
+// 30 FPS is the backend's cap; the motion is sampled from a continuous curve,
+// so the extra frames only smooth it out (the clip keeps its real duration).
+const ANIM_FPS = 30
 const animationName = ref('')
 const animations = ref([])
 const animFrames = ref([])
 const animIndex = ref(0)
+// animFramesFresh is whether the loaded frames match the current camera.
+// animFramesFresh == false means the still path must keep drawing frames until
+// the settled set arrives; cameraStamp changes with the camera so an in-flight
+// load can tell it went stale.
+let animFramesFresh = false
+let cameraStamp = 0
 let animTimer = null
 let animToken = 0
 let animDebounce = null
@@ -81,12 +90,19 @@ let renderToken = 0
 let renderInFlight = false
 let renderAgain = false
 let destroyed = false
+let vanillaRenderReadyHandler = null
 let dragging = false
 let dragMoved = false
 let inertia = null
 
 const customSkinURI = ref('')
 const skinFileInput = ref(null)
+// When true, the viewer draws the user's uploaded skin instead of the selected
+// pack's own player skin. Set when they use "Change Skin" and remembered, so
+// picking a skin visibly works even on packs that ship one.
+const SKIN_OVERRIDE_KEY = 'mew.pv.skinOverride'
+const skinOverride = ref(false)
+try { skinOverride.value = localStorage.getItem(SKIN_OVERRIDE_KEY) === '1' } catch {}
 const modalContainer = ref(null)
 const isDebug = ref(false)
 
@@ -142,6 +158,12 @@ const IDLE_GC_MS = 10000
 
 // Cap the 3D renderer's pixel ratio to bound GPU/JS memory on HiDPI displays.
 const SKIN_PIXEL_RATIO = 1.5
+
+// Cap the size used for animations. The whole clip is preloaded at this size and
+// a rotating animation draws its stills at the same size, so sharpness never
+// changes between turning the model and letting it loop. Bounds the cost of a
+// long clip (idle is 80 frames).
+const ANIM_MAX_SIZE = 512
 
 const skySubpacks = ref([])
 const skySlider = ref(0)
@@ -485,7 +507,7 @@ function handRequest(value, adjust) {
   return { item: handItemName(value), adjust: handAdjust(adjust) }
 }
 
-function currentRequest(size, animation = '') {
+function currentRequest(size, animation = '', frame = 0) {
   return {
     pack: selectedPack.value || '',
     model: skinModel.value === 'slim' ? 'slim' : skinModel.value === 'default' ? 'wide' : 'auto',
@@ -498,7 +520,9 @@ function currentRequest(size, animation = '') {
     camera: { yaw: viewYaw.value, pitch: viewPitch.value, fov: FOV, margin: viewZoom.value },
     size,
     hideSkin: equipmentOnly.value,
+    overrideSkin: skinOverride.value,
     animation,
+    frame,
     fps: ANIM_FPS,
   }
 }
@@ -516,6 +540,13 @@ function playerSize() {
   }
   const dpr = Math.min(window.devicePixelRatio || 1, SKIN_PIXEL_RATIO)
   return Math.round(clamp(min * dpr, 64, 1024))
+}
+
+// animationSize is the render size for animated views. Still poses render at the
+// full playerSize; animations use the same capped size for both the stills drawn
+// while the camera moves and the preloaded loop, so quality is consistent.
+function animationSize() {
+  return Math.min(playerSize(), ANIM_MAX_SIZE)
 }
 
 // Decode a data URI before showing it, so swapping frames never flashes.
@@ -543,11 +574,23 @@ async function setPlayerSrc(uri) {
 }
 
 async function renderPlayerStill() {
-  const half = dragging || dragMoved
-  const size = half ? Math.max(64, Math.round(playerSize() / 2)) : playerSize()
+  // Never drop resolution while turning the model. A still pose renders at the
+  // full playerSize; an animation uses the same size as its preloaded loop so
+  // the image does not get softer when the clip starts looping.
+  const size = animationName.value ? animationSize() : playerSize()
   const token = ++renderToken
+  // While the camera moves - or its frame set is still loading - an animation
+  // is drawn one frame at a time from its prepared set: a single cheap render
+  // keeps the model turning with the hand and still animating, and because the
+  // frame is framed by the animation's shared camera, whole-body motion keeps
+  // its place.
+  const req = currentRequest(size)
+  if (animationName.value) {
+    req.animation = animationName.value
+    req.frame = animIndex.value
+  }
   try {
-    const uri = await RenderSkin(currentRequest(size))
+    const uri = await RenderSkin(req)
     if (token !== renderToken || destroyed) return
     setPlayerSrc(uri)
   } catch (e) {
@@ -555,8 +598,9 @@ async function renderPlayerStill() {
   }
 }
 
-function schedulePlayerRender() {
-  if (animationName.value) { scheduleAnimationFrames(); return }
+// pumpPlayerStill renders one still now, coalescing calls that arrive while a
+// render is already in flight.
+function pumpPlayerStill() {
   if (renderInFlight) { renderAgain = true; return }
   renderInFlight = true
   ;(async () => {
@@ -568,14 +612,26 @@ function schedulePlayerRender() {
   })()
 }
 
+function schedulePlayerRender() {
+  // A settled camera with current frames reloads the whole set and loops it
+  // locally; anything else takes the cheap single-still path.
+  if (animationName.value && !dragging && !dragMoved) { scheduleAnimationFrames(); return }
+  pumpPlayerStill()
+}
+
 function refreshPlayer() {
-  if (animationName.value) scheduleAnimationFrames()
-  else schedulePlayerRender()
+  // An appearance change makes the loaded frames stale too: the still path
+  // draws the new look until the matching set arrives.
+  if (animationName.value) animFramesFresh = false
+  schedulePlayerRender()
 }
 
 // Animation frames are fetched once per camera/pose change, then cycled
 // locally at ANIM_FPS.
 function showAnimationFrame() {
+  // While the camera moves - or its frame set is stale - the still path owns
+  // the image; the loop must not overwrite it with frames from the old camera.
+  if (dragging || dragMoved || !animFramesFresh) return
   const frames = animFrames.value
   if (!frames.length) return
   setPlayerSrc(frames[animIndex.value % frames.length])
@@ -590,16 +646,22 @@ async function loadAnimationFramesNow() {
   if (animFetching) { animPending = true; return }
   animFetching = true
   const token = ++animToken
+  const stamp = cameraStamp
   try {
-    const frames = await RenderSkinFrames(currentRequest(256, name))
+    const frames = await RenderSkinFrames(currentRequest(animationSize(), name))
     if (token !== animToken || destroyed) return
     if (!frames || !frames.length) return
-    const wasEmpty = animFrames.value.length === 0
     animFrames.value = frames
     if (animIndex.value >= frames.length) animIndex.value = 0
     // Warm the browser cache so the first swap has no blank flash.
     frames.forEach(decodeSrc)
-    if (wasEmpty) showAnimationFrame()
+    // These frames only match the current camera if it did not move while they
+    // rendered; otherwise the next settle loads them again. Until then the
+    // still path keeps the animation going.
+    if (stamp === cameraStamp) {
+      animFramesFresh = true
+      showAnimationFrame()
+    }
   } catch (e) {
     if (isDebug.value) console.error('RenderSkinFrames failed:', e)
   } finally {
@@ -608,12 +670,13 @@ async function loadAnimationFramesNow() {
   }
 }
 
-// Reload frames for the current camera once the rotation settles. During a
-// drag the existing frames keep playing; re-rendering every frame mid-drag is
-// far too expensive and stutters.
+// Reload frames for the current camera once the rotation settles. The current
+// frames stay in memory and the still path keeps drawing them until the
+// matching set arrives, so the animation never pauses between the drag and the
+// new frames.
 function scheduleAnimationFrames() {
   if (animDebounce) clearTimeout(animDebounce)
-  animDebounce = setTimeout(loadAnimationFramesNow, 220)
+  animDebounce = setTimeout(loadAnimationFramesNow, 120)
 }
 
 function startAnimationLoop() {
@@ -621,9 +684,12 @@ function startAnimationLoop() {
   if (!animationName.value) return
   animTimer = setInterval(() => {
     const len = animFrames.value.length
-    if (!len) return
-    animIndex.value = (animIndex.value + 1) % len
-    showAnimationFrame()
+    if (len) animIndex.value = (animIndex.value + 1) % len
+    // While following the camera (or waiting for its frame set), draw one still
+    // per tick: the animation keeps playing even if the hand is briefly still,
+    // and never freezes waiting for the settled set.
+    if (dragging || dragMoved || !animFramesFresh) { pumpPlayerStill(); return }
+    if (len) showAnimationFrame()
   }, Math.round(1000 / ANIM_FPS))
 }
 
@@ -634,6 +700,7 @@ function stopAnimationLoop() {
 async function setAnimation(name) {
   animationName.value = name || ''
   animIndex.value = 0
+  animFramesFresh = false
   if (!animationName.value) {
     stopAnimationLoop()
     animFrames.value = []
@@ -771,14 +838,14 @@ function setupSkyInteraction(v) {
       const d = pinchDist()
       if (lastDist > 0 && d > 0) viewZoom.value = clamp(viewZoom.value * (lastDist / d), 0.6, 3)
       lastDist = d
-      dragMoved = true
+      cameraChanged()
       schedulePlayerRender()
       return
     }
     const dx = e.clientX - lastX
     const dy = e.clientY - lastY
     if (!dragMoved && Math.abs(dx) + Math.abs(dy) < 2) return
-    dragMoved = true
+    cameraChanged()
     dragging = true
     viewYaw.value += dx * 0.3
     viewPitch.value = clamp(viewPitch.value + dy * 0.3, -60, 60)
@@ -808,6 +875,7 @@ function setupSkyInteraction(v) {
   el.addEventListener('wheel', (e) => {
     e.preventDefault()
     viewZoom.value = clamp(viewZoom.value + e.deltaY * 0.0015, 0.6, 3)
+    markCameraMoving()
     schedulePlayerRender()
   }, { passive: false })
 }
@@ -819,6 +887,7 @@ function startInertia(vx, vy) {
     if (Math.abs(vx) < 0.08 && Math.abs(vy) < 0.08) { inertia = null; finishDrag(); return }
     viewYaw.value += vx
     viewPitch.value = clamp(viewPitch.value + vy, -60, 60)
+    cameraChanged()
     renderAllSkies()
     schedulePlayerRender()
     inertia = requestAnimationFrame(step)
@@ -830,9 +899,40 @@ function cancelInertia() {
   if (inertia) { cancelAnimationFrame(inertia); inertia = null }
 }
 
+// cameraChanged records that the camera moved: the loaded frames no longer
+// match it, so the still path takes over until a settle reloads them. The stamp
+// lets an in-flight frame load tell it went stale.
+function cameraChanged() {
+  dragMoved = true
+  animFramesFresh = false
+  cameraStamp++
+}
+
+// settleCamera marks the camera as briefly still-moving: while it is, the
+// player is drawn one still per move; once it settles, the animation reloads
+// its frames for the final angle.
+let cameraSettleTimer = null
+function settleCamera(delay) {
+  if (cameraSettleTimer) clearTimeout(cameraSettleTimer)
+  cameraSettleTimer = setTimeout(() => {
+    if (dragging || inertia) return
+    dragMoved = false
+    if (!animationName.value) { schedulePlayerRender(); return }
+    // Frames for the angle the user stopped at are loaded on settle; until
+    // then the still path keeps animating, so there is no pause.
+    if (animFramesFresh) return
+    scheduleAnimationFrames()
+  }, delay)
+}
+
+function markCameraMoving() {
+  cameraChanged()
+  settleCamera(150)
+}
+
 function finishDrag() {
   dragging = false
-  setTimeout(() => { if (!dragging) { dragMoved = false; schedulePlayerRender() } }, 150)
+  settleCamera(150)
 }
 
 const filteredPickerItems = computed(() => {
@@ -1379,6 +1479,7 @@ async function openPack(packName) {
   stopAnimationLoop()
   animationName.value = ''
   animFrames.value = []
+  animFramesFresh = false
   showModal.value = true
   await nextTick()
   ensureSkyView('modal')
@@ -1401,6 +1502,7 @@ function closeModal() {
   fsViewerInstance = null
   animationName.value = ''
   animFrames.value = []
+  animFramesFresh = false
   setLastSkyTex(null)
   currentSkyKey = null
   skySubpacks.value = []
@@ -1536,6 +1638,12 @@ function formatName(name) {
 
 function triggerSkinUpload() { skinFileInput.value?.click() }
 
+function setSkinOverride(on) {
+  skinOverride.value = on
+  try { localStorage.setItem(SKIN_OVERRIDE_KEY, on ? '1' : '0') } catch {}
+  refreshPlayer()
+}
+
 async function onSkinFileChange(e) {
   const file = e.target.files?.[0]
   if (!file) return
@@ -1543,7 +1651,7 @@ async function onSkinFileChange(e) {
   reader.onload = async () => {
     customSkinURI.value = reader.result
     try { await SaveDefaultSkin(reader.result) } catch (err) { console.error('Failed to save skin:', err) }
-    refreshPlayer()
+    setSkinOverride(true)
   }
   reader.readAsDataURL(file)
   e.target.value = ''
@@ -1742,6 +1850,10 @@ onMounted(async () => {
   loadAnimations()
   await loadAllPacks()
   window.addEventListener('resize', onFsResize)
+  // The backend prefetches the renderer's vanilla textures in the background.
+  // When any arrive, redraw: a viewer that opened early may be showing a
+  // placeholder for a texture that is now on disk.
+  vanillaRenderReadyHandler = EventsOn('vanillaRenderReady', () => refreshPlayer())
   if (isDebug.value && showMemPanel.value) startMemSampler()
   recordMem('mounted')
   startGCWatchdog()
@@ -1749,6 +1861,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   destroyed = true
+  if (vanillaRenderReadyHandler) { vanillaRenderReadyHandler(); vanillaRenderReadyHandler = null }
   stopGCWatchdog()
   if (gcTimer) { clearTimeout(gcTimer); gcTimer = null }
   stopMemSampler()
@@ -1946,6 +2059,9 @@ watch(() => props.openPackReq, (req) => {
           <span class="pv-mat-sep"></span>
           <button class="pv-mat-btn pv-skin-btn" @click="triggerSkinUpload">
             <i class="fa fa-user-pen"></i> Change Skin
+          </button>
+          <button v-if="skinOverride" class="pv-mat-btn pv-reload-btn" @click="setSkinOverride(false)" title="Show the pack's own skin again">
+            <i class="fa fa-rotate-left"></i> Pack Skin
           </button>
           <button class="pv-mat-btn pv-reload-btn" @click="reloadPack" title="Reload this pack from disk">
             <i class="fa fa-rotate"></i> Reload
@@ -2531,16 +2647,17 @@ watch(() => props.openPackReq, (req) => {
 .pv-3d canvas { display: block; }
 
 /* The player is a transparent bedrock-skin-go render laid over the sky
-   canvas and centred in the square that fits the viewer. */
+   canvas and centred in the square that fits the viewer. object-fit keeps the
+   displayed size fixed however many pixels a still or frame was rendered at,
+   so releasing a drag does not change the apparent zoom. */
 .pv-player-img {
   position: absolute;
   inset: 0;
   margin: auto;
   z-index: 1;
-  max-width: 100%;
-  max-height: 100%;
-  width: auto;
-  height: auto;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
   pointer-events: none;
   image-rendering: auto;
 }

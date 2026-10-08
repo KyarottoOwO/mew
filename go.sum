@@ -1,7 +1,7 @@
 git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3 h1:N3IGoHHp9pb6mj1cbXbuaSXV/UMKwmbKLf53nQmtqMA=
 git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3/go.mod h1:QtOLZGz8olr4qH2vWK0QH0w0O4T9fEIjMuWpKUsH7nc=
-github.com/THEBOSS9345/bedrock-skin-go v0.2.3 h1:FH8mvODb5POuzJy/f/6mhWQjAUZvvURp9TuAKLivw7A=
-github.com/THEBOSS9345/bedrock-skin-go v0.2.3/go.mod h1:a+r5d52ukgPDuj4q5LxuD+OUeN3eeRLIq1lyGsrpddo=
+github.com/THEBOSS9345/bedrock-skin-go v0.2.4 h1:/kPKiTH5A+S30dBgaRoK3qbDrhHiSpXKd1nWvVwIRxU=
+github.com/THEBOSS9345/bedrock-skin-go v0.2.4/go.mod h1:a+r5d52ukgPDuj4q5LxuD+OUeN3eeRLIq1lyGsrpddo=
 github.com/bep/debounce v1.2.1 h1:v67fRdBA9UQu2NhLFXrSg0Brw7CexQekrBwDMM8bzeY=
 github.com/bep/debounce v1.2.1/go.mod h1:H8yggRPQKLUhUoqrJC1bO2xNya7vanpDl7xR3ISbCJ0=
 github.com/crazy3lf/colorconv v1.2.0 h1:UM7kSZWnwFMGiC+PpYrjxQSOd6sEyWb+dRKKTd3KslA=

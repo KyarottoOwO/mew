@@ -27,6 +27,7 @@ type App struct {
 	discordStart   time.Time
 	thumbCache     sync.Map
 	renderCache    *renderLRU
+	framesCache    *framesCache
 }
 
 func NewApp(debug bool) *App {
@@ -49,6 +50,7 @@ func NewApp(debug bool) *App {
 		},
 		discordConns: map[string]net.Conn{},
 		renderCache:  newRenderLRU(64),
+		framesCache:  &framesCache{},
 	}
 }
 
@@ -60,6 +62,9 @@ func (a *App) startup(ctx context.Context) {
 		log.Println("[startup] App context initialized")
 	}
 	a.startDiscordRPC()
+	// Warm the renderer's vanilla textures in the background, so equipping an
+	// item or armor the first time does not wait on a download.
+	go a.prefetchVanillaRenderAssets()
 }
 
 func (a *App) logDebug(msg string) {

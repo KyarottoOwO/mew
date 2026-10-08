@@ -141,6 +141,47 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+// TestGoldenAppleUsesBedrockTextureName pins the golden apple's real Bedrock
+// sprite name. Bedrock ships it as "apple_golden.png"; asking vanilla for
+// "golden_apple.png" 404s, so the item used to silently not appear.
+func TestGoldenAppleUsesBedrockTextureName(t *testing.T) {
+	a := testApp(t)
+	root := a.getResourcePacksPath()
+	writeFile(t, filepath.Join(vanillaCacheDir(), "textures", "items", "apple_golden.png"), solidPNG(t, 16, 16, color.NRGBA{255, 255, 0, 255}))
+
+	if got := a.itemTexture("", "golden_apple"); got == nil || !isYellow(got) {
+		t.Fatal("golden_apple should fall back to vanilla apple_golden.png")
+	}
+	// A pack that names the sprite the friendly way still wins.
+	writeFile(t, filepath.Join(root, "pack", "textures", "items", "golden_apple.png"), solidPNG(t, 16, 16, color.NRGBA{255, 0, 0, 255}))
+	if got := a.itemTexture("pack", "golden_apple"); got == nil || !isRed(got) {
+		t.Fatal("pack's golden_apple.png should be preferred")
+	}
+	// And a pack using Bedrock's own name works too.
+	writeFile(t, filepath.Join(root, "bedrockPack", "textures", "items", "apple_golden.png"), solidPNG(t, 16, 16, color.NRGBA{0, 0, 255, 255}))
+	if got := a.itemTexture("bedrockPack", "golden_apple"); got == nil || !isBlue(got) {
+		t.Fatal("pack's apple_golden.png should be found via the alias")
+	}
+}
+
+// TestBedrockTierNamesNormalized: Bedrock names the tiers wood_* and gold_*,
+// not Java's wooden_*/golden_*. A request for the latter must still resolve.
+func TestBedrockTierNamesNormalized(t *testing.T) {
+	a := testApp(t)
+	writeFile(t, filepath.Join(vanillaCacheDir(), "textures", "items", "gold_hoe.png"), solidPNG(t, 16, 16, color.NRGBA{255, 255, 0, 255}))
+	writeFile(t, filepath.Join(vanillaCacheDir(), "textures", "items", "wood_axe.png"), solidPNG(t, 16, 16, color.NRGBA{0, 255, 0, 255}))
+
+	if got := a.itemTexture("", "golden_hoe"); got == nil || !isYellow(got) {
+		t.Fatal("golden_hoe should resolve to vanilla gold_hoe.png")
+	}
+	if got := a.itemTexture("", "wooden_axe"); got == nil || !isGreen(got) {
+		t.Fatal("wooden_axe should resolve to vanilla wood_axe.png")
+	}
+	if got := a.itemTexture("", "gold_hoe"); got == nil || !isYellow(got) {
+		t.Fatal("the canonical gold_hoe should fetch directly")
+	}
+}
+
 func TestItemTextureUnknownNameNeverFetches(t *testing.T) {
 	a := testApp(t)
 	requests := offlineVanilla(t)
@@ -179,6 +220,71 @@ func TestRenderSkinBasics(t *testing.T) {
 		if got := decodeDataURI(t, uri).Bounds().Dx(); got != 64 {
 			t.Fatalf("%+v: size %d, want 64", req, got)
 		}
+	}
+}
+
+func TestRenderSkinOverrideUsesDefaultSkin(t *testing.T) {
+	a := testApp(t)
+	root := a.getResourcePacksPath()
+	// The pack ships its own player skin, and the user has uploaded a default
+	// one. "Change Skin" must be able to override the pack's, and reverting must
+	// bring it back.
+	writeFile(t, filepath.Join(root, "withSkin", "textures", "entity", "steve.png"), solidPNG(t, 64, 64, color.NRGBA{0, 0, 255, 255}))
+	writeFile(t, defaultSkinPath(), solidPNG(t, 64, 64, color.NRGBA{255, 0, 0, 255}))
+
+	packSkin, err := a.RenderSkin(RenderRequest{Pack: "withSkin", Size: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	override, err := a.RenderSkin(RenderRequest{Pack: "withSkin", OverrideSkin: true, Size: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if packSkin == override {
+		t.Fatal("OverrideSkin should render the user's skin, not the pack's")
+	}
+	if override == "" {
+		t.Fatal("OverrideSkin should still render even with no pack skin")
+	}
+}
+
+func TestMissingEquipmentFallsBackToPlaceholder(t *testing.T) {
+	a := testApp(t) // empty vanilla cache, network disabled
+	opts, err := a.renderOptions(RenderRequest{
+		Material: "diamond",
+		Right:    HandRequest{Item: "diamond_sword"},
+		Size:     64,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Armor.Helmet == nil || opts.Armor.Leggings == nil {
+		t.Error("missing armor should fall back to the placeholder, not vanish")
+	}
+	if opts.RightHand.Item == nil {
+		t.Error("a missing held item should fall back to the placeholder")
+	}
+	if p := placeholderTexture(); p == nil || p.Bounds().Dx() != 16 {
+		t.Fatalf("placeholder should be a 16px image, got %v", p)
+	}
+}
+
+func TestRenderCacheInvalidatedWhenVanillaArrives(t *testing.T) {
+	a := testApp(t)
+	req := RenderRequest{Material: "diamond", Right: HandRequest{Item: "diamond_sword"}, Size: 64}
+	before := a.renderCacheKey(req)
+	framesBefore := a.framesCacheKey(RenderRequest{Animation: "walk"})
+
+	// What a completed download (or a cache clear) does.
+	vanillaState.mu.Lock()
+	vanillaState.generation++
+	vanillaState.mu.Unlock()
+
+	if after := a.renderCacheKey(req); after == before {
+		t.Error("a newly arrived vanilla texture should invalidate the still cache")
+	}
+	if after := a.framesCacheKey(RenderRequest{Animation: "walk"}); after == framesBefore {
+		t.Error("a newly arrived vanilla texture should invalidate the frame cache")
 	}
 }
 
@@ -258,6 +364,81 @@ func TestRenderSkinFrames(t *testing.T) {
 	}
 	if !hasWalk || !hasDance {
 		t.Errorf("ListAnimations should include walk and the examples, got %v", names)
+	}
+}
+
+func TestRenderSkinAnimationStill(t *testing.T) {
+	a := testApp(t)
+	// A still of one animation frame: the live view uses this so a rotating
+	// camera keeps the model animating frame by frame, each frame framed by the
+	// animation's shared camera.
+	uri0, err := a.RenderSkin(RenderRequest{Animation: "walk", Frame: 0, Size: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(uri0, "data:image/png;base64,") {
+		t.Fatalf("not a PNG data URI: %q", uri0)
+	}
+	if got := decodeDataURI(t, uri0).Bounds().Dx(); got != 64 {
+		t.Fatalf("size %d, want 64", got)
+	}
+	uri1, err := a.RenderSkin(RenderRequest{Animation: "walk", Frame: 4, Size: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uri0 == uri1 {
+		t.Error("walk frames 0 and 4 should differ")
+	}
+	// The frame index wraps, so a loop can keep counting.
+	uri2, err := a.RenderSkin(RenderRequest{Animation: "walk", Frame: 15, Size: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uri2 != uri0 {
+		t.Error("frame 15 should wrap to walk's first frame")
+	}
+	if _, err := a.RenderSkin(RenderRequest{Animation: "not.an.animation", Size: 64}); err == nil {
+		t.Error("expected an error for an unknown animation")
+	}
+}
+
+// The live view's single-frame still is byte-for-byte the frame
+// RenderSkinFrames draws, so a rotating camera keeps the animation's shared
+// camera instead of the per-pose framing that cancels whole-body motion.
+func TestRenderSkinAnimationFrameMatchesFrames(t *testing.T) {
+	a := testApp(t)
+	cam := &CameraRequest{Yaw: 30, Pitch: 10, FOV: 35, Margin: 1.5}
+	req := RenderRequest{Animation: "animation.player.jumping_jacks", Size: 128, FPS: 20, Camera: cam}
+	frames, err := a.RenderSkinFrames(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) < 3 {
+		t.Fatalf("jumping_jacks produced %d frames", len(frames))
+	}
+	for _, i := range []int{0, 1, len(frames) / 2, len(frames) - 1} {
+		req.Frame = i
+		uri, err := a.RenderSkin(req)
+		if err != nil {
+			t.Fatalf("frame %d: %v", i, err)
+		}
+		if !bytes.Equal(dataURIBytes(t, uri), dataURIBytes(t, frames[i])) {
+			t.Errorf("frame %d drawn alone differs from the batch: the shared camera was lost", i)
+		}
+	}
+	// A scaled model refits identically.
+	req.ModelSize = 1.5
+	frames, err = a.RenderSkinFrames(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Frame = len(frames) / 2
+	uri, err := a.RenderSkin(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(dataURIBytes(t, uri), dataURIBytes(t, frames[req.Frame])) {
+		t.Error("a scaled frame drawn alone differs from the batch")
 	}
 }
 

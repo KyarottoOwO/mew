@@ -1121,9 +1121,10 @@ func (a *App) SaveImage(sessionId string, msg SaveImageRequest) (string, error) 
 	return "success", nil
 }
 
-// heldToolRe matches the vanilla tools the Pack Viewer can put in the player's
-// hand, e.g. diamond_sword or wooden_pickaxe.
-var heldToolRe = regexp.MustCompile(`^(wooden|stone|iron|golden|diamond|netherite)_(sword|pickaxe|axe|shovel|hoe)$`)
+// heldToolRe matches the tools the Pack Viewer can put in the player's hand,
+// e.g. diamond_sword or gold_pickaxe. Both Bedrock's own tier prefixes and
+// Java's (wooden_/golden_) are accepted; itemTexture maps them.
+var heldToolRe = regexp.MustCompile(`^(wood|wooden|stone|iron|gold|golden|diamond|netherite)_(sword|pickaxe|axe|shovel|hoe)$`)
 
 // GetHeldItemTexture returns the texture for a tool held in the Pack Viewer:
 // the pack's own when it retextures the tool, vanilla's otherwise.
