@@ -336,7 +336,13 @@ async function buildSkyCubemap(key, tex, cap) {
   return pending
 }
 
-function setSkyOnViewers(cubemap) {
+// skySeq numbers sky requests. Building a sky takes a while, so a slow one
+// started earlier (a previous subpack, or the previous pack) must not replace
+// the one asked for last.
+let skySeq = 0
+
+function setSkyOnViewers(cubemap, seq = skySeq) {
+  if (seq !== skySeq) return
   if (viewerInstance) { viewerInstance.scene.background = cubemap; renderSky(viewerInstance) }
   if (fsViewerInstance) { fsViewerInstance.scene.background = cubemap; renderSky(fsViewerInstance) }
 }
@@ -1553,6 +1559,11 @@ async function openPack(packName) {
   animationName.value = ''
   animFrames.value = []
   animFramesFresh = false
+  // Drop the last pack's picture, and any render still in flight for it, so
+  // the viewer never shows the previous pack's skin while this one loads.
+  renderToken++
+  modalPlayerSrc.value = ''
+  fsPlayerSrc.value = ''
   showModal.value = true
   await nextTick()
   ensureSkyView('modal')
@@ -1606,6 +1617,9 @@ async function loadPackData(packName) {
       invalidateTextureCache(lastLoadedPack)
     }
     lastLoadedPack = packName
+    // The player does not depend on the sky, and a pack's sky can take seconds
+    // to build, so draw the player straight away rather than after it.
+    const player = applyPlayerAppearance()
     const [info, skyTex, packHasScreens] = await Promise.all([
       GetPackPreviewInfo(packName),
       cachedTextureFetch(packName + '|sky', () => GetPackSkyTextures(packName)),
@@ -1625,10 +1639,12 @@ async function loadPackData(packName) {
     skySlider.value = 0
     packHasSky.value = hasCubemapFaces(skyTex) || skySubpacks.value.length > 0
     if (hasCubemapFaces(skyTex)) {
+      const seq = ++skySeq
       setLastSkyTex(skyTex)
       const cubemap = await skyBuild(packName + '#base', skyTex)
+      if (seq !== skySeq) return
       currentSkyKey = skyKey(packName + '#base')
-      setSkyOnViewers(cubemap)
+      setSkyOnViewers(cubemap, seq)
     } else if (skySubpacks.value.length > 0) {
       await applySkySubpack(0)
     } else {
@@ -1637,7 +1653,7 @@ async function loadPackData(packName) {
     recordMem('stage:sky')
     await loadItems(packName)
     recordMem('stage:items')
-    await applyPlayerAppearance()
+    await player
     recordMem('load pack')
     armIdleGC()
     scheduleIdleGC(null, 'load pack')
@@ -1670,6 +1686,7 @@ async function applySkySubpack(idx) {
   if (!skySubpacks.value.length) return
   const sp = skySubpacks.value[idx]
   if (!sp) return
+  const seq = ++skySeq
   const tex = await cachedTextureFetch(selectedPack.value + '|sub|' + sp.folderName, () => GetPackSkySubpackTextures(selectedPack.value, sp.folderName))
   if (isDebug.value) {
     console.log('[subpack]', selectedPack.value, sp.folderName, JSON.stringify(tex, (k, v) => v ? (typeof v === 'string' ? v.slice(0, 40) + '...' : v) : v))
@@ -1678,15 +1695,15 @@ async function applySkySubpack(idx) {
     if (isDebug.value) console.warn('[subpack] no cubemap textures returned for', sp.folderName)
     return
   }
+  if (seq !== skySeq) return
   setLastSkyTex(tex)
   const cubemap = await skyBuild(selectedPack.value + '#' + idx, tex)
+  if (seq !== skySeq) return
   currentSkyKey = skyKey(selectedPack.value + '#' + idx)
-  setSkyOnViewers(cubemap)
+  setSkyOnViewers(cubemap, seq)
   recordMem('sky subpack')
 }
 
-// Show the user's chosen background. A pack's own sky takes precedence, so
-// this does nothing while one is loaded - the menu is disabled for that case.
 // loadDefaultSkyPack returns the default sky pack's cubemap and its cache key,
 // or null when the pack has no sky. The chosen subpack comes first, then the
 // pack's own sky, then its first sky subpack, so a pack whose skies are all
@@ -1709,17 +1726,22 @@ async function loadDefaultSkyPack() {
   return first ? tryOne(first.folderName) : null
 }
 
+// Show the user's chosen background. A pack's own sky takes precedence, so
+// this does nothing while one is loaded - the menu is disabled for that case.
 async function applyBackground() {
   if (packHasSky.value) return
+  const seq = ++skySeq
   // The default sky pack from Settings comes before the built-in backgrounds.
   if (defaultSkyPack.value) {
     try {
       const found = await loadDefaultSkyPack()
+      if (seq !== skySeq) return
       if (found) {
         setLastSkyTex(found.tex)
         const cubemap = await skyBuild(found.key, found.tex)
+        if (seq !== skySeq) return
         currentSkyKey = skyKey(found.key)
-        setSkyOnViewers(cubemap)
+        setSkyOnViewers(cubemap, seq)
         recordMem('background custom sky')
         return
       }
@@ -1731,8 +1753,9 @@ async function applyBackground() {
   const key = backgroundKey()
   setLastSkyTex({ background: preset })
   const cubemap = await skyBuild(key, lastSkyTex)
+  if (seq !== skySeq) return
   currentSkyKey = skyKey(key)
-  setSkyOnViewers(cubemap)
+  setSkyOnViewers(cubemap, seq)
   recordMem('background ' + preset.id)
 }
 
