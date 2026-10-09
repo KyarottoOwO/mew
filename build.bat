@@ -1,2 +1,2 @@
 @echo off
-wails build
+wails build -upx -ldflags "-s -w"
