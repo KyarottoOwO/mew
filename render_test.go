@@ -106,19 +106,19 @@ func TestResolversPreferPackThenVanilla(t *testing.T) {
 	writeFile(t, filepath.Join(root, "pack", "textures", "items", "diamond_sword.png"), packSword)
 	writeFile(t, filepath.Join(vanillaCacheDir(), "textures", "items", "iron_sword.png"), vanillaSword)
 
-	if got := a.armorLayer("pack", "diamond", 1); got == nil || !isRed(got) {
+	if got := a.armorLayer(a.getPackDir("pack"), "diamond", 1); got == nil || !isRed(got) {
 		t.Errorf("layer 1 should come from the pack")
 	}
-	if got := a.armorLayer("pack", "diamond", 2); got == nil || !isGreen(got) {
+	if got := a.armorLayer(a.getPackDir("pack"), "diamond", 2); got == nil || !isGreen(got) {
 		t.Errorf("layer 2 should fall back to vanilla")
 	}
-	if got := a.itemTexture("pack", "diamond_sword"); got == nil || !isBlue(got) {
+	if got := a.itemTexture(a.getPackDir("pack"), "diamond_sword"); got == nil || !isBlue(got) {
 		t.Errorf("diamond_sword should come from the pack")
 	}
-	if got := a.itemTexture("pack", "iron_sword"); got == nil || !isYellow(got) {
+	if got := a.itemTexture(a.getPackDir("pack"), "iron_sword"); got == nil || !isYellow(got) {
 		t.Errorf("iron_sword should fall back to vanilla")
 	}
-	if got := a.itemTexture("pack", "diamond_hoe"); got != nil {
+	if got := a.itemTexture(a.getPackDir("pack"), "diamond_hoe"); got != nil {
 		t.Errorf("an allow-listed but uncached item should be nil offline, got %v", got)
 	}
 }
@@ -154,12 +154,12 @@ func TestGoldenAppleUsesBedrockTextureName(t *testing.T) {
 	}
 	// A pack that names the sprite the friendly way still wins.
 	writeFile(t, filepath.Join(root, "pack", "textures", "items", "golden_apple.png"), solidPNG(t, 16, 16, color.NRGBA{255, 0, 0, 255}))
-	if got := a.itemTexture("pack", "golden_apple"); got == nil || !isRed(got) {
+	if got := a.itemTexture(a.getPackDir("pack"), "golden_apple"); got == nil || !isRed(got) {
 		t.Fatal("pack's golden_apple.png should be preferred")
 	}
 	// And a pack using Bedrock's own name works too.
 	writeFile(t, filepath.Join(root, "bedrockPack", "textures", "items", "apple_golden.png"), solidPNG(t, 16, 16, color.NRGBA{0, 0, 255, 255}))
-	if got := a.itemTexture("bedrockPack", "golden_apple"); got == nil || !isBlue(got) {
+	if got := a.itemTexture(a.getPackDir("bedrockPack"), "golden_apple"); got == nil || !isBlue(got) {
 		t.Fatal("pack's apple_golden.png should be found via the alias")
 	}
 }
@@ -186,10 +186,10 @@ func TestItemTextureUnknownNameNeverFetches(t *testing.T) {
 	a := testApp(t)
 	requests := offlineVanilla(t)
 
-	if got := a.itemTexture("pack", "totally_made_up"); got != nil {
+	if got := a.itemTexture(a.getPackDir("pack"), "totally_made_up"); got != nil {
 		t.Errorf("unknown item should be nil, got %v", got)
 	}
-	if got := a.itemTexture("pack", "../../secret"); got != nil {
+	if got := a.itemTexture(a.getPackDir("pack"), "../../secret"); got != nil {
 		t.Errorf("path-like item should be nil, got %v", got)
 	}
 	if *requests != 0 {
@@ -244,7 +244,7 @@ func TestPackSkinPreviewAndSave(t *testing.T) {
 	red := "data:image/png;base64," + base64.StdEncoding.EncodeToString(solidPNG(t, 64, 64, color.NRGBA{255, 0, 0, 255}))
 
 	// A preview shows on its pack only, and closing the viewer drops it.
-	if err := a.PreviewPackSkin("one", red); err != nil {
+	if err := a.PreviewPackSkin("one", "", red); err != nil {
 		t.Fatal(err)
 	}
 	changed := render(a, "one")
@@ -254,26 +254,26 @@ func TestPackSkinPreviewAndSave(t *testing.T) {
 	if render(a, "two") != before {
 		t.Fatal("previewing on one pack changed another pack")
 	}
-	if a.HasPackSkin("one") {
+	if a.HasPackSkin("one", "") {
 		t.Fatal("a preview is not saved until Save")
 	}
 	a.ClearPreviewSkins()
 	if render(a, "one") != before {
 		t.Fatal("closing the viewer should drop the preview")
 	}
-	if err := a.SavePackSkin("one"); err == nil {
+	if err := a.SavePackSkin("one", ""); err == nil {
 		t.Fatal("saving with nothing previewed should fail")
 	}
 
 	// Saved, it stays for that pack, across a restart.
-	if err := a.PreviewPackSkin("one", red); err != nil {
+	if err := a.PreviewPackSkin("one", "", red); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.SavePackSkin("one"); err != nil {
+	if err := a.SavePackSkin("one", ""); err != nil {
 		t.Fatal(err)
 	}
 	a.ClearPreviewSkins()
-	if !a.HasPackSkin("one") || a.HasPackSkin("two") {
+	if !a.HasPackSkin("one", "") || a.HasPackSkin("two", "") {
 		t.Fatal("HasPackSkin should be true for the saved pack only")
 	}
 	if render(a, "one") != changed {
@@ -285,7 +285,7 @@ func TestPackSkinPreviewAndSave(t *testing.T) {
 		t.Fatal("the saved skin should still be there after a restart")
 	}
 
-	if err := a.ClearPackSkin("one"); err != nil {
+	if err := a.ClearPackSkin("one", ""); err != nil {
 		t.Fatal(err)
 	}
 	if render(a, "one") != before {
@@ -293,11 +293,11 @@ func TestPackSkinPreviewAndSave(t *testing.T) {
 	}
 
 	for _, bad := range []string{"", "..", "../x", `a/b`, `a\b`} {
-		if err := a.PreviewPackSkin(bad, red); err == nil {
+		if err := a.PreviewPackSkin(bad, "", red); err == nil {
 			t.Errorf("PreviewPackSkin(%q) should be refused", bad)
 		}
 	}
-	if err := a.PreviewPackSkin("one", "data:image/png;base64,AAAA"); err == nil {
+	if err := a.PreviewPackSkin("one", "", "data:image/png;base64,AAAA"); err == nil {
 		t.Error("a non-image should be refused")
 	}
 }
@@ -625,4 +625,44 @@ func isBlue(img image.Image) bool {
 func isYellow(img image.Image) bool {
 	r, g, b, _ := img.At(img.Bounds().Min.X, img.Bounds().Min.Y).RGBA()
 	return r > 0xf000 && g > 0xf000 && b < 0x1000
+}
+
+// A server pack renders from the pack cache folder with its own skin, any
+// other folder is refused, and a skin chosen for it is kept apart from an
+// installed pack with the same folder name.
+func TestRenderServerPack(t *testing.T) {
+	a := testApp(t)
+	cache := t.TempDir()
+	a.settings["packCachePath"] = cache
+	writeFile(t, filepath.Join(cache, "srv", "textures", "entity", "steve.png"), solidPNG(t, 64, 64, color.NRGBA{0, 0, 255, 255}))
+	writeFile(t, filepath.Join(a.getResourcePacksPath(), "srv", "textures", "entity", "steve.png"), solidPNG(t, 64, 64, color.NRGBA{0, 255, 0, 255}))
+
+	server, err := a.RenderSkin(RenderRequest{Pack: "srv", Base: cache, Size: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed, err := a.RenderSkin(RenderRequest{Pack: "srv", Size: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if server == installed {
+		t.Fatal("the server pack should render from the cache folder, not the installed pack")
+	}
+	if _, err := a.RenderSkin(RenderRequest{Pack: "srv", Base: t.TempDir(), Size: 64}); err == nil {
+		t.Fatal("a folder other than the pack cache should be refused")
+	}
+
+	red := "data:image/png;base64," + base64.StdEncoding.EncodeToString(solidPNG(t, 64, 64, color.NRGBA{255, 0, 0, 255}))
+	if err := a.PreviewPackSkin("srv", cache, red); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SavePackSkin("srv", cache); err != nil {
+		t.Fatal(err)
+	}
+	if !a.HasPackSkin("srv", cache) || a.HasPackSkin("srv", "") {
+		t.Fatal("a skin saved for a server pack must not apply to the installed pack")
+	}
+	if got, _ := a.RenderSkin(RenderRequest{Pack: "srv", Size: 64}); got != installed {
+		t.Fatal("the installed pack should keep its own skin")
+	}
 }

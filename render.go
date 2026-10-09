@@ -86,6 +86,7 @@ func itemNameVariants(name string) []string {
 // no pack, no armor, no items, the front body view at 512px.
 type RenderRequest struct {
 	Pack      string             `json:"pack"`      // dir name; "" uses no pack (vanilla + default skin)
+	Base      string             `json:"base"`      // the folder Pack is in: "" for installed packs, else the server pack cache
 	Model     string             `json:"model"`     // "auto", "wide", "slim"
 	Material  string             `json:"material"`  // "" or "none" for no armor, else a material
 	Elytra    bool               `json:"elytra"`    // an elytra in place of the chestplate
@@ -125,28 +126,71 @@ var allowedRenderParts = map[string]bool{
 
 // --- texture resolution ---
 
-// skinPath is the pack's player skin, or "" when it does not override one.
-func (a *App) skinPath(packName string) string {
+// packDirFor resolves a pack named by the frontend to its folder: one of the
+// installed packs when base is "", else one in the server pack cache. Any
+// other base, or a name that is not a plain folder name, is refused, so a
+// request can never read outside those two folders. No pack is "".
+func (a *App) packDirFor(base, packName string) (string, error) {
 	if packName == "" {
+		return "", nil
+	}
+	if filepath.Base(packName) != packName || packName == "." || packName == ".." {
+		return "", fmt.Errorf("invalid pack name")
+	}
+	if base == "" {
+		return a.getPackDir(packName), nil
+	}
+	if !samePath(base, a.packCachePath()) {
+		return "", fmt.Errorf("unknown pack folder")
+	}
+	return filepath.Join(base, packName), nil
+}
+
+// packCachePath is the server pack cache folder: the setting, else the game's.
+func (a *App) packCachePath() string {
+	if p := a.getStringSetting("packCachePath"); p != "" {
+		return p
+	}
+	return a.getDefaultPackCachePath()
+}
+
+// samePath reports whether two paths name the same folder, ignoring case and
+// a trailing separator, as Windows does.
+func samePath(x, y string) bool {
+	return x != "" && y != "" && strings.EqualFold(filepath.Clean(x), filepath.Clean(y))
+}
+
+// skinPath is the pack's player skin, or "" when it does not override one.
+func skinPath(dir string) string {
+	if dir == "" {
 		return ""
 	}
-	return findPackSkin(a.getPackDir(packName))
+	return findPackSkin(dir)
 }
 
 // packArmorPath is the pack's texture for one armor layer, or "".
-func (a *App) packArmorPath(packName string, material string, layer int) string {
+func packArmorPath(dir string, material string, layer int) string {
+	if dir == "" {
+		return ""
+	}
 	base := fmt.Sprintf("%s_%d", material, layer)
-	return findFirstImage(filepath.Join(a.getPackDir(packName), "textures", "models", "armor"), base)
+	return findFirstImage(filepath.Join(dir, "textures", "models", "armor"), base)
 }
 
 // packElytraPath is the pack's elytra texture, or "".
-func (a *App) packElytraPath(packName string) string {
-	return findFirstImage(filepath.Join(a.getPackDir(packName), "textures", "models", "armor"), "elytra")
+func packElytraPath(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	return findFirstImage(filepath.Join(dir, "textures", "models", "armor"), "elytra")
 }
 
 // packItemPath is the pack's texture for an item, or "".
-func (a *App) packItemPath(packName string, name string) string {
-	return findFirstImage(filepath.Join(a.getPackDir(packName), "textures", "items"), name)
+func packItemPath(dir string, name string) string {
+	if dir == "" {
+		return ""
+	}
+	return findFirstImage(filepath.Join(dir, "textures", "items"), name)
 }
 
 // defaultSkinPath is the user's saved default skin.
@@ -169,16 +213,16 @@ func (a *App) defaultSkin() image.Image {
 // pack with "Change Skin", else the one saved for it, else the pack's own,
 // else the user's default skin, else MEW's own embedded one. It never returns
 // nil.
-func (a *App) skinFor(packName string) image.Image {
-	if img := a.previewSkin(packName); img != nil {
+func (a *App) skinFor(key, dir string) image.Image {
+	if img := a.previewSkin(key); img != nil {
 		return img
 	}
-	if p := chosenSkinPath(packName); p != "" {
+	if p := chosenSkinPath(key); p != "" {
 		if img := a.loadFileTexture(p); img != nil {
 			return img
 		}
 	}
-	if p := a.skinPath(packName); p != "" {
+	if p := skinPath(dir); p != "" {
 		if img := a.loadFileTexture(p); img != nil {
 			return img
 		}
@@ -188,9 +232,9 @@ func (a *App) skinFor(packName string) image.Image {
 
 // armorLayer returns one armor layer's texture: the pack's, else vanilla's for
 // a material vanilla ships. It returns nil for anything else.
-func (a *App) armorLayer(packName string, material string, layer int) image.Image {
-	if packName != "" {
-		if p := a.packArmorPath(packName, material, layer); p != "" {
+func (a *App) armorLayer(dir string, material string, layer int) image.Image {
+	if dir != "" {
+		if p := packArmorPath(dir, material, layer); p != "" {
 			if img := a.loadFileTexture(p); img != nil {
 				return img
 			}
@@ -203,9 +247,9 @@ func (a *App) armorLayer(packName string, material string, layer int) image.Imag
 }
 
 // elytraTexture returns the elytra's texture: the pack's, else vanilla's.
-func (a *App) elytraTexture(packName string) image.Image {
-	if packName != "" {
-		if p := a.packElytraPath(packName); p != "" {
+func (a *App) elytraTexture(dir string) image.Image {
+	if dir != "" {
+		if p := packElytraPath(dir); p != "" {
 			if img := a.loadFileTexture(p); img != nil {
 				return img
 			}
@@ -219,14 +263,14 @@ func (a *App) elytraTexture(packName string) image.Image {
 // a valid texture name, or whose variants are not in the vanilla allow-list,
 // returns nil without ever fetching anything. Variants map friendly/Java names
 // to Bedrock's own (see itemNameVariants); the pack is checked under each.
-func (a *App) itemTexture(packName string, name string) image.Image {
+func (a *App) itemTexture(dir string, name string) image.Image {
 	if !itemNameRe.MatchString(name) {
 		return nil
 	}
 	variants := itemNameVariants(name)
-	if packName != "" {
+	if dir != "" {
 		for _, n := range variants {
-			if p := a.packItemPath(packName, n); p != "" {
+			if p := packItemPath(dir, n); p != "" {
 				if img := a.loadFileTexture(p); img != nil {
 					return img
 				}
@@ -466,11 +510,12 @@ func isHandEquipped(name string) bool {
 // renderOptions turns a request into library options, validating and clamping
 // everything that came from the frontend.
 func (a *App) renderOptions(req RenderRequest) (bedrockskin.Options, error) {
-	if req.Pack != "" && filepath.Base(req.Pack) != req.Pack {
-		return bedrockskin.Options{}, fmt.Errorf("invalid pack name")
+	dir, err := a.packDirFor(req.Base, req.Pack)
+	if err != nil {
+		return bedrockskin.Options{}, err
 	}
 
-	skin := a.skinFor(req.Pack)
+	skin := a.skinFor(packSkinKey(req.Base, req.Pack), dir)
 	if skin == nil {
 		return bedrockskin.Options{}, bedrockskin.ErrNoTexture
 	}
@@ -524,18 +569,18 @@ func (a *App) renderOptions(req RenderRequest) (bedrockskin.Options, error) {
 			return bedrockskin.Options{}, fmt.Errorf("unknown armor material: %s", req.Material)
 		}
 		opts.Armor = bedrockskin.ArmorSet(
-			orPlaceholder(a.armorLayer(req.Pack, material, 1)),
-			orPlaceholder(a.armorLayer(req.Pack, material, 2)),
+			orPlaceholder(a.armorLayer(dir, material, 1)),
+			orPlaceholder(a.armorLayer(dir, material, 2)),
 		)
 	}
 	if req.Elytra {
-		opts.Armor.Elytra = orPlaceholder(a.elytraTexture(req.Pack))
+		opts.Armor.Elytra = orPlaceholder(a.elytraTexture(dir))
 	}
 
-	if opts.RightHand, err = a.heldFor(req.Pack, req.Right); err != nil {
+	if opts.RightHand, err = a.heldFor(dir, req.Right); err != nil {
 		return bedrockskin.Options{}, err
 	}
-	if opts.LeftHand, err = a.heldFor(req.Pack, req.Left); err != nil {
+	if opts.LeftHand, err = a.heldFor(dir, req.Left); err != nil {
 		return bedrockskin.Options{}, err
 	}
 
@@ -560,7 +605,7 @@ func cameraFromRequest(c *CameraRequest) *bedrockskin.Camera {
 }
 
 // heldFor turns a hand request into library held-item options.
-func (a *App) heldFor(packName string, h HandRequest) (bedrockskin.Held, error) {
+func (a *App) heldFor(dir string, h HandRequest) (bedrockskin.Held, error) {
 	name := strings.TrimSpace(h.Item)
 	if name == "" {
 		return bedrockskin.Held{}, nil
@@ -569,7 +614,7 @@ func (a *App) heldFor(packName string, h HandRequest) (bedrockskin.Held, error) 
 		return bedrockskin.Held{}, fmt.Errorf("invalid item name: %s", h.Item)
 	}
 	return bedrockskin.Held{
-		Item:   orPlaceholder(a.itemTexture(packName, name)),
+		Item:   orPlaceholder(a.itemTexture(dir, name)),
 		Flat:   !isHandEquipped(name),
 		Adjust: h.Adjust,
 	}, nil
@@ -780,9 +825,14 @@ func (a *App) ListAnimations() []string {
 	return append(out, names...)
 }
 
-// RenderItem renders one item on its own, extruded, front or iso.
-func (a *App) RenderItem(pack string, item string, angle string, size int) (string, error) {
-	img := orPlaceholder(a.itemTexture(pack, strings.TrimSpace(item)))
+// RenderItem renders one item on its own, extruded, front or iso. base is the
+// pack's folder, as in RenderRequest.
+func (a *App) RenderItem(pack string, base string, item string, angle string, size int) (string, error) {
+	dir, err := a.packDirFor(base, pack)
+	if err != nil {
+		return "", err
+	}
+	img := orPlaceholder(a.itemTexture(dir, strings.TrimSpace(item)))
 	parsedAngle, err := bedrockskin.ParseAngle(angle)
 	if err != nil {
 		return "", err
@@ -803,8 +853,12 @@ func (a *App) RenderItem(pack string, item string, angle string, size int) (stri
 }
 
 // RenderItemSpin renders one item turning once, as a GIF data URI.
-func (a *App) RenderItemSpin(pack string, item string, size int) (string, error) {
-	img := orPlaceholder(a.itemTexture(pack, strings.TrimSpace(item)))
+func (a *App) RenderItemSpin(pack string, base string, item string, size int) (string, error) {
+	dir, err := a.packDirFor(base, pack)
+	if err != nil {
+		return "", err
+	}
+	img := orPlaceholder(a.itemTexture(dir, strings.TrimSpace(item)))
 	gif, err := bedrockskin.RenderItemGIF(bedrockskin.ItemAnimationOptions{
 		ItemOptions: bedrockskin.ItemOptions{Item: img, Size: clampInt(size, 32, 512, 256)},
 	})
@@ -943,26 +997,28 @@ func (a *App) framesCacheKey(req RenderRequest) string {
 // requestSignature fingerprints the pack and default-skin files a request uses.
 func (a *App) requestSignature(req RenderRequest) string {
 	var b strings.Builder
-	b.WriteString(a.previewSignature(req.Pack))
-	statInto(&b, chosenSkinPath(req.Pack))
-	statInto(&b, a.skinPath(req.Pack))
+	key := packSkinKey(req.Base, req.Pack)
+	dir, _ := a.packDirFor(req.Base, req.Pack)
+	b.WriteString(a.previewSignature(key))
+	statInto(&b, chosenSkinPath(key))
+	statInto(&b, skinPath(dir))
 	statInto(&b, defaultSkinPath())
 	material := strings.ToLower(strings.TrimSpace(req.Material))
 	if material == "none" {
 		material = ""
 	}
 	if material != "" {
-		statInto(&b, a.packArmorPath(req.Pack, material, 1))
-		statInto(&b, a.packArmorPath(req.Pack, material, 2))
+		statInto(&b, packArmorPath(dir, material, 1))
+		statInto(&b, packArmorPath(dir, material, 2))
 	}
 	if req.Elytra {
-		statInto(&b, a.packElytraPath(req.Pack))
+		statInto(&b, packElytraPath(dir))
 	}
 	if req.Right.Item != "" {
-		statInto(&b, a.packItemPath(req.Pack, req.Right.Item))
+		statInto(&b, packItemPath(dir, req.Right.Item))
 	}
 	if req.Left.Item != "" {
-		statInto(&b, a.packItemPath(req.Pack, req.Left.Item))
+		statInto(&b, packItemPath(dir, req.Left.Item))
 	}
 	return b.String()
 }

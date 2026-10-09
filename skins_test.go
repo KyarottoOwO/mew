@@ -19,7 +19,7 @@ func TestGetPackSkinThumbnails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := a.GetPackSkinThumbnails([]string{"withSkin", "noSkin", "../withSkin", ""})
+	got := a.GetPackSkinThumbnails([]string{"withSkin", "noSkin", "../withSkin", ""}, "")
 
 	if len(got) != 2 {
 		t.Fatalf("got thumbnails for %d packs, want 2: %v", len(got), keys(got))

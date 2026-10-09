@@ -3,7 +3,7 @@ import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from
 import * as THREE from 'three'
 import PackExporter from './PackExporter.vue'
 import JsonUiStage from './JsonUiStage.vue'
-import { GetSettings, SaveSettings, GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPackSkinThumbnails, PreviewPackSkin, SavePackSkin, ClearPreviewSkins, ClearPackSkin, HasPackSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug, PackHasUiScreens, RenderSkin, RenderSkinFrames, RenderSkinGIF, ListAnimations, RenderItem, RenderItemSpin, SaveRender } from '../../../wailsjs/go/main/App'
+import { GetSettings, SaveSettings, GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPackSkinThumbnails, PreviewPackSkin, SavePackSkin, ClearPreviewSkins, ClearPackSkin, HasPackSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug, PackHasUiScreens, RenderSkin, RenderSkinFrames, RenderSkinGIF, ListAnimations, RenderItem, RenderItemSpin, SaveRender, GetPackCache, GetPackCacheList, ExportCachePacks, GetPackPreviewInfoFromCache, GetPackSkyTexturesFromCache, GetPackSkySubpacksFromCache, GetPackSkySubpackTexturesFromCache, GetPackItemTexturesFromCache, GetPackItemTextureNamesFromCache, GetPackItemTextureFromCache, PackHasUiScreensFromCache } from '../../../wailsjs/go/main/App'
 
 import { parseBedrockCodes } from '../../utils/formatCodes'
 import { BACKGROUNDS, DEFAULT_BACKGROUND_ID, BACKGROUND_SETTING_KEY, DEFAULT_SKY_PACK_KEY, DEFAULT_SKY_SUBPACK_KEY, SKY_PACK_BACKGROUND_ID, SKY_PACK_SWATCH_STYLE, normalizeBackgroundId, backgroundById, backgroundSwatchStyle as swatchStyle } from '../../utils/backgrounds'
@@ -15,6 +15,26 @@ const packsPath = ref('')
 const loading = ref(true)
 const searchQuery = ref('')
 const sortBy = ref('name')
+const showServerPacks = ref(false)
+const cachePackList = ref([])
+const serverPacksPath = ref('')
+const exportingServer = ref(false)
+
+// packBase is the folder the open pack is read from: "" for installed packs,
+// the server pack cache otherwise. The render service takes it with every
+// request, and packApi picks the matching pack readers, so one viewer path
+// serves both lists.
+function packBase() {
+  return showServerPacks.value ? serverPacksPath.value : ''
+}
+const packApi = {
+  previewInfo: (name) => showServerPacks.value ? GetPackPreviewInfoFromCache(name, serverPacksPath.value) : GetPackPreviewInfo(name),
+  skyTextures: (name) => showServerPacks.value ? GetPackSkyTexturesFromCache(name, serverPacksPath.value) : GetPackSkyTextures(name),
+  skySubpacks: (name) => showServerPacks.value ? GetPackSkySubpacksFromCache(name, serverPacksPath.value) : GetPackSkySubpacks(name),
+  skySubpackTextures: (name, sub) => showServerPacks.value ? GetPackSkySubpackTexturesFromCache(name, sub, serverPacksPath.value) : GetPackSkySubpackTextures(name, sub),
+  hasScreens: (name) => showServerPacks.value ? PackHasUiScreensFromCache(name, serverPacksPath.value) : PackHasUiScreens(name),
+  itemTextures: (name, material) => showServerPacks.value ? GetPackItemTexturesFromCache(name, material, serverPacksPath.value) : GetPackItemTextures(name, material),
+}
 
 const showModal = ref(false)
 const confirmDelete = ref(false)
@@ -614,6 +634,7 @@ function handRequest(value, adjust) {
 function currentRequest(size, animation = '', frame = 0) {
   return {
     pack: selectedPack.value || '',
+    base: packBase(),
     model: skinModel.value === 'slim' ? 'slim' : skinModel.value === 'default' ? 'wide' : 'auto',
     material: selectedMaterial.value === 'naked' ? 'none' : selectedMaterial.value,
     elytra: elytraOn.value,
@@ -1077,6 +1098,13 @@ function formatSize(bytes) {
   return (bytes / 1048576).toFixed(1) + ' MB'
 }
 
+function popup(title, text, icon) {
+  Swal.mixin({
+    customClass: { popup: 'swal-custom-popup', confirmButton: 'custom-confirm-btn' },
+    buttonsStyling: false
+  }).fire({ title, text, icon, confirmButtonText: 'OK' })
+}
+
 let gcTimer = null
 let lastActivity = Date.now()
 let idleGCArmed = false
@@ -1335,18 +1363,16 @@ watch(showMemPanel, (on) => {
 })
 
 const filteredPacks = computed(() => {
-  let list = packList.value
-
+  const list = showServerPacks.value ? cachePackList.value : packList.value
   const q = searchQuery.value.trim().toLowerCase()
   if (q) {
-    list = list.filter(p => {
+    return list.filter(p => {
       const name = (p.name || '').toLowerCase()
       const desc = (p.description || '').toLowerCase()
       const dir = (p.dirName || '').toLowerCase()
       return name.includes(q) || desc.includes(q) || dir.includes(q)
     })
   }
-
   const sorted = [...list]
   switch (sortBy.value) {
     case 'name':
@@ -1395,12 +1421,12 @@ async function thumbifyPackIcons(list) {
 
 // Packs that override the player skin get a small 3D render of it on their
 // card, drawn by the backend. Fetched in batches so the grid fills in quickly.
-async function loadSkinThumbs(list) {
+async function loadSkinThumbs(list, base = '') {
   const BATCH = 16
   for (let i = 0; i < list.length; i += BATCH) {
     const batch = list.slice(i, i + BATCH)
     try {
-      const thumbs = await GetPackSkinThumbnails(batch.map(p => p.dirName).filter(Boolean))
+      const thumbs = await GetPackSkinThumbnails(batch.map(p => p.dirName).filter(Boolean), base)
       for (const p of batch) {
         if (thumbs && thumbs[p.dirName]) p.skinThumb = thumbs[p.dirName]
       }
@@ -1567,13 +1593,34 @@ async function loadAllPacks() {
   } catch (e) {
     console.error('Failed to load packs:', e)
   }
+  try {
+    const cacheSources = await GetPackCache()
+    const source = cacheSources && cacheSources[0]
+    if (source && source.found && source.path) {
+      serverPacksPath.value = source.path
+      const cacheList = await GetPackCacheList(source.path)
+      cachePackList.value = (cacheList || []).map(p => ({
+        ...p,
+        dirName: p.dirName || '',
+        skinThumb: '',
+      }))
+      thumbifyPackIcons(cachePackList.value)
+      loadSkinThumbs(cachePackList.value, source.path)
+    } else {
+      serverPacksPath.value = ''
+      cachePackList.value = []
+    }
+  } catch (e) {
+    console.error('Failed to load server packs:', e)
+  }
   loading.value = false
 }
 
 function openPackFolder() {
-  if (!packsPath.value || !selectedPack.value) return
-  const sep = packsPath.value.includes('\\') ? '\\' : '/'
-  OpenFolder(packsPath.value + sep + selectedPack.value)
+  const basePath = showServerPacks.value ? serverPacksPath.value : packsPath.value
+  if (!basePath || !selectedPack.value) return
+  const sep = basePath.includes('\\') ? '\\' : '/'
+  OpenFolder(basePath + sep + selectedPack.value)
 }
 
 async function deletePack() {
@@ -1621,6 +1668,22 @@ async function openPack(packName) {
   watchSkySizes()
   await loadCustomItems()
   await loadPackData(packName)
+}
+
+async function exportSelectedServerPacks() {
+  if (exportingServer.value || !showServerPacks.value) return
+  const names = filteredPacks.value.map(p => p.dirName)
+  if (!names.length) return
+  exportingServer.value = true
+  try {
+    const written = await ExportCachePacks(names, serverPacksPath.value)
+    popup('Exported', `Exported ${written.length} server pack(s) to ${written.length === 1 ? written[0] : 'the output folder'}`, 'success')
+  } catch (err) {
+    console.error('ExportCachePacks error:', err)
+    popup('Export Failed', String(err?.toString ? err.toString() : err), 'error')
+  } finally {
+    exportingServer.value = false
+  }
 }
 
 function closeModal() {
@@ -1682,9 +1745,9 @@ async function loadPackData(packName) {
     // to build, so draw the player straight away rather than after it.
     const player = applyPlayerAppearance()
     const [info, skyTex, packHasScreens] = await Promise.all([
-      GetPackPreviewInfo(packName),
-      cachedTextureFetch(packName + '|sky', () => GetPackSkyTextures(packName)),
-      PackHasUiScreens(packName),
+      packApi.previewInfo(packName),
+      cachedTextureFetch(packName + '|sky', () => packApi.skyTextures(packName)),
+      packApi.hasScreens(packName),
     ])
     hasScreens.value = !!packHasScreens
     // A pack without screens cannot use the renderer panel.
@@ -1696,7 +1759,7 @@ async function loadPackData(packName) {
     // base has none. Only a pack with no sky at all falls back to the user's
     // chosen background. The background lives in the app settings.
     await loadBackgroundSetting()
-    skySubpacks.value = (await GetPackSkySubpacks(packName)) || []
+    skySubpacks.value = (await packApi.skySubpacks(packName)) || []
     skySlider.value = 0
     packHasSky.value = hasCubemapFaces(skyTex) || skySubpacks.value.length > 0
     if (hasCubemapFaces(skyTex)) {
@@ -1749,7 +1812,7 @@ async function applySkySubpack(idx) {
   const sp = skySubpacks.value[idx]
   if (!sp) return
   const seq = beginSky()
-  const tex = await cachedTextureFetch(selectedPack.value + '|sub|' + sp.folderName, () => GetPackSkySubpackTextures(selectedPack.value, sp.folderName))
+  const tex = await cachedTextureFetch(selectedPack.value + '|sub|' + sp.folderName, () => packApi.skySubpackTextures(selectedPack.value, sp.folderName))
   if (isDebug.value) {
     console.log('[subpack]', selectedPack.value, sp.folderName, JSON.stringify(tex, (k, v) => v ? (typeof v === 'string' ? v.slice(0, 40) + '...' : v) : v))
   }
@@ -1850,7 +1913,7 @@ async function loadItems(packName) {
     return
   }
   const thmb = await cachedTextureFetch(packName + '|itemthumbs|' + selectedMaterial.value, async () => {
-    const items = await GetPackItemTextures(packName, selectedMaterial.value)
+    const items = await packApi.itemTextures(packName, selectedMaterial.value)
     return Promise.all((items || []).map(async itm => itm && itm.dataURI ? { ...itm, dataURI: await toThumb(itm.dataURI) } : itm))
   }) || []
   itemTextures.value = thmb
@@ -1885,20 +1948,21 @@ function triggerSkinUpload() { skinFileInput.value?.click() }
 // refreshPackCard redraws one pack's card image after its skin changed.
 async function refreshPackCard(packName) {
   try {
-    const thumbs = await GetPackSkinThumbnails([packName])
-    const card = (packList.value || []).find(p => p.dirName === packName)
+    const thumbs = await GetPackSkinThumbnails([packName], packBase())
+    const list = showServerPacks.value ? cachePackList.value : packList.value
+    const card = (list || []).find(p => p.dirName === packName)
     if (card && thumbs && thumbs[packName]) card.skinThumb = thumbs[packName]
   } catch {}
 }
 
 async function loadPackSkinChosen(packName) {
-  try { packSkinChosen.value = !!(await HasPackSkin(packName)) } catch { packSkinChosen.value = false }
+  try { packSkinChosen.value = !!(await HasPackSkin(packName, packBase())) } catch { packSkinChosen.value = false }
 }
 
 async function clearPackSkin() {
   const pack = selectedPack.value
   if (!pack) return
-  try { await ClearPackSkin(pack) } catch (err) { console.error('Failed to clear skin:', err); return }
+  try { await ClearPackSkin(pack, packBase()) } catch (err) { console.error('Failed to clear skin:', err); return }
   packSkinChosen.value = false
   skinPreviewing.value = false
   refreshPlayer()
@@ -1908,7 +1972,7 @@ async function clearPackSkin() {
 async function savePackSkin() {
   const pack = selectedPack.value
   if (!pack || !skinPreviewing.value) return
-  try { await SavePackSkin(pack) } catch (err) { console.error('Failed to save skin:', err); return }
+  try { await SavePackSkin(pack, packBase()) } catch (err) { console.error('Failed to save skin:', err); return }
   skinPreviewing.value = false
   packSkinChosen.value = true
   refreshPackCard(pack)
@@ -1928,7 +1992,7 @@ function onSkinFileChange(e) {
   const reader = new FileReader()
   reader.onload = async () => {
     try {
-      await PreviewPackSkin(pack, reader.result)
+      await PreviewPackSkin(pack, packBase(), reader.result)
     } catch (err) {
       console.error('Failed to load skin:', err)
       return
@@ -1963,7 +2027,10 @@ async function openItemPicker() {
   pickerLoaded.clear()
   pickerSearch.value = ''
   try {
-    const names = await GetPackItemTextureNames(selectedPack.value)
+    const packName = selectedPack.value
+    const names = showServerPacks.value
+      ? await GetPackItemTextureNamesFromCache(packName, serverPacksPath.value)
+      : await GetPackItemTextureNames(packName)
     pickerNames.value = names || []
   } catch (err) {
     console.error('Failed to load item names:', err)
@@ -2001,7 +2068,13 @@ async function loadPickerTexture(name) {
   if (pickerLoaded.has(name) || pickerTextures.has(name)) return
   pickerLoaded.add(name)
   try {
-    const dataURI = await cachedTextureFetch(selectedPack.value + '|picker|' + name, () => GetPackItemTexture(selectedPack.value, name))
+    const packName = selectedPack.value
+    const dataURI = await cachedTextureFetch(packName + '|picker|' + name, async () => {
+      if (showServerPacks.value) {
+        return GetPackItemTextureFromCache(packName, name, serverPacksPath.value)
+      }
+      return GetPackItemTexture(packName, name)
+    })
     if (dataURI) pickerTextures.set(name, dataURI)
     loadPickerThumb(name, dataURI)
   } catch (err) {
@@ -2057,9 +2130,9 @@ async function loadItem3D() {
   if (!pack || !item) return
   try {
     const [front, iso, spin] = await Promise.all([
-      RenderItem(pack, item, 'front', 256),
-      RenderItem(pack, item, 'iso', 256),
-      RenderItemSpin(pack, item, 256),
+      RenderItem(pack, packBase(), item, 'front', 256),
+      RenderItem(pack, packBase(), item, 'iso', 256),
+      RenderItemSpin(pack, packBase(), item, 256),
     ])
     item3DFront.value = front
     item3DIso.value = iso
@@ -2186,10 +2259,15 @@ watch(() => props.openPackReq, (req) => {
 
 <template>
   <div class="pv-page page">
-    <div v-if="packList.length === 0 && !loading" class="pv-empty">
+    <div v-if="!loading && !showServerPacks && packList.length === 0" class="pv-empty">
       <i class="fa fa-box-open pv-empty-icon"></i>
       <p>No installed packs found.</p>
       <p class="pv-empty-sub">Install a pack from the Pack Porter first.</p>
+    </div>
+    <div v-else-if="!loading && showServerPacks && cachePackList.length === 0" class="pv-empty">
+      <i class="fa fa-server pv-empty-icon"></i>
+      <p>No server packs found.</p>
+      <p class="pv-empty-sub">Download a resource pack from a server to see it here.</p>
     </div>
 
     <template v-else>
@@ -2200,6 +2278,9 @@ watch(() => props.openPackReq, (req) => {
           <span v-if="searchQuery" class="pv-search-clear" @click="searchQuery = ''"><i class="fa fa-xmark"></i></span>
         </div>
         <div class="pv-toolbar-right">
+          <button class="pv-sort-btn" :class="{ active: showServerPacks }" @click="showServerPacks = !showServerPacks; closeModal()" title="Toggle server packs from cache">
+            <i class="fa fa-server"></i> Server Packs
+          </button>
           <span class="pv-count">{{ filteredPacks.length }} pack{{ filteredPacks.length !== 1 ? 's' : '' }}</span>
           <div class="pv-sort">
             <button v-for="opt in [{v:'name',icon:'fa-arrow-down-a-z'},{v:'date',icon:'fa-clock'},{v:'size',icon:'fa-hard-drive'}]"
@@ -2248,7 +2329,10 @@ watch(() => props.openPackReq, (req) => {
             <button v-if="hasScreens" class="pv-modal-menubtn" :class="{ active: viewerMode === 'ui' }" :title="viewerMode === 'ui' ? 'Back to texture viewer' : 'Open UI renderer'" @click="toggleUiPanel"><i class="fa fa-bars-staggered"></i></button>
             <button class="pv-modal-folder" @click="openFullscreen" title="Fullscreen preview"><i class="fa fa-expand"></i></button>
             <button class="pv-modal-folder" @click="openPackFolder" title="Open pack folder"><i class="fa fa-folder-open"></i></button>
-            <button class="pv-modal-delete" :class="{ confirming: confirmDelete }" @click="deletePack" :title="confirmDelete ? 'Click again to delete' : 'Delete pack'">
+            <button v-if="showServerPacks" class="pv-modal-folder" :class="{ 'pv-export-btn': true, 'pv-export-active': !exportingServer }" @click="exportSelectedServerPacks" :disabled="exportingServer" title="Export all visible server packs">
+              <i :class="exportingServer ? 'fa fa-circle-notch fa-spin' : 'fa fa-file-export'"></i>
+            </button>
+            <button v-if="!showServerPacks" class="pv-modal-delete" :class="{ confirming: confirmDelete }" @click="deletePack" :title="confirmDelete ? 'Click again to delete' : 'Delete pack'">
               <i :class="confirmDelete ? 'fa fa-triangle-exclamation' : 'fa fa-trash'"></i>
             </button>
             <button class="pv-modal-close" @click="closeModal"><i class="fa fa-xmark"></i></button>
@@ -2372,7 +2456,7 @@ watch(() => props.openPackReq, (req) => {
             <i class="fa fa-rotate"></i> Reload
           </button>
           <span class="pv-mat-sep"></span>
-          <button class="pv-mat-btn" @click="showExportPopup = true" title="Export this pack as a .mcpack file">
+          <button v-if="!showServerPacks" class="pv-mat-btn" @click="showExportPopup = true" title="Export this pack as a .mcpack file">
             <i class="fa fa-file-export"></i> Export .mcpack
           </button>
         </div>
@@ -2923,7 +3007,8 @@ watch(() => props.openPackReq, (req) => {
 
 .pv-modal-folder,
 .pv-modal-delete,
-.pv-modal-close {
+.pv-modal-close,
+.pv-export-btn {
   width: 32px;
   height: 32px;
   border-radius: 8px;
@@ -2943,6 +3028,17 @@ watch(() => props.openPackReq, (req) => {
   background: var(--bg-hover-1);
   color: var(--text-primary);
   border-color: var(--border-focus);
+}
+
+.pv-export-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pv-export-btn:not(:disabled):hover {
+  background: var(--accent-active-bg);
+  color: var(--accent-light);
+  border-color: var(--accent);
 }
 
 .pv-modal-delete:hover {

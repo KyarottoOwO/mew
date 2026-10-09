@@ -19,19 +19,34 @@ type previewSkin struct {
 	gen  int
 }
 
-// chosenSkinPath is where the skin saved for one pack is kept, or "" for a
-// name that is not a plain pack directory name.
-func chosenSkinPath(packName string) string {
+// packSkinKey names a pack's chosen skin: its folder name for an installed
+// pack, prefixed for one in the server pack cache so the two never share a
+// skin. It is "" for a name that is not a plain folder name.
+func packSkinKey(base, packName string) string {
 	if packName == "" || filepath.Base(packName) != packName || packName == "." || packName == ".." {
 		return ""
 	}
-	return filepath.Join(os.Getenv("LOCALAPPDATA"), "mew", "pack_skins", packName+".png")
+	if base != "" {
+		return "server-cache_" + packName
+	}
+	return packName
+}
+
+// chosenSkinPath is where the skin saved for one pack is kept, or "" for an
+// empty key.
+func chosenSkinPath(key string) string {
+	if key == "" {
+		return ""
+	}
+	return filepath.Join(os.Getenv("LOCALAPPDATA"), "mew", "pack_skins", key+".png")
 }
 
 // PreviewPackSkin shows a skin on one pack's player until the viewer closes
 // or the skin is saved. The data URI must decode to a skin-sized image.
-func (a *App) PreviewPackSkin(packName string, dataURI string) error {
-	if chosenSkinPath(packName) == "" {
+// base is the pack's folder, as in RenderRequest.
+func (a *App) PreviewPackSkin(packName string, base string, dataURI string) error {
+	key := packSkinKey(base, packName)
+	if key == "" {
 		return fmt.Errorf("invalid pack name")
 	}
 	_, data, err := splitDataURI(dataURI)
@@ -51,7 +66,7 @@ func (a *App) PreviewPackSkin(packName string, dataURI string) error {
 		a.previewSkins = map[string]previewSkin{}
 	}
 	a.previewGen++
-	a.previewSkins[packName] = previewSkin{data: data, img: img, gen: a.previewGen}
+	a.previewSkins[key] = previewSkin{data: data, img: img, gen: a.previewGen}
 	return nil
 }
 
@@ -65,13 +80,14 @@ func (a *App) ClearPreviewSkins() {
 
 // SavePackSkin keeps the skin being previewed for one pack, so it shows every
 // time that pack is opened, and on its card.
-func (a *App) SavePackSkin(packName string) error {
-	p := chosenSkinPath(packName)
+func (a *App) SavePackSkin(packName string, base string) error {
+	key := packSkinKey(base, packName)
+	p := chosenSkinPath(key)
 	if p == "" {
 		return fmt.Errorf("invalid pack name")
 	}
 	a.previewMu.Lock()
-	prev, ok := a.previewSkins[packName]
+	prev, ok := a.previewSkins[key]
 	a.previewMu.Unlock()
 	if !ok {
 		return fmt.Errorf("no skin to save for %s", packName)
@@ -88,8 +104,8 @@ func (a *App) SavePackSkin(packName string) error {
 		return err
 	}
 	a.previewMu.Lock()
-	if cur, ok := a.previewSkins[packName]; ok && cur.gen == prev.gen {
-		delete(a.previewSkins, packName)
+	if cur, ok := a.previewSkins[key]; ok && cur.gen == prev.gen {
+		delete(a.previewSkins, key)
 	}
 	a.previewMu.Unlock()
 	return nil
@@ -97,13 +113,14 @@ func (a *App) SavePackSkin(packName string) error {
 
 // ClearPackSkin forgets the skin previewed and the one saved for one pack, so
 // it shows its own skin (or the default) again.
-func (a *App) ClearPackSkin(packName string) error {
-	p := chosenSkinPath(packName)
+func (a *App) ClearPackSkin(packName string, base string) error {
+	key := packSkinKey(base, packName)
+	p := chosenSkinPath(key)
 	if p == "" {
 		return fmt.Errorf("invalid pack name")
 	}
 	a.previewMu.Lock()
-	delete(a.previewSkins, packName)
+	delete(a.previewSkins, key)
 	a.previewMu.Unlock()
 	if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -112,8 +129,8 @@ func (a *App) ClearPackSkin(packName string) error {
 }
 
 // HasPackSkin reports whether a skin is saved for this pack.
-func (a *App) HasPackSkin(packName string) bool {
-	p := chosenSkinPath(packName)
+func (a *App) HasPackSkin(packName string, base string) bool {
+	p := chosenSkinPath(packSkinKey(base, packName))
 	if p == "" {
 		return false
 	}
@@ -121,19 +138,20 @@ func (a *App) HasPackSkin(packName string) bool {
 	return err == nil
 }
 
-// previewSkin returns the skin being previewed for a pack, or nil.
-func (a *App) previewSkin(packName string) image.Image {
+// previewSkin returns the skin being previewed under a pack's skin key, or
+// nil.
+func (a *App) previewSkin(key string) image.Image {
 	a.previewMu.Lock()
 	defer a.previewMu.Unlock()
-	return a.previewSkins[packName].img
+	return a.previewSkins[key].img
 }
 
 // previewSignature is part of a render's cache key: which preview, if any,
 // it was drawn with.
-func (a *App) previewSignature(packName string) string {
+func (a *App) previewSignature(key string) string {
 	a.previewMu.Lock()
 	defer a.previewMu.Unlock()
-	if p, ok := a.previewSkins[packName]; ok {
+	if p, ok := a.previewSkins[key]; ok {
 		return fmt.Sprintf("preview:%d;", p.gen)
 	}
 	return ""
