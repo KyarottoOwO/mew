@@ -28,6 +28,13 @@ jobs:
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
 
+      - name: Use the latest bedrock-skin-go
+        shell: bash
+        run: |
+          go get github.com/THEBOSS9345/bedrock-skin-go@latest
+          go mod tidy
+          grep bedrock-skin-go go.mod
+
       - name: Build
         shell: bash
         run: |

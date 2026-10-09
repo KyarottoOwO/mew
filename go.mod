@@ -3,7 +3,7 @@ module github.com/kyarottoOwO/mew
 go 1.26.5
 
 require (
-	github.com/THEBOSS9345/bedrock-skin-go v0.2.4
+	github.com/THEBOSS9345/bedrock-skin-go v0.2.5
 	github.com/google/uuid v1.6.0
 	github.com/nwaples/rardecode/v2 v2.2.5
 	github.com/swim-services/swim_porter v0.16.3

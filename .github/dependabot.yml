@@ -1,0 +1,10 @@
+# Opens a PR whenever a new bedrock-skin-go is released, so go.mod stays on
+# the latest skin renderer. CI builds also fetch the latest before building.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: daily
+    allow:
+      - dependency-name: github.com/THEBOSS9345/bedrock-skin-go
