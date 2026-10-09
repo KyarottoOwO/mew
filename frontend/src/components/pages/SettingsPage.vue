@@ -733,3 +733,4 @@ onMounted(loadSettings)
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 </style>
+
