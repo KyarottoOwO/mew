@@ -3,7 +3,7 @@ import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from
 import * as THREE from 'three'
 import PackExporter from './PackExporter.vue'
 import JsonUiStage from './JsonUiStage.vue'
-import { GetSettings, SaveSettings, GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPackSkinThumbnails, SetPackSkin, ClearPackSkin, HasPackSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug, PackHasUiScreens, RenderSkin, RenderSkinFrames, RenderSkinGIF, ListAnimations, RenderItem, RenderItemSpin, SaveRender } from '../../../wailsjs/go/main/App'
+import { GetSettings, SaveSettings, GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPackSkinThumbnails, PreviewPackSkin, SavePackSkin, ClearPreviewSkins, ClearPackSkin, HasPackSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug, PackHasUiScreens, RenderSkin, RenderSkinFrames, RenderSkinGIF, ListAnimations, RenderItem, RenderItemSpin, SaveRender } from '../../../wailsjs/go/main/App'
 
 import { parseBedrockCodes } from '../../utils/formatCodes'
 import { BACKGROUNDS, DEFAULT_BACKGROUND_ID, BACKGROUND_SETTING_KEY, DEFAULT_SKY_PACK_KEY, DEFAULT_SKY_SUBPACK_KEY, SKY_PACK_BACKGROUND_ID, SKY_PACK_SWATCH_STYLE, normalizeBackgroundId, backgroundById, backgroundSwatchStyle as swatchStyle } from '../../utils/backgrounds'
@@ -100,10 +100,11 @@ const skinFileInput = ref(null)
 // When true, the viewer draws the user's uploaded skin instead of the selected
 // pack's own player skin. Set when they use "Change Skin" and remembered, so
 // picking a skin visibly works even on packs that ship one.
-// packSkinChosen is true when the user picked a skin for the open pack with
-// "Change Skin". The skin is saved per pack by the backend, so it shows in
-// this pack only and is still there after a restart.
+// packSkinChosen is true when a skin is saved for the open pack. Change Skin
+// first previews a skin (skinPreviewing): it shows until the viewer closes,
+// and Save keeps it for this pack only, across restarts.
 const packSkinChosen = ref(false)
+const skinPreviewing = ref(false)
 const modalContainer = ref(null)
 const isDebug = ref(false)
 
@@ -1623,6 +1624,7 @@ async function openPack(packName) {
 }
 
 function closeModal() {
+  dropSkinPreviews()
   showModal.value = false
   confirmDelete.value = false
   fullscreen.value = false
@@ -1662,6 +1664,11 @@ function closeModal() {
 async function loadPackData(packName) {
   try {
     hasScreens.value = false
+    if (lastLoadedPack !== packName) {
+      // An unsaved skin belongs to the pack it was tried on: leaving that
+      // pack drops it, as closing the viewer does. A reload keeps it.
+      if (skinPreviewing.value) dropSkinPreviews()
+    }
     if (lastLoadedPack && lastLoadedPack !== packName) {
       invalidateSkyCache(lastLoadedPack)
       itemCache.delete(lastLoadedPack)
@@ -1893,8 +1900,24 @@ async function clearPackSkin() {
   if (!pack) return
   try { await ClearPackSkin(pack) } catch (err) { console.error('Failed to clear skin:', err); return }
   packSkinChosen.value = false
+  skinPreviewing.value = false
   refreshPlayer()
   refreshPackCard(pack)
+}
+
+async function savePackSkin() {
+  const pack = selectedPack.value
+  if (!pack || !skinPreviewing.value) return
+  try { await SavePackSkin(pack) } catch (err) { console.error('Failed to save skin:', err); return }
+  skinPreviewing.value = false
+  packSkinChosen.value = true
+  refreshPackCard(pack)
+}
+
+// dropSkinPreviews forgets every unsaved skin, when the viewer closes.
+function dropSkinPreviews() {
+  skinPreviewing.value = false
+  ClearPreviewSkins().catch(() => {})
 }
 
 function onSkinFileChange(e) {
@@ -1905,16 +1928,15 @@ function onSkinFileChange(e) {
   const reader = new FileReader()
   reader.onload = async () => {
     try {
-      await SetPackSkin(pack, reader.result)
+      await PreviewPackSkin(pack, reader.result)
     } catch (err) {
-      console.error('Failed to save skin:', err)
+      console.error('Failed to load skin:', err)
       return
     }
     if (selectedPack.value === pack) {
-      packSkinChosen.value = true
+      skinPreviewing.value = true
       refreshPlayer()
     }
-    refreshPackCard(pack)
   }
   reader.readAsDataURL(file)
 }
@@ -2340,7 +2362,10 @@ watch(() => props.openPackReq, (req) => {
           <button class="pv-mat-btn pv-skin-btn" @click="triggerSkinUpload">
             <i class="fa fa-user-pen"></i> Change Skin
           </button>
-          <button v-if="packSkinChosen" class="pv-mat-btn pv-reload-btn" @click="clearPackSkin" title="Show the pack's own skin again">
+          <button v-if="skinPreviewing" class="pv-mat-btn pv-save-skin-btn" @click="savePackSkin" title="Keep this skin for this pack">
+            <i class="fa fa-floppy-disk"></i> Save Skin
+          </button>
+          <button v-if="packSkinChosen || skinPreviewing" class="pv-mat-btn pv-reload-btn" @click="clearPackSkin" title="Show the pack's own skin again">
             <i class="fa fa-rotate-left"></i> Pack Skin
           </button>
           <button class="pv-mat-btn pv-reload-btn" @click="reloadPack" title="Reload this pack from disk">
@@ -3092,6 +3117,13 @@ watch(() => props.openPackReq, (req) => {
 
 .pv-skin-btn i { margin-right: 0.3rem; }
 
+.pv-save-skin-btn {
+  border-color: rgba(120, 220, 140, 0.55);
+  color: #8fe3a1;
+}
+.pv-save-skin-btn:hover {
+  background: rgba(120, 220, 140, 0.15);
+}
 .pv-reload-btn {
   color: var(--accent-light);
 }

@@ -28,6 +28,9 @@ type App struct {
 	thumbCache     sync.Map
 	renderCache    *renderLRU
 	framesCache    *framesCache
+	previewMu      sync.Mutex
+	previewSkins   map[string]previewSkin
+	previewGen     int
 }
 
 func NewApp(debug bool) *App {

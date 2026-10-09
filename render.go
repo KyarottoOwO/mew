@@ -165,10 +165,14 @@ func (a *App) defaultSkin() image.Image {
 	return mewSkinImage()
 }
 
-// skinFor returns the player skin to draw: the skin the user chose for this
-// pack with "Change Skin", else the pack's own, else the user's default skin,
-// else MEW's own embedded one. It never returns nil.
+// skinFor returns the player skin to draw: a skin being previewed for this
+// pack with "Change Skin", else the one saved for it, else the pack's own,
+// else the user's default skin, else MEW's own embedded one. It never returns
+// nil.
 func (a *App) skinFor(packName string) image.Image {
+	if img := a.previewSkin(packName); img != nil {
+		return img
+	}
 	if p := chosenSkinPath(packName); p != "" {
 		if img := a.loadFileTexture(p); img != nil {
 			return img
@@ -939,6 +943,7 @@ func (a *App) framesCacheKey(req RenderRequest) string {
 // requestSignature fingerprints the pack and default-skin files a request uses.
 func (a *App) requestSignature(req RenderRequest) string {
 	var b strings.Builder
+	b.WriteString(a.previewSignature(req.Pack))
 	statInto(&b, chosenSkinPath(req.Pack))
 	statInto(&b, a.skinPath(req.Pack))
 	statInto(&b, defaultSkinPath())

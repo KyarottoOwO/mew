@@ -223,10 +223,10 @@ func TestRenderSkinBasics(t *testing.T) {
 	}
 }
 
-// A skin chosen with "Change Skin" belongs to one pack: it replaces that
-// pack's own skin, leaves every other pack alone, survives a fresh App (a
-// restart), and clearing it brings the pack's skin back.
-func TestPackSkinIsPerPack(t *testing.T) {
+// "Change Skin" previews a skin on one pack: it replaces that pack's own skin
+// and no other's, and closing the viewer drops it. Saving keeps it for that
+// pack across restarts, and clearing brings the pack's own skin back.
+func TestPackSkinPreviewAndSave(t *testing.T) {
 	a := testApp(t)
 	root := a.getResourcePacksPath()
 	blue := solidPNG(t, 64, 64, color.NRGBA{0, 0, 255, 255})
@@ -241,44 +241,63 @@ func TestPackSkinIsPerPack(t *testing.T) {
 		return uri
 	}
 	before := render(a, "one")
-	if render(a, "two") != before {
-		t.Fatal("two packs with the same skin should render the same")
-	}
-
 	red := "data:image/png;base64," + base64.StdEncoding.EncodeToString(solidPNG(t, 64, 64, color.NRGBA{255, 0, 0, 255}))
-	if err := a.SetPackSkin("one", red); err != nil {
+
+	// A preview shows on its pack only, and closing the viewer drops it.
+	if err := a.PreviewPackSkin("one", red); err != nil {
 		t.Fatal(err)
-	}
-	if !a.HasPackSkin("one") || a.HasPackSkin("two") {
-		t.Fatal("HasPackSkin should be true for the changed pack only")
 	}
 	changed := render(a, "one")
 	if changed == before {
-		t.Fatal("the chosen skin should replace the pack's own")
+		t.Fatal("the previewed skin should replace the pack's own")
 	}
 	if render(a, "two") != before {
-		t.Fatal("changing one pack's skin changed another pack")
+		t.Fatal("previewing on one pack changed another pack")
+	}
+	if a.HasPackSkin("one") {
+		t.Fatal("a preview is not saved until Save")
+	}
+	a.ClearPreviewSkins()
+	if render(a, "one") != before {
+		t.Fatal("closing the viewer should drop the preview")
+	}
+	if err := a.SavePackSkin("one"); err == nil {
+		t.Fatal("saving with nothing previewed should fail")
 	}
 
+	// Saved, it stays for that pack, across a restart.
+	if err := a.PreviewPackSkin("one", red); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SavePackSkin("one"); err != nil {
+		t.Fatal(err)
+	}
+	a.ClearPreviewSkins()
+	if !a.HasPackSkin("one") || a.HasPackSkin("two") {
+		t.Fatal("HasPackSkin should be true for the saved pack only")
+	}
+	if render(a, "one") != changed {
+		t.Fatal("the saved skin should show after the viewer closes")
+	}
 	restarted := NewApp(false)
 	restarted.settings["resourcePacksPath"] = root
 	if render(restarted, "one") != changed {
-		t.Fatal("the chosen skin should still be there after a restart")
+		t.Fatal("the saved skin should still be there after a restart")
 	}
 
 	if err := a.ClearPackSkin("one"); err != nil {
 		t.Fatal(err)
 	}
 	if render(a, "one") != before {
-		t.Fatal("clearing the chosen skin should bring the pack's own back")
+		t.Fatal("clearing should bring the pack's own skin back")
 	}
 
-	for _, bad := range []string{"", "..", "../x", `a`} {
-		if err := a.SetPackSkin(bad, red); err == nil {
-			t.Errorf("SetPackSkin(%q) should be refused", bad)
+	for _, bad := range []string{"", "..", "../x", `a/b`, `a\b`} {
+		if err := a.PreviewPackSkin(bad, red); err == nil {
+			t.Errorf("PreviewPackSkin(%q) should be refused", bad)
 		}
 	}
-	if err := a.SetPackSkin("one", "data:image/png;base64,AAAA"); err == nil {
+	if err := a.PreviewPackSkin("one", "data:image/png;base64,AAAA"); err == nil {
 		t.Error("a non-image should be refused")
 	}
 }
