@@ -49,11 +49,6 @@ type PackPreviewInfo struct {
 	IconURI     string `json:"iconURI"`
 }
 
-type ArmorTextures struct {
-	Layer1 string `json:"layer1"`
-	Layer2 string `json:"layer2"`
-}
-
 type ItemTexture struct {
 	Name    string `json:"name"`
 	DataURI string `json:"dataURI"`
@@ -358,23 +353,6 @@ func (a *App) GetPackPreviewInfo(packName string) (PackPreviewInfo, error) {
 	}
 
 	return info, nil
-}
-
-func (a *App) GetPackArmorTextures(packName string, material string) (ArmorTextures, error) {
-	dir := a.getPackDir(packName)
-	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
-		return ArmorTextures{}, fmt.Errorf("pack not found: %s", packName)
-	}
-
-	result := ArmorTextures{}
-	if material == "" || material == "naked" {
-		return result, nil
-	}
-	// The pack's layer when it retextures it, vanilla's otherwise, as the
-	// game itself would.
-	result.Layer1 = imageToDataURI(a.armorLayer(packName, material, 1))
-	result.Layer2 = imageToDataURI(a.armorLayer(packName, material, 2))
-	return result, nil
 }
 
 // vanillaArmorMaterials are the armor sets vanilla ships textures for.
@@ -1119,18 +1097,4 @@ func (a *App) SaveImage(sessionId string, msg SaveImageRequest) (string, error) 
 
 	a.touchSession(sessionId)
 	return "success", nil
-}
-
-// heldToolRe matches the tools the Pack Viewer can put in the player's hand,
-// e.g. diamond_sword or gold_pickaxe. Both Bedrock's own tier prefixes and
-// Java's (wooden_/golden_) are accepted; itemTexture maps them.
-var heldToolRe = regexp.MustCompile(`^(wood|wooden|stone|iron|gold|golden|diamond|netherite)_(sword|pickaxe|axe|shovel|hoe)$`)
-
-// GetHeldItemTexture returns the texture for a tool held in the Pack Viewer:
-// the pack's own when it retextures the tool, vanilla's otherwise.
-func (a *App) GetHeldItemTexture(packName string, name string) (string, error) {
-	if !heldToolRe.MatchString(name) {
-		return "", fmt.Errorf("not a holdable tool: %s", name)
-	}
-	return imageToDataURI(a.itemTexture(packName, name)), nil
 }
