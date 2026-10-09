@@ -340,9 +340,23 @@ async function buildSkyCubemap(key, tex, cap) {
 // started earlier (a previous subpack, or the previous pack) must not replace
 // the one asked for last.
 let skySeq = 0
+// skyLoading is true from a sky request until its sky is on screen, so the
+// viewer can say the sky is still coming rather than leave it black.
+const skyLoading = ref(false)
+
+function beginSky() {
+  skyLoading.value = true
+  return ++skySeq
+}
+
+// endSky marks a request finished without a new sky, e.g. one that failed.
+function endSky(seq) {
+  if (seq === skySeq) skyLoading.value = false
+}
 
 function setSkyOnViewers(cubemap, seq = skySeq) {
   if (seq !== skySeq) return
+  skyLoading.value = false
   if (viewerInstance) { viewerInstance.scene.background = cubemap; renderSky(viewerInstance) }
   if (fsViewerInstance) { fsViewerInstance.scene.background = cubemap; renderSky(fsViewerInstance) }
 }
@@ -1589,6 +1603,7 @@ function closeModal() {
   animFramesFresh = false
   setLastSkyTex(null)
   currentSkyKey = null
+  skyLoading.value = false
   skySubpacks.value = []
   skySlider.value = 0
   packHasSky.value = false
@@ -1639,7 +1654,7 @@ async function loadPackData(packName) {
     skySlider.value = 0
     packHasSky.value = hasCubemapFaces(skyTex) || skySubpacks.value.length > 0
     if (hasCubemapFaces(skyTex)) {
-      const seq = ++skySeq
+      const seq = beginSky()
       setLastSkyTex(skyTex)
       const cubemap = await skyBuild(packName + '#base', skyTex)
       if (seq !== skySeq) return
@@ -1659,6 +1674,7 @@ async function loadPackData(packName) {
     scheduleIdleGC(null, 'load pack')
   } catch (e) {
     console.error('Failed to load pack data:', e)
+    skyLoading.value = false
   }
 }
 
@@ -1686,13 +1702,14 @@ async function applySkySubpack(idx) {
   if (!skySubpacks.value.length) return
   const sp = skySubpacks.value[idx]
   if (!sp) return
-  const seq = ++skySeq
+  const seq = beginSky()
   const tex = await cachedTextureFetch(selectedPack.value + '|sub|' + sp.folderName, () => GetPackSkySubpackTextures(selectedPack.value, sp.folderName))
   if (isDebug.value) {
     console.log('[subpack]', selectedPack.value, sp.folderName, JSON.stringify(tex, (k, v) => v ? (typeof v === 'string' ? v.slice(0, 40) + '...' : v) : v))
   }
   if (!tex || (!tex.cubemap0 && !tex.cubemap1)) {
     if (isDebug.value) console.warn('[subpack] no cubemap textures returned for', sp.folderName)
+    endSky(seq)
     return
   }
   if (seq !== skySeq) return
@@ -1730,7 +1747,7 @@ async function loadDefaultSkyPack() {
 // this does nothing while one is loaded - the menu is disabled for that case.
 async function applyBackground() {
   if (packHasSky.value) return
-  const seq = ++skySeq
+  const seq = beginSky()
   // The default sky pack from Settings comes before the built-in backgrounds.
   if (defaultSkyPack.value) {
     try {
@@ -2140,6 +2157,7 @@ watch(() => props.openPackReq, (req) => {
         <div v-show="viewerMode === 'texture'" class="pv-viewer-wrap">
           <div ref="modalContainer" class="pv-3d">
             <img v-if="modalPlayerSrc" :src="modalPlayerSrc" class="pv-player-img" width="512" height="512" alt="Player preview" />
+            <div v-if="skyLoading" class="pv-sky-loading"><i class="fa fa-spinner fa-spin"></i> Loading sky…</div>
           </div>
 
           <button class="pv-nav pv-nav-prev" @click.stop="navPack(-1)" title="Previous pack"><i class="fa fa-chevron-left"></i></button>
@@ -2837,6 +2855,18 @@ watch(() => props.openPackReq, (req) => {
 }
 
 .pv-3d canvas { display: block; }
+.pv-sky-loading {
+  position: absolute;
+  top: 0.6rem;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #ddd;
+  font-size: 0.75rem;
+  pointer-events: none;
+}
 
 /* The player is a transparent bedrock-skin-go render laid over the sky
    canvas and centred in the square that fits the viewer. object-fit keeps the
