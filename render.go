@@ -98,14 +98,10 @@ type RenderRequest struct {
 	ModelSize float64            `json:"modelSize"` // Scale.Model, 0 = 1
 	Parts     map[string]float64 `json:"parts"`     // Scale.Parts, restricted to the six body parts
 	HideSkin  bool               `json:"hideSkin"`  // equipment only
-	// OverrideSkin uses the user's uploaded skin instead of the pack's own
-	// player skin. The viewer sets it when the user picks a skin with "Change
-	// Skin", so that choice is not silently ignored by a pack that ships one.
-	OverrideSkin bool   `json:"overrideSkin"`
-	Animation    string `json:"animation"` // "" for a still; else a Motion name or ExampleAnimations key
-	Frame        int    `json:"frame"`     // which frame of Animation to draw; wrapped into range
-	FPS          int    `json:"fps"`       // clamp 1..30, default 15
-	Frames       int    `json:"frames"`    // 0 = one loop; clamp to 120
+	Animation string             `json:"animation"` // "" for a still; else a Motion name or ExampleAnimations key
+	Frame     int                `json:"frame"`     // which frame of Animation to draw; wrapped into range
+	FPS       int                `json:"fps"`       // clamp 1..30, default 15
+	Frames    int                `json:"frames"`    // 0 = one loop; clamp to 120
 }
 
 // HandRequest is one hand's item and its optional manual adjustment.
@@ -158,9 +154,8 @@ func defaultSkinPath() string {
 	return filepath.Join(os.Getenv("LOCALAPPDATA"), "mew", "default_skin.png")
 }
 
-// defaultSkin returns the user's uploaded skin, else MEW's own embedded one. It
-// is the fallback for a pack without a skin, and the override when the viewer
-// asks to use the user's skin explicitly. It never returns nil.
+// defaultSkin returns the user's default skin, else MEW's own embedded one. It
+// is the fallback for a pack without a skin. It never returns nil.
 func (a *App) defaultSkin() image.Image {
 	if p := defaultSkinPath(); p != "" {
 		if img := a.loadFileTexture(p); img != nil {
@@ -170,9 +165,15 @@ func (a *App) defaultSkin() image.Image {
 	return mewSkinImage()
 }
 
-// skinFor returns the player skin to draw: the pack's, else the user's
-// default skin, else MEW's own embedded one. It never returns nil.
+// skinFor returns the player skin to draw: the skin the user chose for this
+// pack with "Change Skin", else the pack's own, else the user's default skin,
+// else MEW's own embedded one. It never returns nil.
 func (a *App) skinFor(packName string) image.Image {
+	if p := chosenSkinPath(packName); p != "" {
+		if img := a.loadFileTexture(p); img != nil {
+			return img
+		}
+	}
 	if p := a.skinPath(packName); p != "" {
 		if img := a.loadFileTexture(p); img != nil {
 			return img
@@ -466,9 +467,6 @@ func (a *App) renderOptions(req RenderRequest) (bedrockskin.Options, error) {
 	}
 
 	skin := a.skinFor(req.Pack)
-	if req.OverrideSkin {
-		skin = a.defaultSkin()
-	}
 	if skin == nil {
 		return bedrockskin.Options{}, bedrockskin.ErrNoTexture
 	}
@@ -941,6 +939,7 @@ func (a *App) framesCacheKey(req RenderRequest) string {
 // requestSignature fingerprints the pack and default-skin files a request uses.
 func (a *App) requestSignature(req RenderRequest) string {
 	var b strings.Builder
+	statInto(&b, chosenSkinPath(req.Pack))
 	statInto(&b, a.skinPath(req.Pack))
 	statInto(&b, defaultSkinPath())
 	material := strings.ToLower(strings.TrimSpace(req.Material))

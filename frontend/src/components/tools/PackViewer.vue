@@ -3,7 +3,7 @@ import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from
 import * as THREE from 'three'
 import PackExporter from './PackExporter.vue'
 import JsonUiStage from './JsonUiStage.vue'
-import { GetSettings, SaveSettings, GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPackSkinThumbnails, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug, PackHasUiScreens, RenderSkin, RenderSkinFrames, RenderSkinGIF, ListAnimations, RenderItem, RenderItemSpin, SaveRender } from '../../../wailsjs/go/main/App'
+import { GetSettings, SaveSettings, GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPackSkinThumbnails, SetPackSkin, ClearPackSkin, HasPackSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug, PackHasUiScreens, RenderSkin, RenderSkinFrames, RenderSkinGIF, ListAnimations, RenderItem, RenderItemSpin, SaveRender } from '../../../wailsjs/go/main/App'
 
 import { parseBedrockCodes } from '../../utils/formatCodes'
 import { BACKGROUNDS, DEFAULT_BACKGROUND_ID, BACKGROUND_SETTING_KEY, DEFAULT_SKY_PACK_KEY, DEFAULT_SKY_SUBPACK_KEY, normalizeBackgroundId, backgroundById, backgroundSwatchStyle as swatchStyle } from '../../utils/backgrounds'
@@ -96,14 +96,14 @@ let dragging = false
 let dragMoved = false
 let inertia = null
 
-const customSkinURI = ref('')
 const skinFileInput = ref(null)
 // When true, the viewer draws the user's uploaded skin instead of the selected
 // pack's own player skin. Set when they use "Change Skin" and remembered, so
 // picking a skin visibly works even on packs that ship one.
-const SKIN_OVERRIDE_KEY = 'mew.pv.skinOverride'
-const skinOverride = ref(false)
-try { skinOverride.value = localStorage.getItem(SKIN_OVERRIDE_KEY) === '1' } catch {}
+// packSkinChosen is true when the user picked a skin for the open pack with
+// "Change Skin". The skin is saved per pack by the backend, so it shows in
+// this pack only and is still there after a restart.
+const packSkinChosen = ref(false)
 const modalContainer = ref(null)
 const isDebug = ref(false)
 
@@ -357,8 +357,12 @@ function endSky(seq) {
 function setSkyOnViewers(cubemap, seq = skySeq) {
   if (seq !== skySeq) return
   skyLoading.value = false
-  if (viewerInstance) { viewerInstance.scene.background = cubemap; renderSky(viewerInstance) }
-  if (fsViewerInstance) { fsViewerInstance.scene.background = cubemap; renderSky(fsViewerInstance) }
+  for (const v of [viewerInstance, fsViewerInstance]) {
+    if (!v || v.disposed) continue
+    v.scene.background = cubemap
+    renderSky(v)
+    redrawSkySoon(v)
+  }
 }
 
 function invalidateSkyCache(pack) {
@@ -613,7 +617,6 @@ function currentRequest(size, animation = '', frame = 0) {
     camera: { yaw: viewYaw.value, pitch: viewPitch.value, fov: FOV, margin: viewZoom.value },
     size,
     hideSkin: equipmentOnly.value,
-    overrideSkin: skinOverride.value,
     animation,
     frame,
     fps: ANIM_FPS,
@@ -842,7 +845,22 @@ function createSkyView(container) {
   camera.position.set(0, 0, 0)
   const v = { renderer, scene, camera, container, canvas: el, disposed: false }
   setupSkyInteraction(v)
+  // If the browser drops the WebGL context and gives it back, three.js
+  // rebuilds its state, but nothing redraws until the user moves the camera:
+  // draw the sky again as soon as the context returns.
+  el.addEventListener('webglcontextrestored', () => redrawSkySoon(v))
   return v
+}
+
+// redrawSkySoon draws a view's sky on the next frame, once layout has settled,
+// so a sky set while the viewer was still opening is not left black.
+function redrawSkySoon(v) {
+  requestAnimationFrame(() => {
+    if (!v || v.disposed || !v.canvas.isConnected) return
+    const r = v.container.getBoundingClientRect()
+    resizeSkyView(v, r.width, r.height)
+    renderSky(v)
+  })
 }
 
 function resizeSkyView(v, w, h) {
@@ -874,15 +892,27 @@ function ensureSkyView(which) {
   const container = which === 'fs' ? fsContainerRef.value : modalContainer.value
   if (!container) return null
   let v = which === 'fs' ? fsViewerInstance : viewerInstance
-  if (!v || v.disposed || v.container !== container) {
-    if (v) disposeViewerResources(v)
+  if (!v || v.disposed) {
     v = createSkyView(container)
     if (which === 'fs') fsViewerInstance = v
     else viewerInstance = v
+  } else if (v.container !== container || !v.canvas.isConnected) {
+    // Reuse the renderer: the viewer's container is new each time it opens,
+    // and making a WebGL context per open is what got contexts dropped.
+    container.appendChild(v.canvas)
+    v.container = container
   }
   const r = container.getBoundingClientRect()
   resizeSkyView(v, r.width, r.height)
   return v
+}
+
+// parkSkyView takes a view off screen and drops its sky, keeping its renderer
+// and WebGL context for the next time the viewer opens.
+function parkSkyView(v) {
+  if (!v || v.disposed) return
+  try { v.scene.background = null } catch {}
+  try { v.canvas.remove() } catch {}
 }
 
 function disposeViewerResources(v) {
@@ -1594,9 +1624,9 @@ function closeModal() {
   stopAnimationLoop()
   if (animDebounce) { clearTimeout(animDebounce); animDebounce = null }
   if (skyResizeObserver) { skyResizeObserver.disconnect(); skyResizeObserver = null }
-  disposeViewerResources(viewerInstance)
+  // The modal's renderer is kept for the next pack; only its sky is dropped.
+  parkSkyView(viewerInstance)
   disposeViewerResources(fsViewerInstance)
-  viewerInstance = null
   fsViewerInstance = null
   animationName.value = ''
   animFrames.value = []
@@ -1632,6 +1662,8 @@ async function loadPackData(packName) {
       invalidateTextureCache(lastLoadedPack)
     }
     lastLoadedPack = packName
+    packSkinChosen.value = false
+    loadPackSkinChosen(packName)
     // The player does not depend on the sky, and a pack's sky can take seconds
     // to build, so draw the player straight away rather than after it.
     const player = applyPlayerAppearance()
@@ -1821,23 +1853,48 @@ function formatName(name) {
 
 function triggerSkinUpload() { skinFileInput.value?.click() }
 
-function setSkinOverride(on) {
-  skinOverride.value = on
-  try { localStorage.setItem(SKIN_OVERRIDE_KEY, on ? '1' : '0') } catch {}
-  refreshPlayer()
+// refreshPackCard redraws one pack's card image after its skin changed.
+async function refreshPackCard(packName) {
+  try {
+    const thumbs = await GetPackSkinThumbnails([packName])
+    const card = (packList.value || []).find(p => p.dirName === packName)
+    if (card && thumbs && thumbs[packName]) card.skinThumb = thumbs[packName]
+  } catch {}
 }
 
-async function onSkinFileChange(e) {
+async function loadPackSkinChosen(packName) {
+  try { packSkinChosen.value = !!(await HasPackSkin(packName)) } catch { packSkinChosen.value = false }
+}
+
+async function clearPackSkin() {
+  const pack = selectedPack.value
+  if (!pack) return
+  try { await ClearPackSkin(pack) } catch (err) { console.error('Failed to clear skin:', err); return }
+  packSkinChosen.value = false
+  refreshPlayer()
+  refreshPackCard(pack)
+}
+
+function onSkinFileChange(e) {
   const file = e.target.files?.[0]
-  if (!file) return
+  const pack = selectedPack.value
+  e.target.value = ''
+  if (!file || !pack) return
   const reader = new FileReader()
   reader.onload = async () => {
-    customSkinURI.value = reader.result
-    try { await SaveDefaultSkin(reader.result) } catch (err) { console.error('Failed to save skin:', err) }
-    setSkinOverride(true)
+    try {
+      await SetPackSkin(pack, reader.result)
+    } catch (err) {
+      console.error('Failed to save skin:', err)
+      return
+    }
+    if (selectedPack.value === pack) {
+      packSkinChosen.value = true
+      refreshPlayer()
+    }
+    refreshPackCard(pack)
   }
   reader.readAsDataURL(file)
-  e.target.value = ''
 }
 
 async function loadCustomItems() {
@@ -2257,7 +2314,7 @@ watch(() => props.openPackReq, (req) => {
           <button class="pv-mat-btn pv-skin-btn" @click="triggerSkinUpload">
             <i class="fa fa-user-pen"></i> Change Skin
           </button>
-          <button v-if="skinOverride" class="pv-mat-btn pv-reload-btn" @click="setSkinOverride(false)" title="Show the pack's own skin again">
+          <button v-if="packSkinChosen" class="pv-mat-btn pv-reload-btn" @click="clearPackSkin" title="Show the pack's own skin again">
             <i class="fa fa-rotate-left"></i> Pack Skin
           </button>
           <button class="pv-mat-btn pv-reload-btn" @click="reloadPack" title="Reload this pack from disk">

@@ -223,28 +223,63 @@ func TestRenderSkinBasics(t *testing.T) {
 	}
 }
 
-func TestRenderSkinOverrideUsesDefaultSkin(t *testing.T) {
+// A skin chosen with "Change Skin" belongs to one pack: it replaces that
+// pack's own skin, leaves every other pack alone, survives a fresh App (a
+// restart), and clearing it brings the pack's skin back.
+func TestPackSkinIsPerPack(t *testing.T) {
 	a := testApp(t)
 	root := a.getResourcePacksPath()
-	// The pack ships its own player skin, and the user has uploaded a default
-	// one. "Change Skin" must be able to override the pack's, and reverting must
-	// bring it back.
-	writeFile(t, filepath.Join(root, "withSkin", "textures", "entity", "steve.png"), solidPNG(t, 64, 64, color.NRGBA{0, 0, 255, 255}))
-	writeFile(t, defaultSkinPath(), solidPNG(t, 64, 64, color.NRGBA{255, 0, 0, 255}))
+	blue := solidPNG(t, 64, 64, color.NRGBA{0, 0, 255, 255})
+	writeFile(t, filepath.Join(root, "one", "textures", "entity", "steve.png"), blue)
+	writeFile(t, filepath.Join(root, "two", "textures", "entity", "steve.png"), blue)
+	render := func(a *App, pack string) string {
+		t.Helper()
+		uri, err := a.RenderSkin(RenderRequest{Pack: pack, Size: 64})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return uri
+	}
+	before := render(a, "one")
+	if render(a, "two") != before {
+		t.Fatal("two packs with the same skin should render the same")
+	}
 
-	packSkin, err := a.RenderSkin(RenderRequest{Pack: "withSkin", Size: 64})
-	if err != nil {
+	red := "data:image/png;base64," + base64.StdEncoding.EncodeToString(solidPNG(t, 64, 64, color.NRGBA{255, 0, 0, 255}))
+	if err := a.SetPackSkin("one", red); err != nil {
 		t.Fatal(err)
 	}
-	override, err := a.RenderSkin(RenderRequest{Pack: "withSkin", OverrideSkin: true, Size: 64})
-	if err != nil {
+	if !a.HasPackSkin("one") || a.HasPackSkin("two") {
+		t.Fatal("HasPackSkin should be true for the changed pack only")
+	}
+	changed := render(a, "one")
+	if changed == before {
+		t.Fatal("the chosen skin should replace the pack's own")
+	}
+	if render(a, "two") != before {
+		t.Fatal("changing one pack's skin changed another pack")
+	}
+
+	restarted := NewApp(false)
+	restarted.settings["resourcePacksPath"] = root
+	if render(restarted, "one") != changed {
+		t.Fatal("the chosen skin should still be there after a restart")
+	}
+
+	if err := a.ClearPackSkin("one"); err != nil {
 		t.Fatal(err)
 	}
-	if packSkin == override {
-		t.Fatal("OverrideSkin should render the user's skin, not the pack's")
+	if render(a, "one") != before {
+		t.Fatal("clearing the chosen skin should bring the pack's own back")
 	}
-	if override == "" {
-		t.Fatal("OverrideSkin should still render even with no pack skin")
+
+	for _, bad := range []string{"", "..", "../x", `a`} {
+		if err := a.SetPackSkin(bad, red); err == nil {
+			t.Errorf("SetPackSkin(%q) should be refused", bad)
+		}
+	}
+	if err := a.SetPackSkin("one", "data:image/png;base64,AAAA"); err == nil {
+		t.Error("a non-image should be refused")
 	}
 }
 
