@@ -1,6 +1,7 @@
 <script setup>
-import { ref, onMounted, watch } from 'vue'
-import { GetSettings, SaveSettings, SelectDirectory, DetectMinecraftPaths, ClearCache, OpenMewDataDir } from '../../../wailsjs/go/main/App'
+import { ref, computed, onMounted, watch } from 'vue'
+import { GetSettings, SaveSettings, SelectDirectory, DetectMinecraftPaths, ClearCache, OpenMewDataDir, GetSkyPacks } from '../../../wailsjs/go/main/App'
+import { BACKGROUNDS, DEFAULT_BACKGROUND_ID, BACKGROUND_SETTING_KEY, DEFAULT_SKY_PACK_KEY, DEFAULT_SKY_SUBPACK_KEY, SKY_PACK_BACKGROUND_ID, SKY_PACK_SWATCH_STYLE, normalizeBackgroundId, backgroundSwatchStyle } from '../../utils/backgrounds'
 
 const autoImport = ref(false)
 const autoOpenFolder = ref(false)
@@ -17,6 +18,14 @@ const recolorAutosave = ref(true)
 const resourcePacksPath = ref('')
 const packCachePath = ref('')
 const theme = ref('dark')
+const viewerBackground = ref(DEFAULT_BACKGROUND_ID)
+const defaultSkyPack = ref('')
+const defaultSkySubpack = ref('')
+// Installed packs that ship a sky, each with the subpacks that have one.
+const skyPacks = ref([])
+const skyPacksLoaded = ref(false)
+const selectedSkyPack = computed(() => skyPacks.value.find(p => p.dirName === defaultSkyPack.value) || null)
+const skySubpacks = computed(() => selectedSkyPack.value ? selectedSkyPack.value.subpacks : [])
 
 const detectedPaths = ref([])
 const selectedMinecraftPath = ref('')
@@ -43,6 +52,10 @@ async function loadSettings() {
     resourcePacksPath.value = s.resourcePacksPath || ''
     packCachePath.value = s.packCachePath || ''
     theme.value = s.theme || 'dark'
+    viewerBackground.value = normalizeBackgroundId(s[BACKGROUND_SETTING_KEY])
+    defaultSkyPack.value = typeof s[DEFAULT_SKY_PACK_KEY] === 'string' ? s[DEFAULT_SKY_PACK_KEY] : ''
+    defaultSkySubpack.value = typeof s[DEFAULT_SKY_SUBPACK_KEY] === 'string' ? s[DEFAULT_SKY_SUBPACK_KEY] : ''
+    loadSkyPacks()
 
     detectedPaths.value = await DetectMinecraftPaths()
 
@@ -91,6 +104,9 @@ async function persistSettings() {
       resourcePacksPath: finalPath,
       packCachePath: packCachePath.value,
       theme: theme.value,
+      [BACKGROUND_SETTING_KEY]: viewerBackground.value,
+      [DEFAULT_SKY_PACK_KEY]: defaultSkyPack.value,
+      [DEFAULT_SKY_SUBPACK_KEY]: defaultSkySubpack.value,
     }
     await SaveSettings(data)
 
@@ -103,6 +119,38 @@ async function persistSettings() {
 
 function onThemeChange() {
   persistSettings()
+}
+
+async function loadSkyPacks() {
+  try {
+    skyPacks.value = await GetSkyPacks() || []
+  } catch (e) {
+    console.error('Failed to load sky packs:', e)
+    skyPacks.value = []
+  }
+  skyPacksLoaded.value = true
+}
+
+// skyPackLabel is a pack's name without Bedrock's colour codes, which a plain
+// <option> cannot show.
+function skyPackLabel(p) {
+  return (p.name || p.dirName).replace(/§./g, '').trim() || p.dirName
+}
+
+async function onDefaultSkyPackChange() {
+  // A pack with no sky of its own starts on its first sky subpack; one that
+  // has its own sky starts on that.
+  const pack = selectedSkyPack.value
+  defaultSkySubpack.value = pack && !pack.hasSky && pack.subpacks.length ? pack.subpacks[0].folderName : ''
+  // Picking a sky pack selects its swatch, so the viewer shows it; clearing
+  // it falls back to the default gradient.
+  if (defaultSkyPack.value) viewerBackground.value = SKY_PACK_BACKGROUND_ID
+  else if (viewerBackground.value === SKY_PACK_BACKGROUND_ID) viewerBackground.value = DEFAULT_BACKGROUND_ID
+  await persistSettings()
+}
+
+async function onDefaultSkySubpackChange() {
+  await persistSettings()
 }
 
 watch([portAllSkies, skyPresets], ([all, presets]) => {
@@ -210,6 +258,51 @@ onMounted(loadSettings)
           <select v-model="theme" class="select-input" @change="onThemeChange">
             <option value="dark">Dark</option>
             <option value="light">Light</option>
+          </select>
+        </div>
+
+        <div class="setting-row setting-row-block">
+          <div class="setting-info">
+            <span class="setting-label">Viewer Background</span>
+            <span class="setting-desc">Sky shown in the Pack Viewer when a pack ships no sky of its own. A pack's own sky always takes precedence.</span>
+          </div>
+          <div class="bg-swatches">
+            <button v-if="defaultSkyPack" class="bg-swatch bg-swatch-skypack"
+              :class="{ active: viewerBackground === SKY_PACK_BACKGROUND_ID }"
+              :style="SKY_PACK_SWATCH_STYLE" :title="'Sky pack: ' + defaultSkyPack"
+              @click="setViewerBackground(SKY_PACK_BACKGROUND_ID)"><i class="fa fa-cloud"></i></button>
+            <button v-for="bg in BACKGROUNDS" :key="bg.id"
+              class="bg-swatch" :class="{ active: viewerBackground === bg.id }"
+              :style="backgroundSwatchStyle(bg)" :title="bg.name"
+              @click="setViewerBackground(bg.id)"></button>
+          </div>
+        </div>
+
+        <div class="setting-row setting-row-block">
+          <div class="setting-info">
+            <span class="setting-label">Default Sky Pack</span>
+            <span class="setting-desc">Optional: Use a custom pack's sky as fallback when a pack has no sky (e.g. Reimagined SkyCubemaps).</span>
+          </div>
+          <select v-model="defaultSkyPack" class="select-input" @change="onDefaultSkyPackChange" @focus="loadSkyPacks">
+            <option value="">None (use the Viewer Background)</option>
+            <option v-if="defaultSkyPack && skyPacksLoaded && !selectedSkyPack" :value="defaultSkyPack">{{ defaultSkyPack }} (not installed)</option>
+            <option v-for="p in skyPacks" :key="p.dirName" :value="p.dirName">{{ skyPackLabel(p) }}</option>
+          </select>
+        </div>
+        <div v-if="skyPacksLoaded && skyPacks.length === 0" class="setting-row setting-row-block">
+          <div class="setting-info">
+            <span class="setting-desc">None of your installed packs has a sky. Install one with a sky, then pick it here.</span>
+          </div>
+        </div>
+
+        <div v-if="selectedSkyPack && skySubpacks.length > 0" class="setting-row setting-row-block">
+          <div class="setting-info">
+            <span class="setting-label">Default Sky Subpack</span>
+            <span class="setting-desc">Which of the pack's skies to use.</span>
+          </div>
+          <select v-model="defaultSkySubpack" class="select-input" @change="onDefaultSkySubpackChange">
+            <option v-if="selectedSkyPack.hasSky" value="">The pack's own sky</option>
+            <option v-for="sp in skySubpacks" :key="sp.folderName" :value="sp.folderName">{{ sp.name || sp.folderName }}</option>
           </select>
         </div>
 
@@ -619,4 +712,38 @@ onMounted(loadSettings)
 .text-input::placeholder {
   color: var(--text-faint);
 }
+
+.bg-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.bg-swatch-skypack {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 0.8rem;
+}
+.bg-swatch {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 8px;
+  border: 2px solid var(--border-strong);
+  cursor: pointer;
+  transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
+}
+
+.bg-swatch:hover {
+  transform: translateY(-1px);
+  border-color: var(--accent-light);
+}
+
+.bg-swatch.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+}
 </style>
+

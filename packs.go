@@ -49,11 +49,6 @@ type PackPreviewInfo struct {
 	IconURI     string `json:"iconURI"`
 }
 
-type ArmorTextures struct {
-	Layer1 string `json:"layer1"`
-	Layer2 string `json:"layer2"`
-}
-
 type ItemTexture struct {
 	Name    string `json:"name"`
 	DataURI string `json:"dataURI"`
@@ -364,30 +359,9 @@ func (a *App) GetPackPreviewInfo(packName string) (PackPreviewInfo, error) {
 	return info, nil
 }
 
-func (a *App) GetPackArmorTextures(packName string, material string) (ArmorTextures, error) {
-	dir := a.getPackDir(packName)
-	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
-		return ArmorTextures{}, fmt.Errorf("pack not found: %s", packName)
-	}
-
-	texturesDir := filepath.Join(dir, "textures", "models", "armor")
-	if st, err := os.Stat(texturesDir); err != nil || !st.IsDir() {
-		return ArmorTextures{}, nil
-	}
-
-	result := ArmorTextures{}
-
-	layer1Path := findFirstImage(texturesDir, material+"_1")
-	if layer1Path != "" {
-		result.Layer1 = a.readImageAsDataURI(layer1Path)
-	}
-
-	layer2Path := findFirstImage(texturesDir, material+"_2")
-	if layer2Path != "" {
-		result.Layer2 = a.readImageAsDataURI(layer2Path)
-	}
-
-	return result, nil
+// vanillaArmorMaterials are the armor sets vanilla ships textures for.
+var vanillaArmorMaterials = map[string]bool{
+	"diamond": true, "gold": true, "iron": true, "chain": true, "cloth": true, "netherite": true,
 }
 
 func (a *App) GetPackSkyTextures(packName string) (SkyTextures, error) {
@@ -717,8 +691,14 @@ func (a *App) GetPackItemTexture(packName string, name string) (string, error) {
 }
 
 func (a *App) GetPlayerSkinTexture(packName string) string {
-	dir := a.getPackDir(packName)
+	if p := findPackSkin(a.getPackDir(packName)); p != "" {
+		return a.readImageAsDataURI(p)
+	}
+	return ""
+}
 
+// findPackSkin returns the path of the player skin a pack overrides, or "".
+func findPackSkin(dir string) string {
 	candidates := []string{
 		filepath.Join(dir, "textures", "entity", "player", "steve.png"),
 		filepath.Join(dir, "textures", "entity", "player.png"),
@@ -727,10 +707,9 @@ func (a *App) GetPlayerSkinTexture(packName string) string {
 
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
-			return a.readImageAsDataURI(p)
+			return p
 		}
 	}
-
 	return ""
 }
 
@@ -1186,27 +1165,6 @@ func (a *App) GetPackSkyTexturesFromCache(packName, basePath string) (SkyTexture
 		case 5:
 			result.Cubemap5 = uri
 		}
-	}
-	return result, nil
-}
-
-func (a *App) GetPackArmorTexturesFromCache(packName, material, basePath string) (ArmorTextures, error) {
-	dir := packDirFromPath(packName, basePath)
-	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
-		return ArmorTextures{}, fmt.Errorf("pack not found: %s", packName)
-	}
-	texturesDir := filepath.Join(dir, "textures", "models", "armor")
-	if st, err := os.Stat(texturesDir); err != nil || !st.IsDir() {
-		return ArmorTextures{}, nil
-	}
-	result := ArmorTextures{}
-	layer1Path := findFirstImage(texturesDir, material+"_1")
-	if layer1Path != "" {
-		result.Layer1 = a.readImageAsDataURI(layer1Path)
-	}
-	layer2Path := findFirstImage(texturesDir, material+"_2")
-	if layer2Path != "" {
-		result.Layer2 = a.readImageAsDataURI(layer2Path)
 	}
 	return result, nil
 }

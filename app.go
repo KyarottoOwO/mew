@@ -12,41 +12,48 @@ import (
 )
 
 type App struct {
-	ctx             context.Context
-	cancelFolder    context.CancelFunc
-	settings        map[string]interface{}
-	debug           bool
-	portMu          sync.Mutex
-	activePort      bool
-	discordStop      chan struct{}
-	discordConns     map[string]net.Conn
-	discordState     string
-	discordDetails   string
-	discordMu        sync.Mutex
-	discordIpcMu     sync.Mutex
-	discordStart     time.Time
-	thumbCache       sync.Map
+	ctx            context.Context
+	cancelFolder   context.CancelFunc
+	settings       map[string]interface{}
+	debug          bool
+	portMu         sync.Mutex
+	activePort     bool
+	discordStop    chan struct{}
+	discordConns   map[string]net.Conn
+	discordState   string
+	discordDetails string
+	discordMu      sync.Mutex
+	discordIpcMu   sync.Mutex
+	discordStart   time.Time
+	thumbCache     sync.Map
+	renderCache    *renderLRU
+	framesCache    *framesCache
+	previewMu      sync.Mutex
+	previewSkins   map[string]previewSkin
+	previewGen     int
 }
 
 func NewApp(debug bool) *App {
 	return &App{
 		debug: debug,
 		settings: map[string]interface{}{
-			"autoImport":            false,
-			"autoOpenFolder":        false,
-			"deleteOriginals":       false,
-			"deleteMcpack":          false,
-			"discordRPC":            true,
-			"customOutputDir":       "",
-			"manifestDescription":   "",
-			"resourcePacksPath":     "",
-			"portAllSkies":          false,
-			"skyPresets":            true,
-			"skyPresetNames":        []string{"starfield", "sky1", "sky2", "starfield02", "starfield03"},
-			"addPromoTexts":         false,
-			"recolorAutosave":       true,
+			"autoImport":          false,
+			"autoOpenFolder":      false,
+			"deleteOriginals":     false,
+			"deleteMcpack":        false,
+			"discordRPC":          true,
+			"customOutputDir":     "",
+			"manifestDescription": "",
+			"resourcePacksPath":   "",
+			"portAllSkies":        false,
+			"skyPresets":          true,
+			"skyPresetNames":      []string{"starfield", "sky1", "sky2", "starfield02", "starfield03"},
+			"addPromoTexts":       false,
+			"recolorAutosave":     true,
 		},
 		discordConns: map[string]net.Conn{},
+		renderCache:  newRenderLRU(64),
+		framesCache:  &framesCache{},
 	}
 }
 
@@ -58,6 +65,9 @@ func (a *App) startup(ctx context.Context) {
 		log.Println("[startup] App context initialized")
 	}
 	a.startDiscordRPC()
+	// Warm the renderer's vanilla textures in the background, so equipping an
+	// item or armor the first time does not wait on a download.
+	go a.prefetchVanillaRenderAssets()
 }
 
 func (a *App) logDebug(msg string) {

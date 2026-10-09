@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -50,12 +51,27 @@ var (
 )
 
 type vanillaFetchState struct {
-	mu        sync.Mutex
-	inflight  map[string]bool
-	succeeded bool
+	mu         sync.Mutex
+	inflight   map[string]*vanillaFetch
+	succeeded  bool
+	generation int
 }
 
-var vanillaState = &vanillaFetchState{inflight: map[string]bool{}}
+// vanillaFetch is one in-flight download. Callers that ask for the same file
+// while it downloads wait on done instead of starting a second fetch, so every
+// render that wants the texture gets it.
+type vanillaFetch struct {
+	done chan struct{}
+	data []byte
+	err  error
+}
+
+// errVanillaNotFound means the mirror answered 404: the file does not exist, as
+// opposed to a transient network or server error. Only this is worth caching as
+// missing.
+var errVanillaNotFound = errors.New("vanilla file not found")
+
+var vanillaState = &vanillaFetchState{inflight: map[string]*vanillaFetch{}}
 
 func vanillaCacheDir() string {
 	return filepath.Join(os.Getenv("LOCALAPPDATA"), "mew", "jsonui-vanilla")
@@ -146,6 +162,9 @@ func (a *App) downloadVanillaFile(rel, full string) ([]byte, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("%w: %s", errVanillaNotFound, rel)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("vanilla fetch failed (%s): HTTP %d", rel, resp.StatusCode)
 	}
@@ -158,8 +177,19 @@ func (a *App) downloadVanillaFile(rel, full string) ([]byte, error) {
 
 	vanillaState.mu.Lock()
 	vanillaState.succeeded = true
+	vanillaState.generation++
 	vanillaState.mu.Unlock()
 	return data, nil
+}
+
+// vanillaGeneration counts how many vanilla files have landed (and cache
+// clears). Renders fold it into their cache key, so a render drawn while a
+// texture was missing is rebuilt the moment that texture arrives instead of
+// being cached as a permanent blank.
+func vanillaGeneration() int {
+	vanillaState.mu.Lock()
+	defer vanillaState.mu.Unlock()
+	return vanillaState.generation
 }
 
 // readVanillaFile returns cached bytes for rel, downloading them on first use.
@@ -175,19 +205,26 @@ func (a *App) readVanillaFile(rel string) ([]byte, error) {
 	}
 
 	vanillaState.mu.Lock()
-	if vanillaState.inflight[rel] {
+	if f, ok := vanillaState.inflight[rel]; ok {
 		vanillaState.mu.Unlock()
-		return nil, fmt.Errorf("vanilla file in flight")
+		// Another render is already fetching this file: wait for it instead of
+		// failing. Returning early here is what let a texture two renders wanted
+		// at once be cached as missing. A failure is handed to every waiter but
+		// not cached, so a later render can retry.
+		<-f.done
+		return f.data, f.err
 	}
-	vanillaState.inflight[rel] = true
+	f := &vanillaFetch{done: make(chan struct{})}
+	vanillaState.inflight[rel] = f
 	vanillaState.mu.Unlock()
-	defer func() {
-		vanillaState.mu.Lock()
-		delete(vanillaState.inflight, rel)
-		vanillaState.mu.Unlock()
-	}()
 
-	return a.downloadVanillaFile(rel, full)
+	f.data, f.err = a.downloadVanillaFile(rel, full)
+
+	vanillaState.mu.Lock()
+	delete(vanillaState.inflight, rel)
+	vanillaState.mu.Unlock()
+	close(f.done)
+	return f.data, f.err
 }
 
 // rewriteUiDefs rewrites a _ui_defs.json payload so its ui_defs array contains
@@ -401,6 +438,7 @@ func (a *App) ClearVanillaCache() error {
 	}
 	vanillaState.mu.Lock()
 	vanillaState.succeeded = false
+	vanillaState.generation++
 	vanillaState.mu.Unlock()
 	return nil
 }

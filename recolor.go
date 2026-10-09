@@ -13,8 +13,8 @@ import (
 	"sort"
 	"strings"
 
-	xdraw "golang.org/x/image/draw"
 	"github.com/woozymasta/tga"
+	xdraw "golang.org/x/image/draw"
 )
 
 type RecolorTexture struct {

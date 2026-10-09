@@ -15,18 +15,18 @@ const (
 )
 
 var (
-	errLogMu  sync.Mutex
-	errLogDir string
+	errLogMu            sync.Mutex
+	errLogDir           string
 	debugConsoleEnabled bool
 )
 
 const (
-	ansiReset   = "\033[0m"
-	ansiRed     = "\033[31m"
-	ansiGreen   = "\033[32m"
-	ansiYellow  = "\033[33m"
-	ansiCyan    = "\033[36m"
-	ansiGray    = "\033[90m"
+	ansiReset  = "\033[0m"
+	ansiRed    = "\033[31m"
+	ansiGreen  = "\033[32m"
+	ansiYellow = "\033[33m"
+	ansiCyan   = "\033[36m"
+	ansiGray   = "\033[90m"
 )
 
 func consoleLog(color, msg string) {
