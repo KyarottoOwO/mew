@@ -6,7 +6,7 @@ import JsonUiStage from './JsonUiStage.vue'
 import { GetSettings, SaveSettings, GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPackSkinThumbnails, SetPackSkin, ClearPackSkin, HasPackSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug, PackHasUiScreens, RenderSkin, RenderSkinFrames, RenderSkinGIF, ListAnimations, RenderItem, RenderItemSpin, SaveRender } from '../../../wailsjs/go/main/App'
 
 import { parseBedrockCodes } from '../../utils/formatCodes'
-import { BACKGROUNDS, DEFAULT_BACKGROUND_ID, BACKGROUND_SETTING_KEY, DEFAULT_SKY_PACK_KEY, DEFAULT_SKY_SUBPACK_KEY, normalizeBackgroundId, backgroundById, backgroundSwatchStyle as swatchStyle } from '../../utils/backgrounds'
+import { BACKGROUNDS, DEFAULT_BACKGROUND_ID, BACKGROUND_SETTING_KEY, DEFAULT_SKY_PACK_KEY, DEFAULT_SKY_SUBPACK_KEY, SKY_PACK_BACKGROUND_ID, SKY_PACK_SWATCH_STYLE, normalizeBackgroundId, backgroundById, backgroundSwatchStyle as swatchStyle } from '../../utils/backgrounds'
 import { EventsOn } from '../../../wailsjs/runtime/runtime'
 const props = defineProps({ active: Boolean, openPackReq: { type: Object, default: null } })
 
@@ -200,6 +200,12 @@ async function persistBackgroundSetting(id) {
 const packHasSky = ref(false)
 
 function backgroundKey() { return BACKGROUND_PREFIX + backgroundId.value }
+// backgroundLabel names the current choice for the background bar.
+function backgroundLabel() {
+  return backgroundId.value === SKY_PACK_BACKGROUND_ID ? 'Sky pack' : currentBackgroundPreset().name
+}
+// The built-in gradient for the current choice. The sky pack choice uses the
+// default gradient for faces its cubemap lacks and while it loads.
 function currentBackgroundPreset() {
   return backgroundById(backgroundId.value)
 }
@@ -1664,6 +1670,7 @@ async function loadPackData(packName) {
     lastLoadedPack = packName
     packSkinChosen.value = false
     loadPackSkinChosen(packName)
+    showPlaceholderSky()
     // The player does not depend on the sky, and a pack's sky can take seconds
     // to build, so draw the player straight away rather than after it.
     const player = applyPlayerAppearance()
@@ -1775,13 +1782,28 @@ async function loadDefaultSkyPack() {
   return first ? tryOne(first.folderName) : null
 }
 
+// showPlaceholderSky puts the chosen gradient behind the player at once, so a
+// big pack sky that takes seconds to build never leaves the viewer black. The
+// real sky replaces it when ready; it never replaces a sky already shown.
+async function showPlaceholderSky() {
+  const v = viewerInstance
+  if (!v || v.disposed || v.scene.background) return
+  const preset = currentBackgroundPreset()
+  const cube = await skyBuild(BACKGROUND_PREFIX + preset.id, { background: preset })
+  if (v.disposed || v.scene.background) return
+  v.scene.background = cube
+  renderSky(v)
+  redrawSkySoon(v)
+}
+
 // Show the user's chosen background. A pack's own sky takes precedence, so
 // this does nothing while one is loaded - the menu is disabled for that case.
 async function applyBackground() {
   if (packHasSky.value) return
   const seq = beginSky()
-  // The default sky pack from Settings comes before the built-in backgrounds.
-  if (defaultSkyPack.value) {
+  // The sky pack swatch shows the default sky pack picked in Settings; any
+  // other swatch shows that built-in background.
+  if (backgroundId.value === SKY_PACK_BACKGROUND_ID && defaultSkyPack.value) {
     try {
       const found = await loadDefaultSkyPack()
       if (seq !== skySeq) return
@@ -2257,9 +2279,13 @@ watch(() => props.openPackReq, (req) => {
             <div class="pv-skybar-head">
               <div class="pv-skybar-label"><i class="fa fa-image"></i> Background</div>
               <div v-if="packHasSky" class="pv-skybar-current"><i class="fa fa-lock"></i> Pack sky</div>
-              <div v-else class="pv-skybar-current">{{ currentBackgroundPreset().name }}</div>
+              <div v-else class="pv-skybar-current">{{ backgroundLabel() }}</div>
             </div>
             <div class="pv-bgbar-options">
+              <button v-if="defaultSkyPack" class="pv-bg-swatch pv-bg-swatch-skypack"
+                :class="{ active: backgroundId === SKY_PACK_BACKGROUND_ID }"
+                :style="SKY_PACK_SWATCH_STYLE" :disabled="packHasSky" :title="'Sky pack: ' + defaultSkyPack"
+                @click="setBackground(SKY_PACK_BACKGROUND_ID)"><i class="fa fa-cloud"></i></button>
               <button v-for="bg in BACKGROUNDS" :key="bg.id"
                 class="pv-bg-swatch" :class="{ active: backgroundId === bg.id }"
                 :style="swatchStyle(bg)" :disabled="packHasSky" :title="bg.name"
@@ -2404,9 +2430,13 @@ watch(() => props.openPackReq, (req) => {
           <div class="pv-skybar-head">
             <div class="pv-skybar-label"><i class="fa fa-image"></i> Background</div>
             <div v-if="packHasSky" class="pv-skybar-current"><i class="fa fa-lock"></i> Pack sky</div>
-            <div v-else class="pv-skybar-current">{{ currentBackgroundPreset().name }}</div>
+            <div v-else class="pv-skybar-current">{{ backgroundLabel() }}</div>
           </div>
           <div class="pv-bgbar-options">
+            <button v-if="defaultSkyPack" class="pv-bg-swatch pv-bg-swatch-skypack"
+              :class="{ active: backgroundId === SKY_PACK_BACKGROUND_ID }"
+              :style="SKY_PACK_SWATCH_STYLE" :disabled="packHasSky" :title="'Sky pack: ' + defaultSkyPack"
+              @click="setBackground(SKY_PACK_BACKGROUND_ID)"><i class="fa fa-cloud"></i></button>
             <button v-for="bg in BACKGROUNDS" :key="bg.id"
               class="pv-bg-swatch" :class="{ active: backgroundId === bg.id }"
               :style="swatchStyle(bg)" :disabled="packHasSky" :title="bg.name"
@@ -3701,6 +3731,13 @@ watch(() => props.openPackReq, (req) => {
   gap: 0.4rem;
 }
 
+.pv-bg-swatch-skypack {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 0.8rem;
+}
 .pv-bg-swatch {
   width: 30px;
   height: 30px;

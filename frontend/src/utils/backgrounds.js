@@ -21,9 +21,17 @@ export const BACKGROUND_SETTING_KEY = 'viewerBackground'
 export const DEFAULT_SKY_PACK_KEY = 'defaultSkyPack'
 export const DEFAULT_SKY_SUBPACK_KEY = 'defaultSkySubpack'
 
+// The background choice that shows the default sky pack picked in Settings
+// rather than one of the built-in gradients.
+export const SKY_PACK_BACKGROUND_ID = 'skypack'
+
 export function normalizeBackgroundId(id) {
+  if (id === SKY_PACK_BACKGROUND_ID) return id
   return BACKGROUNDS.some(b => b.id === id) ? id : DEFAULT_BACKGROUND_ID
 }
+
+// The sky pack's swatch: a sky-blue tile, drawn with a cloud icon on top.
+export const SKY_PACK_SWATCH_STYLE = { background: 'linear-gradient(180deg, #4b8fd6, #a9d2f5)' }
 
 export function backgroundById(id) {
   return BACKGROUNDS.find(b => b.id === id) || BACKGROUNDS[0]

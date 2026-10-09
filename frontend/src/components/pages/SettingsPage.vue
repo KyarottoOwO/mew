@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import { GetSettings, SaveSettings, SelectDirectory, DetectMinecraftPaths, ClearCache, OpenMewDataDir, GetSkyPacks } from '../../../wailsjs/go/main/App'
-import { BACKGROUNDS, DEFAULT_BACKGROUND_ID, BACKGROUND_SETTING_KEY, DEFAULT_SKY_PACK_KEY, DEFAULT_SKY_SUBPACK_KEY, normalizeBackgroundId, backgroundSwatchStyle } from '../../utils/backgrounds'
+import { BACKGROUNDS, DEFAULT_BACKGROUND_ID, BACKGROUND_SETTING_KEY, DEFAULT_SKY_PACK_KEY, DEFAULT_SKY_SUBPACK_KEY, SKY_PACK_BACKGROUND_ID, SKY_PACK_SWATCH_STYLE, normalizeBackgroundId, backgroundSwatchStyle } from '../../utils/backgrounds'
 
 const autoImport = ref(false)
 const autoOpenFolder = ref(false)
@@ -142,6 +142,10 @@ async function onDefaultSkyPackChange() {
   // has its own sky starts on that.
   const pack = selectedSkyPack.value
   defaultSkySubpack.value = pack && !pack.hasSky && pack.subpacks.length ? pack.subpacks[0].folderName : ''
+  // Picking a sky pack selects its swatch, so the viewer shows it; clearing
+  // it falls back to the default gradient.
+  if (defaultSkyPack.value) viewerBackground.value = SKY_PACK_BACKGROUND_ID
+  else if (viewerBackground.value === SKY_PACK_BACKGROUND_ID) viewerBackground.value = DEFAULT_BACKGROUND_ID
   await persistSettings()
 }
 
@@ -263,6 +267,10 @@ onMounted(loadSettings)
             <span class="setting-desc">Sky shown in the Pack Viewer when a pack ships no sky of its own. A pack's own sky always takes precedence.</span>
           </div>
           <div class="bg-swatches">
+            <button v-if="defaultSkyPack" class="bg-swatch bg-swatch-skypack"
+              :class="{ active: viewerBackground === SKY_PACK_BACKGROUND_ID }"
+              :style="SKY_PACK_SWATCH_STYLE" :title="'Sky pack: ' + defaultSkyPack"
+              @click="setViewerBackground(SKY_PACK_BACKGROUND_ID)"><i class="fa fa-cloud"></i></button>
             <button v-for="bg in BACKGROUNDS" :key="bg.id"
               class="bg-swatch" :class="{ active: viewerBackground === bg.id }"
               :style="backgroundSwatchStyle(bg)" :title="bg.name"
@@ -711,6 +719,13 @@ onMounted(loadSettings)
   gap: 0.4rem;
 }
 
+.bg-swatch-skypack {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 0.8rem;
+}
 .bg-swatch {
   width: 30px;
   height: 30px;
