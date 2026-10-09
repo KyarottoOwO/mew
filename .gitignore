@@ -56,3 +56,6 @@ Thumbs.db
 *.dll
 *.pdb
 .wails/
+
+# Local planning notes, never committed
+docs/

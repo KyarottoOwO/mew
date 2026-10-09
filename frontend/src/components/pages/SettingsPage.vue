@@ -1,7 +1,7 @@
 <script setup>
-import { ref, onMounted, watch } from 'vue'
-import { GetSettings, SaveSettings, SelectDirectory, DetectMinecraftPaths, ClearCache, OpenMewDataDir } from '../../../wailsjs/go/main/App'
-import { BACKGROUNDS, DEFAULT_BACKGROUND_ID, BACKGROUND_SETTING_KEY, normalizeBackgroundId, backgroundSwatchStyle } from '../../utils/backgrounds'
+import { ref, computed, onMounted, watch } from 'vue'
+import { GetSettings, SaveSettings, SelectDirectory, DetectMinecraftPaths, ClearCache, OpenMewDataDir, GetSkyPacks } from '../../../wailsjs/go/main/App'
+import { BACKGROUNDS, DEFAULT_BACKGROUND_ID, BACKGROUND_SETTING_KEY, DEFAULT_SKY_PACK_KEY, DEFAULT_SKY_SUBPACK_KEY, normalizeBackgroundId, backgroundSwatchStyle } from '../../utils/backgrounds'
 
 const autoImport = ref(false)
 const autoOpenFolder = ref(false)
@@ -21,8 +21,11 @@ const theme = ref('dark')
 const viewerBackground = ref(DEFAULT_BACKGROUND_ID)
 const defaultSkyPack = ref('')
 const defaultSkySubpack = ref('')
-const installedPacks = ref([])
-const skySubpacks = ref([])
+// Installed packs that ship a sky, each with the subpacks that have one.
+const skyPacks = ref([])
+const skyPacksLoaded = ref(false)
+const selectedSkyPack = computed(() => skyPacks.value.find(p => p.dirName === defaultSkyPack.value) || null)
+const skySubpacks = computed(() => selectedSkyPack.value ? selectedSkyPack.value.subpacks : [])
 
 const detectedPaths = ref([])
 const selectedMinecraftPath = ref('')
@@ -50,12 +53,9 @@ async function loadSettings() {
     packCachePath.value = s.packCachePath || ''
     theme.value = s.theme || 'dark'
     viewerBackground.value = normalizeBackgroundId(s[BACKGROUND_SETTING_KEY])
-    defaultSkyPack.value = s[DEFAULT_SKY_PACK_KEY] || ''
-    defaultSkySubpack.value = s[DEFAULT_SKY_SUBPACK_KEY] || ''
-    await loadInstalledPacks()
-    await loadSkySubpacks()
-    defaultSkyPack.value = s.defaultSkyPack || ''
-    defaultSkySubpack.value = s.defaultSkySubpack || ''
+    defaultSkyPack.value = typeof s[DEFAULT_SKY_PACK_KEY] === 'string' ? s[DEFAULT_SKY_PACK_KEY] : ''
+    defaultSkySubpack.value = typeof s[DEFAULT_SKY_SUBPACK_KEY] === 'string' ? s[DEFAULT_SKY_SUBPACK_KEY] : ''
+    loadSkyPacks()
 
     detectedPaths.value = await DetectMinecraftPaths()
 
@@ -105,8 +105,8 @@ async function persistSettings() {
       packCachePath: packCachePath.value,
       theme: theme.value,
       [BACKGROUND_SETTING_KEY]: viewerBackground.value,
-      defaultSkyPack: defaultSkyPack.value,
-      defaultSkySubpack: defaultSkySubpack.value,
+      [DEFAULT_SKY_PACK_KEY]: defaultSkyPack.value,
+      [DEFAULT_SKY_SUBPACK_KEY]: defaultSkySubpack.value,
     }
     await SaveSettings(data)
 
@@ -121,35 +121,27 @@ function onThemeChange() {
   persistSettings()
 }
 
-async function loadInstalledPacks() {
+async function loadSkyPacks() {
   try {
-    installedPacks.value = await GetInstalledPacks() || []
+    skyPacks.value = await GetSkyPacks() || []
   } catch (e) {
-    console.error('Failed to load installed packs:', e)
-    installedPacks.value = []
+    console.error('Failed to load sky packs:', e)
+    skyPacks.value = []
   }
+  skyPacksLoaded.value = true
 }
 
-async function loadSkySubpacks() {
-  if (!defaultSkyPack.value) {
-    skySubpacks.value = []
-    return
-  }
-  try {
-    skySubpacks.value = await GetPackSkySubpacks(defaultSkyPack.value) || []
-    if (defaultSkySubpack.value && !skySubpacks.value.find(sp => sp.folderName === defaultSkySubpack.value)) {
-      defaultSkySubpack.value = ''
-      await persistSettings()
-    }
-  } catch (e) {
-    console.error('Failed to load sky subpacks:', e)
-    skySubpacks.value = []
-  }
+// skyPackLabel is a pack's name without Bedrock's colour codes, which a plain
+// <option> cannot show.
+function skyPackLabel(p) {
+  return (p.name || p.dirName).replace(/§./g, '').trim() || p.dirName
 }
 
 async function onDefaultSkyPackChange() {
-  defaultSkySubpack.value = ''
-  await loadSkySubpacks()
+  // A pack with no sky of its own starts on its first sky subpack; one that
+  // has its own sky starts on that.
+  const pack = selectedSkyPack.value
+  defaultSkySubpack.value = pack && !pack.hasSky && pack.subpacks.length ? pack.subpacks[0].folderName : ''
   await persistSettings()
 }
 
@@ -283,19 +275,25 @@ onMounted(loadSettings)
             <span class="setting-label">Default Sky Pack</span>
             <span class="setting-desc">Optional: Use a custom pack's sky as fallback when a pack has no sky (e.g. Reimagined SkyCubemaps).</span>
           </div>
-          <select v-model="defaultSkyPack" class="select-input" @change="onDefaultSkyPackChange">
-            <option value="">None (use gradient presets)</option>
-            <option v-for="p in installedPacks" :key="p.dirName" :value="p.dirName">{{ p.displayName || p.dirName }}</option>
+          <select v-model="defaultSkyPack" class="select-input" @change="onDefaultSkyPackChange" @focus="loadSkyPacks">
+            <option value="">None (use the Viewer Background)</option>
+            <option v-if="defaultSkyPack && skyPacksLoaded && !selectedSkyPack" :value="defaultSkyPack">{{ defaultSkyPack }} (not installed)</option>
+            <option v-for="p in skyPacks" :key="p.dirName" :value="p.dirName">{{ skyPackLabel(p) }}</option>
           </select>
         </div>
+        <div v-if="skyPacksLoaded && skyPacks.length === 0" class="setting-row setting-row-block">
+          <div class="setting-info">
+            <span class="setting-desc">None of your installed packs has a sky. Install one with a sky, then pick it here.</span>
+          </div>
+        </div>
 
-        <div v-if="defaultSkyPack && skySubpacks.length > 0" class="setting-row setting-row-block">
+        <div v-if="selectedSkyPack && skySubpacks.length > 0" class="setting-row setting-row-block">
           <div class="setting-info">
             <span class="setting-label">Default Sky Subpack</span>
-            <span class="setting-desc">Select which subpack's cubemap to use.</span>
+            <span class="setting-desc">Which of the pack's skies to use.</span>
           </div>
           <select v-model="defaultSkySubpack" class="select-input" @change="onDefaultSkySubpackChange">
-            <option value="">First available</option>
+            <option v-if="selectedSkyPack.hasSky" value="">The pack's own sky</option>
             <option v-for="sp in skySubpacks" :key="sp.folderName" :value="sp.folderName">{{ sp.name || sp.folderName }}</option>
           </select>
         </div>

@@ -1687,23 +1687,38 @@ async function applySkySubpack(idx) {
 
 // Show the user's chosen background. A pack's own sky takes precedence, so
 // this does nothing while one is loaded - the menu is disabled for that case.
+// loadDefaultSkyPack returns the default sky pack's cubemap and its cache key,
+// or null when the pack has no sky. The chosen subpack comes first, then the
+// pack's own sky, then its first sky subpack, so a pack whose skies are all
+// in subpacks, or whose chosen subpack was removed, still shows one.
+async function loadDefaultSkyPack() {
+  const pack = defaultSkyPack.value
+  const chosen = defaultSkySubpack.value
+  const tryOne = async (sub) => {
+    const tex = await cachedTextureFetch(pack + (sub ? '|' + sub : '') + '|defaultsky', () =>
+      sub ? GetPackSkySubpackTextures(pack, sub) : GetPackSkyTextures(pack))
+    return hasCubemapFaces(tex) ? { tex, key: pack + '#' + (sub || 'default') } : null
+  }
+  if (chosen) {
+    const found = await tryOne(chosen)
+    if (found) return found
+  }
+  const own = await tryOne('')
+  if (own) return own
+  const first = ((await GetPackSkySubpacks(pack)) || []).find(sp => sp.folderName !== chosen)
+  return first ? tryOne(first.folderName) : null
+}
+
 async function applyBackground() {
   if (packHasSky.value) return
-  // Try custom default sky pack first
+  // The default sky pack from Settings comes before the built-in backgrounds.
   if (defaultSkyPack.value) {
     try {
-      const tex = await cachedTextureFetch(defaultSkyPack.value + (defaultSkySubpack.value ? '|' + defaultSkySubpack.value : '') + '|defaultsky', async () => {
-        if (defaultSkySubpack.value) {
-          return await GetPackSkySubpackTextures(defaultSkyPack.value, defaultSkySubpack.value)
-        } else {
-          return await GetPackSkyTextures(defaultSkyPack.value)
-        }
-      })
-      if (hasCubemapFaces(tex)) {
-        setLastSkyTex(tex)
-        const key = defaultSkyPack.value + (defaultSkySubpack.value ? '#' + defaultSkySubpack.value : '#default')
-        const cubemap = await skyBuild(key, tex)
-        currentSkyKey = skyKey(key)
+      const found = await loadDefaultSkyPack()
+      if (found) {
+        setLastSkyTex(found.tex)
+        const cubemap = await skyBuild(found.key, found.tex)
+        currentSkyKey = skyKey(found.key)
         setSkyOnViewers(cubemap)
         recordMem('background custom sky')
         return
