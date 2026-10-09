@@ -33,7 +33,7 @@ jobs:
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           VERSION="${TAG#v}"
-          wails build -ldflags "-X main.currentVersion=$VERSION"
+          wails build -upx -ldflags "-s -w -X main.currentVersion=$VERSION"
 
       - name: Create Release
         id: release

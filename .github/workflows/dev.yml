@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           SHORT_SHA=$(git rev-parse --short HEAD)
-          wails build -ldflags "-X main.currentVersion=dev-${SHORT_SHA}"
+          wails build -upx -ldflags "-s -w -X main.currentVersion=dev-${SHORT_SHA}"
 
       - name: Delete old dev release (if exists)
         continue-on-error: true
