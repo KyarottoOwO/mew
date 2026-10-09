@@ -28,27 +28,15 @@ jobs:
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0
 
+      - name: Use the latest bedrock-skin-go
+        shell: bash
+        run: |
+          go get github.com/THEBOSS9345/bedrock-skin-go@latest
+          go mod tidy
+          grep bedrock-skin-go go.mod
+
       - name: Build
         shell: bash
         run: |
           SHORT_SHA=$(git rev-parse --short HEAD)
           wails build -upx -ldflags "-s -w -X main.currentVersion=dev-${SHORT_SHA}"
-
-      - name: Delete old dev release (if exists)
-        continue-on-error: true
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release delete dev --repo KyarottoOwO/MEOWWWW --yes --cleanup-tag || true
-
-      - name: Upload to MEOWWWW
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          SHORT_SHA=$(git rev-parse --short HEAD)
-          gh release create dev build/bin/mew.exe \
-            --repo KyarottoOwO/MEOWWWW \
-            --title "MEW dev-${SHORT_SHA}" \
-            --prerelease \
-            --generate-notes

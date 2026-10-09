@@ -41,14 +41,14 @@ type discordHandshake struct {
 }
 
 type discordFrame struct {
-	Cmd   string               `json:"cmd"`
-	Args  discordActivityArgs  `json:"args"`
-	Nonce string               `json:"nonce"`
+	Cmd   string              `json:"cmd"`
+	Args  discordActivityArgs `json:"args"`
+	Nonce string              `json:"nonce"`
 }
 
 type discordActivityArgs struct {
-	Pid      int              `json:"pid"`
-	Activity discordActivity  `json:"activity"`
+	Pid      int             `json:"pid"`
+	Activity discordActivity `json:"activity"`
 }
 
 type discordActivity struct {

@@ -1,14 +1,13 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import * as THREE from 'three'
-import { SkinView3d } from 'vue-skinview3d'
-import { IdleAnimation, WalkingAnimation } from 'vue-skinview3d/animations'
 import PackExporter from './PackExporter.vue'
 import JsonUiStage from './JsonUiStage.vue'
-import { GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackArmorTextures, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPlayerSkinTexture, GetDefaultSkin, SaveDefaultSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug, PackHasUiScreens } from '../../../wailsjs/go/main/App'
-import defaultSkinImg from '../../assets/default-skin.png'
+import { GetSettings, SaveSettings, GetPackListWithInfo, GetInstalledPacks, GetPackPreviewInfo, GetPackItemTextures, GetPackSkyTextures, GetPackSkySubpacks, GetPackSkySubpackTextures, GetPackSkinThumbnails, PreviewPackSkin, SavePackSkin, ClearPreviewSkins, ClearPackSkin, HasPackSkin, GetCustomItems, SaveCustomItem, RemoveCustomItem, GetPackItemTextureNames, GetPackItemTexture, GetRemovedItems, SaveRemovedItem, RestoreRemovedItem, OpenFolder, DeleteInstalledPack, IsDebug, PackHasUiScreens, RenderSkin, RenderSkinFrames, RenderSkinGIF, ListAnimations, RenderItem, RenderItemSpin, SaveRender, GetPackCache, GetPackCacheList, ExportCachePacks, GetPackPreviewInfoFromCache, GetPackSkyTexturesFromCache, GetPackSkySubpacksFromCache, GetPackSkySubpackTexturesFromCache, GetPackItemTexturesFromCache, GetPackItemTextureNamesFromCache, GetPackItemTextureFromCache, PackHasUiScreensFromCache } from '../../../wailsjs/go/main/App'
 
 import { parseBedrockCodes } from '../../utils/formatCodes'
+import { BACKGROUNDS, DEFAULT_BACKGROUND_ID, BACKGROUND_SETTING_KEY, DEFAULT_SKY_PACK_KEY, DEFAULT_SKY_SUBPACK_KEY, SKY_PACK_BACKGROUND_ID, SKY_PACK_SWATCH_STYLE, normalizeBackgroundId, backgroundById, backgroundSwatchStyle as swatchStyle } from '../../utils/backgrounds'
+import { EventsOn } from '../../../wailsjs/runtime/runtime'
 const props = defineProps({ active: Boolean, openPackReq: { type: Object, default: null } })
 
 const packList = ref([])
@@ -16,26 +15,116 @@ const packsPath = ref('')
 const loading = ref(true)
 const searchQuery = ref('')
 const sortBy = ref('name')
+const showServerPacks = ref(false)
+const cachePackList = ref([])
+const serverPacksPath = ref('')
+const exportingServer = ref(false)
+
+// packBase is the folder the open pack is read from: "" for installed packs,
+// the server pack cache otherwise. The render service takes it with every
+// request, and packApi picks the matching pack readers, so one viewer path
+// serves both lists.
+function packBase() {
+  return showServerPacks.value ? serverPacksPath.value : ''
+}
+const packApi = {
+  previewInfo: (name) => showServerPacks.value ? GetPackPreviewInfoFromCache(name, serverPacksPath.value) : GetPackPreviewInfo(name),
+  skyTextures: (name) => showServerPacks.value ? GetPackSkyTexturesFromCache(name, serverPacksPath.value) : GetPackSkyTextures(name),
+  skySubpacks: (name) => showServerPacks.value ? GetPackSkySubpacksFromCache(name, serverPacksPath.value) : GetPackSkySubpacks(name),
+  skySubpackTextures: (name, sub) => showServerPacks.value ? GetPackSkySubpackTexturesFromCache(name, sub, serverPacksPath.value) : GetPackSkySubpackTextures(name, sub),
+  hasScreens: (name) => showServerPacks.value ? PackHasUiScreensFromCache(name, serverPacksPath.value) : PackHasUiScreens(name),
+  itemTextures: (name, material) => showServerPacks.value ? GetPackItemTexturesFromCache(name, material, serverPacksPath.value) : GetPackItemTextures(name, material),
+}
 
 const showModal = ref(false)
 const confirmDelete = ref(false)
 const selectedPack = ref('')
 const selectedPackInfo = ref({ name: '', description: '', iconURI: '' })
 const selectedMaterial = ref('diamond')
+const elytraOn = ref(false)
+const equipmentOnly = ref(false)
+
+// Each hand holds a tool of the selected tier, a flat item, or nothing.
+const HAND_EMPTY = 'none'
+const handTools = ['sword', 'pickaxe', 'axe', 'shovel', 'hoe']
+const handToolLabels = { sword: 'Sword', pickaxe: 'Pickaxe', axe: 'Axe', shovel: 'Shovel', hoe: 'Hoe' }
+const handFlat = ['bread', 'apple', 'golden_apple']
+const handFlatLabels = { bread: 'Bread', apple: 'Apple', golden_apple: 'Golden Apple' }
+const HELD_TIER = { cloth: 'stone', chain: 'stone', iron: 'iron', gold: 'gold', diamond: 'diamond', netherite: 'netherite', naked: 'diamond' }
+const rightHand = ref(HAND_EMPTY)
+const leftHand = ref(HAND_EMPTY)
+const emptyAdjust = () => ({ offsetX: 0, offsetY: 0, offsetZ: 0, rotX: 0, rotY: 0, rotZ: 0, scale: 1 })
+const rightAdjust = reactive(emptyAdjust())
+const leftAdjust = reactive(emptyAdjust())
+const rightAdjustOpen = ref(false)
+const leftAdjustOpen = ref(false)
+
+// Sliders for the per-hand item adjustment panel.
+const ADJUST_SLIDERS = [
+  { key: 'offsetX', label: 'X', min: -4, max: 4, step: 0.05 },
+  { key: 'offsetY', label: 'Y', min: -4, max: 4, step: 0.05 },
+  { key: 'offsetZ', label: 'Z', min: -4, max: 4, step: 0.05 },
+  { key: 'rotX', label: 'RX', min: -180, max: 180, step: 1 },
+  { key: 'rotY', label: 'RY', min: -180, max: 180, step: 1 },
+  { key: 'rotZ', label: 'RZ', min: -180, max: 180, step: 1 },
+  { key: 'scale', label: 'Size', min: 0.1, max: 3, step: 0.05 },
+]
+
 const itemTextures = ref([])
 const itemCache = new Map()
 
-const materials = ['diamond', 'gold', 'iron', 'chain', 'cloth', 'netherite', 'naked']
+const materials = ['naked', 'cloth', 'chain', 'iron', 'gold', 'diamond', 'netherite']
 const materialLabels = {
   diamond: 'Diamond', gold: 'Gold', iron: 'Iron',
   chain: 'Chainmail', cloth: 'Leather', netherite: 'Netherite', naked: 'Naked'
 }
 const skinModel = ref('auto-detect')
-const animating = ref(false)
 
-const customSkinURI = ref('')
+// The view state, shared by the modal and fullscreen viewers: the sky camera
+// and the player render use the same yaw/pitch/zoom.
+const FOV = 35
+const viewYaw = ref(0)
+const viewPitch = ref(10)
+const viewZoom = ref(1.5) // bedrock-skin-go's Margin: smaller is closer
+
+// Animation: "" is a still; otherwise a motion or example animation name.
+// 30 FPS is the backend's cap; the motion is sampled from a continuous curve,
+// so the extra frames only smooth it out (the clip keeps its real duration).
+const ANIM_FPS = 30
+const animationName = ref('')
+const animations = ref([])
+const animFrames = ref([])
+const animIndex = ref(0)
+// animFramesFresh is whether the loaded frames match the current camera.
+// animFramesFresh == false means the still path must keep drawing frames until
+// the settled set arrives; cameraStamp changes with the camera so an in-flight
+// load can tell it went stale.
+let animFramesFresh = false
+let cameraStamp = 0
+let animTimer = null
+let animToken = 0
+let animDebounce = null
+
+const modalPlayerSrc = ref('')
+const fsPlayerSrc = ref('')
+let renderToken = 0
+let renderInFlight = false
+let renderAgain = false
+let destroyed = false
+let vanillaRenderReadyHandler = null
+let dragging = false
+let dragMoved = false
+let inertia = null
+
 const skinFileInput = ref(null)
-const viewerRef = ref(null)
+// When true, the viewer draws the user's uploaded skin instead of the selected
+// pack's own player skin. Set when they use "Change Skin" and remembered, so
+// picking a skin visibly works even on packs that ship one.
+// packSkinChosen is true when a skin is saved for the open pack. Change Skin
+// first previews a skin (skinPreviewing): it shows until the viewer closes,
+// and Save keeps it for this pack only, across restarts.
+const packSkinChosen = ref(false)
+const skinPreviewing = ref(false)
 const modalContainer = ref(null)
 const isDebug = ref(false)
 
@@ -82,34 +171,68 @@ function toggleUiPanel() {
 let viewerInstance = null
 
 const fullscreen = ref(false)
-const fsViewerRef = ref(null)
 const fsContainerRef = ref(null)
 let fsViewerInstance = null
 
 const showExportPopup = ref(false)
 
-const IDLE_PAUSE_MS = 3000
 const IDLE_GC_MS = 10000
-const idleCleanups = new Set()
-let fsIdleCleanup = null
 
 // Cap the 3D renderer's pixel ratio to bound GPU/JS memory on HiDPI displays.
-// skinview3d defaults to devicePixelRatio (up to 2-3x), which can ~4-9x memory usage.
 const SKIN_PIXEL_RATIO = 1.5
 
-function capPixelRatio(v) {
-  if (!v || v.disposed) return
-  try {
-    if (v.pixelRatio !== SKIN_PIXEL_RATIO) v.pixelRatio = SKIN_PIXEL_RATIO
-  } catch {}
-}
-
-let viewerTimer = null
-let fsViewerTimer = null
-let modelSetupAlive = true
+// Cap the size used for animations. The whole clip is preloaded at this size and
+// a rotating animation draws its stills at the same size, so sharpness never
+// changes between turning the model and letting it loop. Bounds the cost of a
+// long clip (idle is 80 frames).
+const ANIM_MAX_SIZE = 512
 
 const skySubpacks = ref([])
-const skySlider = ref(0)
+const defaultSkyPack = ref('')
+const defaultSkySubpack = ref('')
+
+// Built-in backgrounds come from utils/backgrounds so the Settings tab offers
+// the same list. A pack's own cubemap or subpack sky always takes precedence.
+const BACKGROUND_PREFIX = 'bg:'
+const backgroundId = ref(DEFAULT_BACKGROUND_ID)
+// The choice is an app setting (Settings -> Background) so the settings page
+// and this viewer always agree. Loaded fresh whenever a pack is opened.
+async function loadBackgroundSetting() {
+  try {
+    const s = await GetSettings()
+    backgroundId.value = normalizeBackgroundId(s && s[BACKGROUND_SETTING_KEY])
+    defaultSkyPack.value = (s && typeof s[DEFAULT_SKY_PACK_KEY] === 'string') ? s[DEFAULT_SKY_PACK_KEY] : ''
+    defaultSkySubpack.value = (s && typeof s[DEFAULT_SKY_SUBPACK_KEY] === 'string') ? s[DEFAULT_SKY_SUBPACK_KEY] : ''
+  } catch {
+    backgroundId.value = DEFAULT_BACKGROUND_ID
+    defaultSkyPack.value = ''
+    defaultSkySubpack.value = ''
+  }
+}
+async function persistBackgroundSetting(id) {
+  try {
+    const s = (await GetSettings()) || {}
+    s[BACKGROUND_SETTING_KEY] = id
+    await SaveSettings(s)
+  } catch {}
+}
+// True when the loaded pack ships a sky of its own (a base cubemap or
+// subpacks). The viewer then shows that and ignores the background choice.
+const packHasSky = ref(false)
+
+function backgroundKey() { return BACKGROUND_PREFIX + backgroundId.value }
+// backgroundLabel names the current choice for the background bar.
+function backgroundLabel() {
+  return backgroundId.value === SKY_PACK_BACKGROUND_ID ? 'Sky pack' : currentBackgroundPreset().name
+}
+// The built-in gradient for the current choice. The sky pack choice uses the
+// default gradient for faces its cubemap lacks and while it loads.
+function currentBackgroundPreset() {
+  return backgroundById(backgroundId.value)
+}
+function hasCubemapFaces(tex) {
+  return !!(tex && (tex.cubemap0 || tex.cubemap1 || tex.cubemap2 || tex.cubemap3 || tex.cubemap4 || tex.cubemap5))
+}
 
 const SKY_FACE_META = [
   { key: 0, label: 'Left',     threeFace: '-X', bedrock: 'cubemap_0' },
@@ -240,9 +363,33 @@ async function buildSkyCubemap(key, tex, cap) {
   return pending
 }
 
-function setSkyOnViewers(cubemap) {
-  if (viewerInstance) viewerInstance.scene.background = cubemap
-  if (fsViewerInstance) fsViewerInstance.scene.background = cubemap
+// skySeq numbers sky requests. Building a sky takes a while, so a slow one
+// started earlier (a previous subpack, or the previous pack) must not replace
+// the one asked for last.
+let skySeq = 0
+// skyLoading is true from a sky request until its sky is on screen, so the
+// viewer can say the sky is still coming rather than leave it black.
+const skyLoading = ref(false)
+
+function beginSky() {
+  skyLoading.value = true
+  return ++skySeq
+}
+
+// endSky marks a request finished without a new sky, e.g. one that failed.
+function endSky(seq) {
+  if (seq === skySeq) skyLoading.value = false
+}
+
+function setSkyOnViewers(cubemap, seq = skySeq) {
+  if (seq !== skySeq) return
+  skyLoading.value = false
+  for (const v of [viewerInstance, fsViewerInstance]) {
+    if (!v || v.disposed) continue
+    v.scene.background = cubemap
+    renderSky(v)
+    redrawSkySoon(v)
+  }
 }
 
 function invalidateSkyCache(pack) {
@@ -314,31 +461,62 @@ function loadImageToCanvas(uri) {
   })
 }
 
-async function generateSkyCubemap(skyTex, cap) {
-  function makeCanvas(s, draw) {
-    const c = document.createElement('canvas')
-    c.width = s; c.height = s
-    draw(c.getContext('2d'), s)
-    return c
-  }
-
-  function skyGradient(ctx, s, topColor, bottomColor) {
-    const g = ctx.createLinearGradient(0, 0, 0, s)
-    g.addColorStop(0, topColor)
-    g.addColorStop(1, bottomColor)
+// One face of a preset background: a vertical gradient from the zenith through
+// the horizon to the nadir on the sides, flat zenith on the top and flat nadir
+// on the bottom. `stars` sprinkles points, as vanilla's night skies have.
+function backgroundFace(size, preset, kind) {
+  const zenith = preset.zenith || preset.solid || '#3a7cc2'
+  const horizon = preset.horizon || preset.solid || '#bcd9f2'
+  const nadir = preset.nadir || preset.solid || '#6f8f6a'
+  const c = document.createElement('canvas')
+  c.width = size; c.height = size
+  const ctx = c.getContext('2d')
+  if (kind === 'top') {
+    ctx.fillStyle = zenith
+  } else if (kind === 'bottom') {
+    ctx.fillStyle = nadir
+  } else {
+    const g = ctx.createLinearGradient(0, 0, 0, size)
+    g.addColorStop(0, zenith)
+    g.addColorStop(0.55, horizon)
+    g.addColorStop(1, nadir)
     ctx.fillStyle = g
-    ctx.fillRect(0, 0, s, s)
   }
+  ctx.fillRect(0, 0, size, size)
+  if (preset.stars && kind !== 'bottom') {
+    for (let i = 0; i < 140; i++) {
+      ctx.globalAlpha = 0.25 + Math.random() * 0.7
+      ctx.fillStyle = '#ffffff'
+      ctx.beginPath()
+      ctx.arc(Math.random() * size, Math.random() * size, 0.4 + Math.random() * 1.3, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    ctx.globalAlpha = 1
+  }
+  return c
+}
 
-  function fallbackFace(s, topColor, bottomColor) {
-    return makeCanvas(s, (ctx, sz) => {
-      skyGradient(ctx, sz, topColor, bottomColor)
-      for (let i = 0; i < 30; i++) {
-        ctx.fillStyle = `rgba(255,255,255,${0.2 + Math.random() * 0.6})`
-        ctx.fillRect(Math.random() * sz, Math.random() * sz, 1 + Math.random() * 2, 1 + Math.random() * 2)
-      }
-    })
-  }
+// A whole preset background as a cube, in three.js face order (+X, -X, +Y, -Y,
+// +Z, -Z). Built at 512 so stars stay crisp when stretched over the cube.
+function buildBackgroundCubemap(preset, cap) {
+  const size = (cap && Number.isFinite(cap)) ? Math.min(512, cap) : 512
+  const faces = [
+    backgroundFace(size, preset, 'side'),
+    backgroundFace(size, preset, 'side'),
+    backgroundFace(size, preset, 'top'),
+    backgroundFace(size, preset, 'bottom'),
+    backgroundFace(size, preset, 'side'),
+    backgroundFace(size, preset, 'side'),
+  ]
+  const cube = new THREE.CubeTexture(faces)
+  cube.needsUpdate = true
+  return cube
+}
+
+async function generateSkyCubemap(skyTex, cap) {
+  // The background choice is carried as a pseudo-texture, so the same build
+  // path and cache serve it as serve a pack's cubemap.
+  if (skyTex && skyTex.background) return buildBackgroundCubemap(skyTex.background, cap)
 
   // Three.js CubeTexture order: +X, -X, +Y, -Y, +Z, -Z
   // Bedrock: 0=left, 1=north(behind player), 2=right, 3=behind camera, 4=top, 5=bottom
@@ -389,13 +567,16 @@ async function generateSkyCubemap(skyTex, cap) {
   const native = Math.max(...faceDims, 128)
   const size = (cap && Number.isFinite(cap)) ? Math.min(native, cap) : native
 
+  // Faces the pack does not supply fall back to the chosen background, so a
+  // partial cubemap still reads as a sky.
+  const bg = currentBackgroundPreset()
   const fallbacks = [
-    fallbackFace(size, '#0e1e3d', '#3a7cc2'),
-    fallbackFace(size, '#0c1a35', '#3a7cc2'),
-    fallbackFace(size, '#070d1f', '#1a4a8a'),
-    fallbackFace(size, '#7ec8e3', '#dceefb'),
-    fallbackFace(size, '#10203f', '#2e6db3'),
-    fallbackFace(size, '#0b1630', '#2e6db3'),
+    backgroundFace(size, bg, 'side'),   // +X
+    backgroundFace(size, bg, 'side'),   // -X
+    backgroundFace(size, bg, 'top'),    // +Y
+    backgroundFace(size, bg, 'bottom'), // -Y
+    backgroundFace(size, bg, 'side'),   // +Z
+    backgroundFace(size, bg, 'side'),   // -Z
   ]
 
   const cubeFaces = faceMap.map((img, i) => {
@@ -413,14 +594,497 @@ async function generateSkyCubemap(skyTex, cap) {
   return cubeTexture
 }
 
-const currentAnimation = computed(() => {
-  return animating.value ? new WalkingAnimation() : new IdleAnimation()
-})
+// ---------------------------------------------------------------------------
+// Viewer: a three.js sky layer behind a bedrock-skin-go player image. The
+// backend draws the player (skin, armor, elytra, held items) exactly as the
+// game does; three.js only turns the pack's cubemap with the same camera.
+// ---------------------------------------------------------------------------
 
-const skinOptions = computed(() => ({
-  model: skinModel.value,
-  ears: false
-}))
+function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)) }
+
+function animationLabel(name) {
+  return (name || '')
+    .replace(/^animation\.player\./, '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase())
+}
+
+async function loadAnimations() {
+  try { animations.value = (await ListAnimations()) || [] } catch { animations.value = [] }
+}
+
+function handItemName(value) {
+  if (!value || value === HAND_EMPTY) return ''
+  if (handTools.includes(value)) return (HELD_TIER[selectedMaterial.value] || 'diamond') + '_' + value
+  return value
+}
+
+function handAdjust(adjust) {
+  return {
+    Offset: [Number(adjust.offsetX) || 0, Number(adjust.offsetY) || 0, Number(adjust.offsetZ) || 0],
+    Rotation: [Number(adjust.rotX) || 0, Number(adjust.rotY) || 0, Number(adjust.rotZ) || 0],
+    Scale: adjust.scale === '' || adjust.scale == null ? 1 : Number(adjust.scale),
+  }
+}
+
+function handRequest(value, adjust) {
+  return { item: handItemName(value), adjust: handAdjust(adjust) }
+}
+
+function currentRequest(size, animation = '', frame = 0) {
+  return {
+    pack: selectedPack.value || '',
+    base: packBase(),
+    model: skinModel.value === 'slim' ? 'slim' : skinModel.value === 'default' ? 'wide' : 'auto',
+    material: selectedMaterial.value === 'naked' ? 'none' : selectedMaterial.value,
+    elytra: elytraOn.value,
+    right: handRequest(rightHand.value, rightAdjust),
+    left: handRequest(leftHand.value, leftAdjust),
+    view: 'body',
+    angle: 'front',
+    camera: { yaw: viewYaw.value, pitch: viewPitch.value, fov: FOV, margin: viewZoom.value },
+    size,
+    hideSkin: equipmentOnly.value,
+    animation,
+    frame,
+    fps: ANIM_FPS,
+  }
+}
+
+function activeContainer() {
+  return fullscreen.value ? fsContainerRef.value : modalContainer.value
+}
+
+function playerSize() {
+  const el = activeContainer()
+  let min = 400
+  if (el) {
+    const r = el.getBoundingClientRect()
+    if (r.width > 0 && r.height > 0) min = Math.min(r.width, r.height)
+  }
+  const dpr = Math.min(window.devicePixelRatio || 1, SKIN_PIXEL_RATIO)
+  return Math.round(clamp(min * dpr, 64, 1024))
+}
+
+// animationSize is the render size for animated views. Still poses render at the
+// full playerSize; animations use the same capped size for both the stills drawn
+// while the camera moves and the preloaded loop, so quality is consistent.
+function animationSize() {
+  return Math.min(playerSize(), ANIM_MAX_SIZE)
+}
+
+// Decode a data URI before showing it, so swapping frames never flashes.
+const decodedSrc = new Set()
+function decodeSrc(uri) {
+  if (!uri || decodedSrc.has(uri)) return Promise.resolve()
+  return new Promise(resolve => {
+    const img = new Image()
+    img.onload = () => {
+      decodedSrc.add(uri)
+      if (decodedSrc.size > 400) decodedSrc.clear()
+      resolve()
+    }
+    img.onerror = () => resolve()
+    img.src = uri
+  })
+}
+
+async function setPlayerSrc(uri) {
+  if (!uri) return
+  await decodeSrc(uri)
+  if (destroyed) return
+  modalPlayerSrc.value = uri
+  fsPlayerSrc.value = uri
+}
+
+async function renderPlayerStill() {
+  // Never drop resolution while turning the model. A still pose renders at the
+  // full playerSize; an animation uses the same size as its preloaded loop so
+  // the image does not get softer when the clip starts looping.
+  const size = animationName.value ? animationSize() : playerSize()
+  const token = ++renderToken
+  // While the camera moves - or its frame set is still loading - an animation
+  // is drawn one frame at a time from its prepared set: a single cheap render
+  // keeps the model turning with the hand and still animating, and because the
+  // frame is framed by the animation's shared camera, whole-body motion keeps
+  // its place.
+  const req = currentRequest(size)
+  if (animationName.value) {
+    req.animation = animationName.value
+    req.frame = animIndex.value
+  }
+  try {
+    const uri = await RenderSkin(req)
+    if (token !== renderToken || destroyed) return
+    setPlayerSrc(uri)
+  } catch (e) {
+    if (isDebug.value) console.error('RenderSkin failed:', e)
+  }
+}
+
+// pumpPlayerStill renders one still now, coalescing calls that arrive while a
+// render is already in flight.
+function pumpPlayerStill() {
+  if (renderInFlight) { renderAgain = true; return }
+  renderInFlight = true
+  ;(async () => {
+    do {
+      renderAgain = false
+      await renderPlayerStill()
+    } while (renderAgain && !destroyed)
+    renderInFlight = false
+  })()
+}
+
+function schedulePlayerRender() {
+  // A settled camera with current frames reloads the whole set and loops it
+  // locally; anything else takes the cheap single-still path.
+  if (animationName.value && !dragging && !dragMoved) { scheduleAnimationFrames(); return }
+  pumpPlayerStill()
+}
+
+function refreshPlayer() {
+  // An appearance change makes the loaded frames stale too: the still path
+  // draws the new look until the matching set arrives.
+  if (animationName.value) animFramesFresh = false
+  schedulePlayerRender()
+}
+
+// Animation frames are fetched once per camera/pose change, then cycled
+// locally at ANIM_FPS.
+function showAnimationFrame() {
+  // While the camera moves - or its frame set is stale - the still path owns
+  // the image; the loop must not overwrite it with frames from the old camera.
+  if (dragging || dragMoved || !animFramesFresh) return
+  const frames = animFrames.value
+  if (!frames.length) return
+  setPlayerSrc(frames[animIndex.value % frames.length])
+}
+
+let animFetching = false
+let animPending = false
+
+async function loadAnimationFramesNow() {
+  const name = animationName.value
+  if (!name) return
+  if (animFetching) { animPending = true; return }
+  animFetching = true
+  const token = ++animToken
+  const stamp = cameraStamp
+  try {
+    const frames = await RenderSkinFrames(currentRequest(animationSize(), name))
+    if (token !== animToken || destroyed) return
+    if (!frames || !frames.length) return
+    animFrames.value = frames
+    if (animIndex.value >= frames.length) animIndex.value = 0
+    // Warm the browser cache so the first swap has no blank flash.
+    frames.forEach(decodeSrc)
+    // These frames only match the current camera if it did not move while they
+    // rendered; otherwise the next settle loads them again. Until then the
+    // still path keeps the animation going.
+    if (stamp === cameraStamp) {
+      animFramesFresh = true
+      showAnimationFrame()
+    }
+  } catch (e) {
+    if (isDebug.value) console.error('RenderSkinFrames failed:', e)
+  } finally {
+    animFetching = false
+    if (animPending) { animPending = false; loadAnimationFramesNow() }
+  }
+}
+
+// Reload frames for the current camera once the rotation settles. The current
+// frames stay in memory and the still path keeps drawing them until the
+// matching set arrives, so the animation never pauses between the drag and the
+// new frames.
+function scheduleAnimationFrames() {
+  if (animDebounce) clearTimeout(animDebounce)
+  animDebounce = setTimeout(loadAnimationFramesNow, 120)
+}
+
+function startAnimationLoop() {
+  stopAnimationLoop()
+  if (!animationName.value) return
+  animTimer = setInterval(() => {
+    const len = animFrames.value.length
+    if (len) animIndex.value = (animIndex.value + 1) % len
+    // While following the camera (or waiting for its frame set), draw one still
+    // per tick: the animation keeps playing even if the hand is briefly still,
+    // and never freezes waiting for the settled set.
+    if (dragging || dragMoved || !animFramesFresh) { pumpPlayerStill(); return }
+    if (len) showAnimationFrame()
+  }, Math.round(1000 / ANIM_FPS))
+}
+
+function stopAnimationLoop() {
+  if (animTimer) { clearInterval(animTimer); animTimer = null }
+}
+
+async function setAnimation(name) {
+  animationName.value = name || ''
+  animIndex.value = 0
+  animFramesFresh = false
+  if (!animationName.value) {
+    stopAnimationLoop()
+    animFrames.value = []
+    schedulePlayerRender()
+    return
+  }
+  await loadAnimationFramesNow()
+  startAnimationLoop()
+}
+
+async function savePNG() {
+  try {
+    const uri = await RenderSkin(currentRequest(1024))
+    await SaveRender(uri, renderFileName('png'))
+  } catch (e) { console.error('Save PNG failed:', e) }
+}
+
+async function saveGIF() {
+  try {
+    const name = animationName.value || 'walk'
+    const uri = await RenderSkinGIF(currentRequest(512, name))
+    await SaveRender(uri, renderFileName('gif'))
+  } catch (e) { console.error('Save GIF failed:', e) }
+}
+
+function renderFileName(ext) {
+  const anim = animationName.value ? animationName.value.split('.').pop() : 'pose'
+  const pack = (selectedPack.value || 'mew').replace(/[^A-Za-z0-9._-]/g, '_')
+  return pack + '-' + selectedMaterial.value + '-' + anim + '.' + ext
+}
+
+// --- sky layer -------------------------------------------------------------
+
+function createSkyView(container) {
+  const renderer = new THREE.WebGLRenderer({ antialias: false })
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, SKIN_PIXEL_RATIO))
+  const el = renderer.domElement
+  el.style.position = 'absolute'
+  el.style.inset = '0'
+  el.style.width = '100%'
+  el.style.height = '100%'
+  el.style.display = 'block'
+  container.appendChild(el)
+  const scene = new THREE.Scene()
+  const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 100)
+  camera.position.set(0, 0, 0)
+  const v = { renderer, scene, camera, container, canvas: el, disposed: false }
+  setupSkyInteraction(v)
+  // If the browser drops the WebGL context and gives it back, three.js
+  // rebuilds its state, but nothing redraws until the user moves the camera:
+  // draw the sky again as soon as the context returns.
+  el.addEventListener('webglcontextrestored', () => redrawSkySoon(v))
+  return v
+}
+
+// redrawSkySoon draws a view's sky on the next frame, once layout has settled,
+// so a sky set while the viewer was still opening is not left black.
+function redrawSkySoon(v) {
+  requestAnimationFrame(() => {
+    if (!v || v.disposed || !v.canvas.isConnected) return
+    const r = v.container.getBoundingClientRect()
+    resizeSkyView(v, r.width, r.height)
+    renderSky(v)
+  })
+}
+
+function resizeSkyView(v, w, h) {
+  if (!v || v.disposed || w <= 0 || h <= 0) return
+  v.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, SKIN_PIXEL_RATIO))
+  v.renderer.setSize(w, h, false)
+  v.camera.aspect = w / h
+  v.camera.updateProjectionMatrix()
+}
+
+function renderSky(v) {
+  if (!v || v.disposed) return
+  const yaw = viewYaw.value * Math.PI / 180
+  const pitch = viewPitch.value * Math.PI / 180
+  v.camera.lookAt(
+    -Math.sin(yaw) * Math.cos(pitch),
+    -Math.sin(pitch),
+    -Math.cos(yaw) * Math.cos(pitch)
+  )
+  v.renderer.render(v.scene, v.camera)
+}
+
+function renderAllSkies() {
+  renderSky(viewerInstance)
+  renderSky(fsViewerInstance)
+}
+
+function ensureSkyView(which) {
+  const container = which === 'fs' ? fsContainerRef.value : modalContainer.value
+  if (!container) return null
+  let v = which === 'fs' ? fsViewerInstance : viewerInstance
+  if (!v || v.disposed) {
+    v = createSkyView(container)
+    if (which === 'fs') fsViewerInstance = v
+    else viewerInstance = v
+  } else if (v.container !== container || !v.canvas.isConnected) {
+    // Reuse the renderer: the viewer's container is new each time it opens,
+    // and making a WebGL context per open is what got contexts dropped.
+    container.appendChild(v.canvas)
+    v.container = container
+  }
+  const r = container.getBoundingClientRect()
+  resizeSkyView(v, r.width, r.height)
+  return v
+}
+
+// parkSkyView takes a view off screen and drops its sky, keeping its renderer
+// and WebGL context for the next time the viewer opens.
+function parkSkyView(v) {
+  if (!v || v.disposed) return
+  try { v.scene.background = null } catch {}
+  try { v.canvas.remove() } catch {}
+}
+
+function disposeViewerResources(v) {
+  if (!v) return
+  v.disposed = true
+  try { v.scene.background = null } catch {}
+  try { v.renderer.dispose() } catch {}
+  try {
+    const gl = v.renderer && v.renderer.getContext && v.renderer.getContext()
+    const lose = gl && gl.getExtension('WEBGL_lose_context')
+    if (lose) lose.loseContext()
+  } catch {}
+  try { v.canvas.remove() } catch {}
+}
+
+function setupSkyInteraction(v) {
+  const el = v.canvas
+  el.style.touchAction = 'none'
+  el.style.cursor = 'grab'
+  const pointers = new Map()
+  let lastX = 0, lastY = 0, lastDist = 0, velX = 0, velY = 0
+
+  const pinchDist = () => {
+    const [a, b] = [...pointers.values()]
+    return Math.hypot(a.x - b.x, a.y - b.y)
+  }
+
+  el.addEventListener('pointerdown', (e) => {
+    cancelInertia()
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    try { el.setPointerCapture(e.pointerId) } catch {}
+    el.style.cursor = 'grabbing'
+    if (pointers.size === 1) {
+      dragging = true; dragMoved = false
+      lastX = e.clientX; lastY = e.clientY
+      velX = 0; velY = 0
+    } else if (pointers.size === 2) {
+      lastDist = pinchDist()
+    }
+  })
+
+  el.addEventListener('pointermove', (e) => {
+    if (!pointers.has(e.pointerId)) return
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    if (pointers.size >= 2) {
+      const d = pinchDist()
+      if (lastDist > 0 && d > 0) viewZoom.value = clamp(viewZoom.value * (lastDist / d), 0.6, 3)
+      lastDist = d
+      cameraChanged()
+      schedulePlayerRender()
+      return
+    }
+    const dx = e.clientX - lastX
+    const dy = e.clientY - lastY
+    if (!dragMoved && Math.abs(dx) + Math.abs(dy) < 2) return
+    cameraChanged()
+    dragging = true
+    viewYaw.value += dx * 0.3
+    viewPitch.value = clamp(viewPitch.value + dy * 0.3, -60, 60)
+    velX = dx * 0.3
+    velY = dy * 0.3
+    lastX = e.clientX; lastY = e.clientY
+    renderAllSkies()
+    schedulePlayerRender()
+  })
+
+  const release = (e) => {
+    if (!pointers.has(e.pointerId)) return
+    pointers.delete(e.pointerId)
+    try { el.releasePointerCapture(e.pointerId) } catch {}
+    if (pointers.size === 0) {
+      el.style.cursor = 'grab'
+      dragging = false
+      if (dragMoved && (Math.abs(velX) > 0.6 || Math.abs(velY) > 0.6)) startInertia(velX, velY)
+      else finishDrag()
+    } else if (pointers.size === 1) {
+      lastDist = 0
+    }
+  }
+  el.addEventListener('pointerup', release)
+  el.addEventListener('pointercancel', release)
+
+  el.addEventListener('wheel', (e) => {
+    e.preventDefault()
+    viewZoom.value = clamp(viewZoom.value + e.deltaY * 0.0015, 0.6, 3)
+    markCameraMoving()
+    schedulePlayerRender()
+  }, { passive: false })
+}
+
+function startInertia(vx, vy) {
+  cancelInertia()
+  const step = () => {
+    vx *= 0.94; vy *= 0.94
+    if (Math.abs(vx) < 0.08 && Math.abs(vy) < 0.08) { inertia = null; finishDrag(); return }
+    viewYaw.value += vx
+    viewPitch.value = clamp(viewPitch.value + vy, -60, 60)
+    cameraChanged()
+    renderAllSkies()
+    schedulePlayerRender()
+    inertia = requestAnimationFrame(step)
+  }
+  inertia = requestAnimationFrame(step)
+}
+
+function cancelInertia() {
+  if (inertia) { cancelAnimationFrame(inertia); inertia = null }
+}
+
+// cameraChanged records that the camera moved: the loaded frames no longer
+// match it, so the still path takes over until a settle reloads them. The stamp
+// lets an in-flight frame load tell it went stale.
+function cameraChanged() {
+  dragMoved = true
+  animFramesFresh = false
+  cameraStamp++
+}
+
+// settleCamera marks the camera as briefly still-moving: while it is, the
+// player is drawn one still per move; once it settles, the animation reloads
+// its frames for the final angle.
+let cameraSettleTimer = null
+function settleCamera(delay) {
+  if (cameraSettleTimer) clearTimeout(cameraSettleTimer)
+  cameraSettleTimer = setTimeout(() => {
+    if (dragging || inertia) return
+    dragMoved = false
+    if (!animationName.value) { schedulePlayerRender(); return }
+    // Frames for the angle the user stopped at are loaded on settle; until
+    // then the still path keeps animating, so there is no pause.
+    if (animFramesFresh) return
+    scheduleAnimationFrames()
+  }, delay)
+}
+
+function markCameraMoving() {
+  cameraChanged()
+  settleCamera(150)
+}
+
+function finishDrag() {
+  dragging = false
+  settleCamera(150)
+}
 
 const filteredPickerItems = computed(() => {
   const q = pickerSearch.value.trim().toLowerCase()
@@ -432,6 +1096,13 @@ function formatSize(bytes) {
   if (bytes < 1024) return bytes + ' B'
   if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB'
   return (bytes / 1048576).toFixed(1) + ' MB'
+}
+
+function popup(title, text, icon) {
+  Swal.mixin({
+    customClass: { popup: 'swal-custom-popup', confirmButton: 'custom-confirm-btn' },
+    buttonsStyling: false
+  }).fire({ title, text, icon, confirmButtonText: 'OK' })
 }
 
 let gcTimer = null
@@ -640,9 +1311,7 @@ async function memDump() {
 
 function resetMem() {
   if (!confirm('Reset memory? This clears all caches/viewers and reloads the app.')) return
-  if (viewerTimer) { clearTimeout(viewerTimer); viewerTimer = null }
-  if (fsViewerTimer) { clearTimeout(fsViewerTimer); fsViewerTimer = null }
-  clearIdlePause()
+  stopAnimationLoop()
   disposeViewerResources(viewerInstance)
   disposeViewerResources(fsViewerInstance)
   viewerInstance = null
@@ -694,18 +1363,16 @@ watch(showMemPanel, (on) => {
 })
 
 const filteredPacks = computed(() => {
-  let list = packList.value
-
+  const list = showServerPacks.value ? cachePackList.value : packList.value
   const q = searchQuery.value.trim().toLowerCase()
   if (q) {
-    list = list.filter(p => {
+    return list.filter(p => {
       const name = (p.name || '').toLowerCase()
       const desc = (p.description || '').toLowerCase()
       const dir = (p.dirName || '').toLowerCase()
       return name.includes(q) || desc.includes(q) || dir.includes(q)
     })
   }
-
   const sorted = [...list]
   switch (sortBy.value) {
     case 'name':
@@ -720,176 +1387,6 @@ const filteredPacks = computed(() => {
   }
   return sorted
 })
-
-const ARMOR_LAYER1_BONES = [
-  { name: 'helmet',        size: [8, 8, 8],   pos: [0, 4, 0],  inflate: 1, uv: [0, 0] },
-  { name: 'chestplate',    size: [8, 12, 4],  pos: [0, 0, 0],  inflate: 1, uv: [16, 16] },
-  { name: 'rightArmArmor', size: [4, 12, 4],  pos: [-1, -4, 0], inflate: 1.01, uv: [40, 16], flipX: true },
-  { name: 'leftArmArmor',  size: [4, 12, 4],  pos: [1, -4, 0],  inflate: 1.01, uv: [40, 16], mirror: true },
-  { name: 'rightLeg',      size: [4, 12, 4],  pos: [0, -6, 0],  inflate: 1, uv: [0, 16], flipX: true },
-  { name: 'leftLeg',       size: [4, 12, 4],  pos: [0, -6, 0],  inflate: 1, uv: [0, 16], mirror: true },
-]
-
-const ARMOR_LAYER2_BONES = [
-  { name: 'TopOfLeggings', size: [8, 4, 4.1], pos: [0, -4, 0], inflate: 0.5, uv: [16, 23] },
-  { name: 'rightLegOverlay', size: [4, 12, 4], pos: [0, -6, 0], inflate: 0.5, uv: [0, 16], flipX: true },
-  { name: 'leftLegOverlay',  size: [4, 12, 4], pos: [0, -6, 0], inflate: 0.5, uv: [0, 16], mirror: true },
-]
-
-const ARMOR_ATTACH_MAP = {
-  helmet: 'head',
-  chestplate: 'body',
-  rightArmArmor: 'rightArm',
-  leftArmArmor: 'leftArm',
-  rightLeg: 'rightLeg',
-  leftLeg: 'leftLeg',
-  rightLegOverlay: 'rightLeg',
-  leftLegOverlay: 'leftLeg',
-  TopOfLeggings: 'body',
-}
-
-const FACE_ORDER = ['right', 'left', 'top', 'bottom', 'front', 'back']
-
-function boxUV(u, v, W, H, D, flipX) {
-  const leftU = flipX ? u + D + W : u
-  const rightU = flipX ? u : u + D + W
-  return {
-    right:  { u: rightU,    v: v + D,     w: D, h: H },
-    left:   { u: leftU,     v: v + D,     w: D, h: H },
-    top:    { u: u + D,     v: v,         w: W, h: D },
-    bottom: { u: u + D + W, v: v,         w: W, h: D },
-    front:  { u: u + D,     v: v + D,     w: W, h: H },
-    back:   { u: u + D + W + D, v: v + D, w: W, h: H },
-  }
-}
-
-function safeCrop(img, face) {
-  const canvas = document.createElement('canvas')
-  const iw = img.naturalWidth || img.width
-  const ih = img.naturalHeight || img.height
-  const sx = Math.max(0, Math.min(face.u, iw))
-  const sy = Math.max(0, Math.min(face.v, ih))
-  const sw = Math.max(0, Math.min(face.w, iw - sx))
-  const sh = Math.max(0, Math.min(face.h, ih - sy))
-  if (sw <= 0 || sh <= 0) { canvas.width = 1; canvas.height = 1; return canvas }
-  canvas.width = sw; canvas.height = sh
-  const ctx = canvas.getContext('2d')
-  ctx.imageSmoothingEnabled = false
-  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh)
-  return canvas
-}
-
-function buildMeshFromBone(img, bone, isArmor, renderOrder) {
-  const [W, H, D] = bone.size
-  const inflate = bone.inflate || 0
-  const finalSize = [W + inflate * 2, H + inflate * 2, D + inflate * 2]
-  const iw = img.naturalWidth || img.width
-  const ih = img.naturalHeight || img.height
-  const sx = iw / 64
-  const isModern = ih > 32 && ih > iw / 2
-  const sy = isModern ? ih / 64 : ih / 32
-  const u = bone.uv[0], v = bone.uv[1]
-  const faces = boxUV(u * sx, v * sy, W * sx, H * sy, D * sx, !!bone.flipX)
-  const materials = []
-  for (const fname of FACE_ORDER) {
-    let canvas = safeCrop(img, faces[fname])
-    if (bone.mirror) {
-      const flipped = document.createElement('canvas')
-      flipped.width = canvas.width; flipped.height = canvas.height
-      const fctx = flipped.getContext('2d')
-      fctx.translate(canvas.width, 0); fctx.scale(-1, 1)
-      fctx.drawImage(canvas, 0, 0); canvas = flipped
-    }
-    const tex = new THREE.CanvasTexture(canvas)
-    tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter
-    const opts = { map: tex, side: THREE.FrontSide }
-    if (isArmor) {
-      opts.side = THREE.DoubleSide
-      opts.alphaTest = 0.1
-      opts.depthWrite = true
-    } else {
-      opts.alphaTest = 0.1
-    }
-    materials.push(new THREE.MeshStandardMaterial(opts))
-  }
-  const geo = new THREE.BoxGeometry(finalSize[0], finalSize[1], finalSize[2])
-  const mesh = new THREE.Mesh(geo, materials)
-  mesh.position.set(bone.pos[0], bone.pos[1], bone.pos[2])
-  mesh.renderOrder = renderOrder
-  return mesh
-}
-
-function disposeMesh(mesh) {
-  if (!mesh) return
-  if (mesh.geometry) mesh.geometry.dispose()
-  if (Array.isArray(mesh.material)) {
-    mesh.material.forEach(m => { if (m.map) m.map.dispose(); m.dispose() })
-  } else if (mesh.material) { mesh.material.dispose() }
-}
-
-function disposeViewerResources(v) {
-  if (!v) return
-  removeArmorMeshes(v)
-  v.scene.background = null
-  if (!v.disposed) {
-    try { v.dispose() } catch {}
-  }
-  try {
-    const gl = v.renderer && v.renderer.getContext && v.renderer.getContext()
-    const lose = gl && gl.getExtension('WEBGL_lose_context')
-    if (lose) lose.loseContext()
-  } catch {}
-  skinLoadKeys.delete(v)
-}
-
-// Don't re-decode the same skin repeatedly: navigating between packs (and
-// other triggers) would otherwise re-load an identical skin URI just because a
-// different pack was selected, pinning a fresh decoded image each time.
-const skinLoadKeys = new Map()
-function loadSkinOnce(v, uri, model) {
-  if (!v || v.disposed) return false
-  const key = (uri || '') + '\u0001' + (model || '')
-  if (skinLoadKeys.get(v) === key) return false
-  skinLoadKeys.set(v, key)
-  return true
-}
-
-function clearIdlePause() {
-  for (const c of idleCleanups) { try { c() } catch {} }
-  idleCleanups.clear()
-  if (fsIdleCleanup) { try { fsIdleCleanup() } catch {}; fsIdleCleanup = null }
-  setViewerPaused(viewerInstance, false)
-  setViewerPaused(fsViewerInstance, false)
-}
-
-function setViewerPaused(v, paused) {
-  if (!v || v.disposed) return
-  v.renderPaused = paused
-}
-
-function resumeViewers() {
-  setViewerPaused(viewerInstance, false)
-  setViewerPaused(fsViewerInstance, false)
-}
-
-function setupIdlePause(v, cleanupSet) {
-  if (!v || v.disposed) return
-  let timer = null
-  const resume = () => {
-    setViewerPaused(v, false)
-    clearTimeout(timer)
-    timer = setTimeout(() => setViewerPaused(v, true), IDLE_PAUSE_MS)
-  }
-  const evts = ['pointerdown', 'pointermove', 'wheel', 'touchstart', 'touchmove']
-  for (const evt of evts) v.canvas.addEventListener(evt, resume, { passive: true })
-  setViewerPaused(v, true)
-  const cleanup = () => {
-    clearTimeout(timer)
-    for (const evt of evts) v.canvas.removeEventListener(evt, resume)
-  }
-  if (cleanupSet) cleanupSet.add(cleanup)
-  return cleanup
-}
 
 function clearSkyCache() {
   for (const t of skyCache.values()) {
@@ -922,6 +1419,24 @@ async function thumbifyPackIcons(list) {
   }
 }
 
+// Packs that override the player skin get a small 3D render of it on their
+// card, drawn by the backend. Fetched in batches so the grid fills in quickly.
+async function loadSkinThumbs(list, base = '') {
+  const BATCH = 16
+  for (let i = 0; i < list.length; i += BATCH) {
+    const batch = list.slice(i, i + BATCH)
+    try {
+      const thumbs = await GetPackSkinThumbnails(batch.map(p => p.dirName).filter(Boolean), base)
+      for (const p of batch) {
+        if (thumbs && thumbs[p.dirName]) p.skinThumb = thumbs[p.dirName]
+      }
+    } catch (e) {
+      console.error('Failed to load skin thumbnails:', e)
+      return
+    }
+  }
+}
+
 async function toThumb(dataURI, size = 64) {
   try {
     const img = await loadImage(dataURI)
@@ -937,82 +1452,56 @@ async function toThumb(dataURI, size = 64) {
   }
 }
 
-function buildArmor(v, tex1, tex2) {
-  if (!v || v.disposed) return
-  const skin = v.playerObject.skin
-  const allBones = [
-    ...(tex1 ? ARMOR_LAYER1_BONES.map(b => [b, tex1]) : []),
-    ...(tex2 ? ARMOR_LAYER2_BONES.map(b => [b, tex2]) : []),
-  ]
-  for (const [bone, tex] of allBones) {
-    const mesh = buildMeshFromBone(tex, bone, true, 10)
-    mesh.name = bone.name + '_armor'
-    const targetPart = skin[ARMOR_ATTACH_MAP[bone.name]]
-    if (targetPart) targetPart.add(mesh)
-  }
-}
-
-function removeArmorMeshes(v) {
-  if (!v || v.disposed) return
-  const skin = v.playerObject.skin
-  for (const partName of Object.keys(skin)) {
-    const part = skin[partName]
-    if (!part || !part.children) continue
-    const toRemove = part.children.filter(c => c.name && c.name.endsWith('_armor'))
-    for (const c of toRemove) { part.remove(c); disposeMesh(c) }
-  }
-}
-
-function getViewerSize() {
-  if (modalContainer.value) {
-    return { w: modalContainer.value.clientWidth, h: 400 }
-  }
-  return { w: 560, h: 400 }
-}
-
-function configureViewer() {
-  if (!viewerInstance) return
-  capPixelRatio(viewerInstance)
-  viewerInstance.camera.position.set(0, 8, 40)
-  viewerInstance.controls.target.set(0, 2, 0)
-  viewerInstance.controls.enableDamping = true
-  viewerInstance.controls.dampingFactor = 0.08
-  viewerInstance.controls.minDistance = 15
-  viewerInstance.controls.maxDistance = 80
-  viewerInstance.controls.update()
-}
-
 const fsIndex = ref(0)
+
+function currentSkyBase() {
+  if (!currentSkyKey) return selectedPack.value ? selectedPack.value + '#base' : null
+  return currentSkyKey.replace(/:m$/, '').replace(/:fs$/, '')
+}
 
 function openFullscreen() {
   const idx = filteredPacks.value.findIndex(p => p.dirName === selectedPack.value)
   fsIndex.value = idx >= 0 ? idx : 0
   fullscreen.value = true
-  nextTick(() => {
+  nextTick(async () => {
     measureFs()
-    applyAppearanceFs()
+    const v = ensureSkyView('fs')
+    const base = currentSkyBase()
+    if (base && lastSkyTex) {
+      try {
+        const cubemap = await skyBuild(base, lastSkyTex)
+        currentSkyKey = skyKey(base)
+        if (v) { v.scene.background = cubemap; renderSky(v) }
+      } catch {}
+    }
+    watchSkySizes()
+    if (animationName.value) { await loadAnimationFramesNow(); startAnimationLoop() }
+    else schedulePlayerRender()
     recordMem('fs open')
   })
 }
 
 async function closeFullscreen() {
+  cancelInertia()
   const wasFsKey = currentSkyKey
-  const baseKey = wasFsKey && wasFsKey.startsWith(selectedPack.value + '#')
-    ? wasFsKey.replace(/:fs$/, '')
-    : (selectedPack.value ? selectedPack.value + '#base' : null)
+  const base = currentSkyBase()
   fullscreen.value = false
-  if (baseKey && lastSkyTex) {
+  if (base && lastSkyTex) {
     try {
-      const cubemap = await skyBuild(baseKey, lastSkyTex)
-      currentSkyKey = skyKey(baseKey)
-      if (currentSkyKey !== wasFsKey) setSkyOnViewers(cubemap)
+      const cubemap = await skyBuild(base, lastSkyTex)
+      currentSkyKey = skyKey(base)
+      if (viewerInstance) { viewerInstance.scene.background = cubemap; renderSky(viewerInstance) }
     } catch {}
   }
+  disposeViewerResources(fsViewerInstance)
+  fsViewerInstance = null
   if (wasFsKey && wasFsKey.endsWith(':fs')) {
     const t = skyCache.get(wasFsKey)
     if (t) { try { t.dispose() } catch {}; skyCache.delete(wasFsKey) }
     skyPending.delete(wasFsKey)
   }
+  watchSkySizes()
+  schedulePlayerRender()
   recordMem('fs close')
 }
 
@@ -1070,78 +1559,25 @@ function measureFs() {
   }
 }
 
-watch(fsViewerRef, (newRef) => {
-  if (!newRef || !modelSetupAlive) return
-  if (fsViewerTimer) { clearTimeout(fsViewerTimer); fsViewerTimer = null }
-  const tryGetViewer = () => {
-    if (!modelSetupAlive) return
-    const v = newRef.viewer
-    if (v) {
-      if (v.disposed) return
-      fsViewerTimer = null
-      fsViewerInstance = v
-      capPixelRatio(v)
-      if (fsIdleCleanup) { fsIdleCleanup(); fsIdleCleanup = null }
-      fsIdleCleanup = setupIdlePause(v, null)
-      v.camera.position.set(0, 8, 40)
-      v.controls.target.set(0, 2, 0)
-      v.controls.enableDamping = true
-      v.controls.dampingFactor = 0.08
-      applyAppearanceFs()
-    } else {
-      fsViewerTimer = setTimeout(tryGetViewer, 50)
+let skyResizeObserver = null
+function watchSkySizes() {
+  if (skyResizeObserver) skyResizeObserver.disconnect()
+  skyResizeObserver = new ResizeObserver(() => {
+    if (viewerInstance && modalContainer.value) {
+      const r = modalContainer.value.getBoundingClientRect()
+      resizeSkyView(viewerInstance, r.width, r.height)
+      renderSky(viewerInstance)
     }
-  }
-  tryGetViewer()
-})
-
-async function applyAppearanceFs() {
-  if (!fsViewerInstance) return
-  const uri = customSkinURI.value || defaultSkinImg
-  const model = skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value
-  if (loadSkinOnce(fsViewerInstance, uri, model)) {
-    await fsViewerInstance.loadSkin(uri, { model })
-  }
-  const cached = currentSkyKey ? skyCache.get(currentSkyKey) : null
-  const cubemap = cached || await skyBuild(selectedPack.value + '#base', lastSkyTex)
-  currentSkyKey = skyKey(selectedPack.value + '#base')
-  setSkyOnViewers(cubemap)
-  await applyArmor(selectedPack.value, selectedMaterial.value)
-  resumeViewers()
+    if (fsViewerInstance && fsContainerRef.value) {
+      const r = fsContainerRef.value.getBoundingClientRect()
+      resizeSkyView(fsViewerInstance, r.width, r.height)
+      renderSky(fsViewerInstance)
+    }
+    schedulePlayerRender()
+  })
+  if (modalContainer.value) skyResizeObserver.observe(modalContainer.value)
+  if (fsContainerRef.value) skyResizeObserver.observe(fsContainerRef.value)
 }
-
-watch(viewerRef, (newRef) => {
-  if (!newRef || !modelSetupAlive) return
-  if (viewerTimer) { clearTimeout(viewerTimer); viewerTimer = null }
-  const tryGetViewer = () => {
-    if (!modelSetupAlive) return
-    const v = newRef.viewer
-    if (v) {
-      if (v.disposed) return
-      viewerTimer = null
-      viewerInstance = v
-      setupIdlePause(v, idleCleanups)
-      configureViewer()
-      const setupViewer = async () => {
-        try {
-          const defSkin = await GetDefaultSkin()
-          if (defSkin) customSkinURI.value = defSkin
-        } catch {}
-        if (viewerInstance && !viewerInstance.disposed) {
-          const uri = customSkinURI.value || defaultSkinImg
-          await viewerInstance.loadSkin(uri, { model: skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value })
-          setSkyOnViewers(await buildSkyCubemap('default', null))
-          if (selectedPack.value) await applyArmor(selectedPack.value, selectedMaterial.value)
-          resumeViewers()
-        }
-      }
-      setupViewer()
-    } else {
-      viewerTimer = setTimeout(tryGetViewer, 50)
-    }
-  }
-  tryGetViewer()
-})
 
 async function loadAllPacks() {
   try {
@@ -1150,18 +1586,41 @@ async function loadAllPacks() {
     packList.value = (list || []).map(p => ({
       ...p,
       dirName: p.dirName || '',
+      skinThumb: '',
     }))
     thumbifyPackIcons(packList.value)
+    loadSkinThumbs(packList.value)
   } catch (e) {
     console.error('Failed to load packs:', e)
+  }
+  try {
+    const cacheSources = await GetPackCache()
+    const source = cacheSources && cacheSources[0]
+    if (source && source.found && source.path) {
+      serverPacksPath.value = source.path
+      const cacheList = await GetPackCacheList(source.path)
+      cachePackList.value = (cacheList || []).map(p => ({
+        ...p,
+        dirName: p.dirName || '',
+        skinThumb: '',
+      }))
+      thumbifyPackIcons(cachePackList.value)
+      loadSkinThumbs(cachePackList.value, source.path)
+    } else {
+      serverPacksPath.value = ''
+      cachePackList.value = []
+    }
+  } catch (e) {
+    console.error('Failed to load server packs:', e)
   }
   loading.value = false
 }
 
 function openPackFolder() {
-  if (!packsPath.value || !selectedPack.value) return
-  const sep = packsPath.value.includes('\\') ? '\\' : '/'
-  OpenFolder(packsPath.value + sep + selectedPack.value)
+  const basePath = showServerPacks.value ? serverPacksPath.value : packsPath.value
+  if (!basePath || !selectedPack.value) return
+  const sep = basePath.includes('\\') ? '\\' : '/'
+  OpenFolder(basePath + sep + selectedPack.value)
 }
 
 async function deletePack() {
@@ -1186,38 +1645,69 @@ async function deletePack() {
 async function openPack(packName) {
   selectedPack.value = packName
   selectedMaterial.value = 'diamond'
+  elytraOn.value = false
+  equipmentOnly.value = false
+  rightHand.value = HAND_EMPTY
+  leftHand.value = HAND_EMPTY
+  Object.assign(rightAdjust, emptyAdjust())
+  Object.assign(leftAdjust, emptyAdjust())
+  rightAdjustOpen.value = false
+  leftAdjustOpen.value = false
+  stopAnimationLoop()
+  animationName.value = ''
+  animFrames.value = []
+  animFramesFresh = false
+  // Drop the last pack's picture, and any render still in flight for it, so
+  // the viewer never shows the previous pack's skin while this one loads.
+  renderToken++
+  modalPlayerSrc.value = ''
+  fsPlayerSrc.value = ''
   showModal.value = true
   await nextTick()
+  ensureSkyView('modal')
+  watchSkySizes()
   await loadCustomItems()
-  await waitForViewer()
   await loadPackData(packName)
 }
 
-function waitForViewer(timeout = 5000) {
-  if (viewerInstance) return Promise.resolve()
-  return new Promise(resolve => {
-    const start = Date.now()
-    const check = setInterval(() => {
-      if (viewerInstance || Date.now() - start > timeout) { clearInterval(check); resolve() }
-    }, 50)
-  })
+async function exportSelectedServerPacks() {
+  if (exportingServer.value || !showServerPacks.value) return
+  const names = filteredPacks.value.map(p => p.dirName)
+  if (!names.length) return
+  exportingServer.value = true
+  try {
+    const written = await ExportCachePacks(names, serverPacksPath.value)
+    popup('Exported', `Exported ${written.length} server pack(s) to ${written.length === 1 ? written[0] : 'the output folder'}`, 'success')
+  } catch (err) {
+    console.error('ExportCachePacks error:', err)
+    popup('Export Failed', String(err?.toString ? err.toString() : err), 'error')
+  } finally {
+    exportingServer.value = false
+  }
 }
 
 function closeModal() {
+  dropSkinPreviews()
   showModal.value = false
   confirmDelete.value = false
   fullscreen.value = false
-  if (viewerTimer) { clearTimeout(viewerTimer); viewerTimer = null }
-  if (fsViewerTimer) { clearTimeout(fsViewerTimer); fsViewerTimer = null }
-  clearIdlePause()
-  disposeViewerResources(viewerInstance)
+  cancelInertia()
+  stopAnimationLoop()
+  if (animDebounce) { clearTimeout(animDebounce); animDebounce = null }
+  if (skyResizeObserver) { skyResizeObserver.disconnect(); skyResizeObserver = null }
+  // The modal's renderer is kept for the next pack; only its sky is dropped.
+  parkSkyView(viewerInstance)
   disposeViewerResources(fsViewerInstance)
-  viewerInstance = null
   fsViewerInstance = null
+  animationName.value = ''
+  animFrames.value = []
+  animFramesFresh = false
   setLastSkyTex(null)
   currentSkyKey = null
+  skyLoading.value = false
   skySubpacks.value = []
   skySlider.value = 0
+  packHasSky.value = false
   itemTextures.value = []
   itemCache.clear()
   clearSkyCache()
@@ -1237,42 +1727,73 @@ function closeModal() {
 async function loadPackData(packName) {
   try {
     hasScreens.value = false
+    if (lastLoadedPack !== packName) {
+      // An unsaved skin belongs to the pack it was tried on: leaving that
+      // pack drops it, as closing the viewer does. A reload keeps it.
+      if (skinPreviewing.value) dropSkinPreviews()
+    }
     if (lastLoadedPack && lastLoadedPack !== packName) {
       invalidateSkyCache(lastLoadedPack)
       itemCache.delete(lastLoadedPack)
       invalidateTextureCache(lastLoadedPack)
     }
     lastLoadedPack = packName
+    packSkinChosen.value = false
+    loadPackSkinChosen(packName)
+    showPlaceholderSky()
+    // The player does not depend on the sky, and a pack's sky can take seconds
+    // to build, so draw the player straight away rather than after it.
+    const player = applyPlayerAppearance()
     const [info, skyTex, packHasScreens] = await Promise.all([
-      GetPackPreviewInfo(packName),
-      cachedTextureFetch(packName + '|sky', () => GetPackSkyTextures(packName)),
-      PackHasUiScreens(packName),
+      packApi.previewInfo(packName),
+      cachedTextureFetch(packName + '|sky', () => packApi.skyTextures(packName)),
+      packApi.hasScreens(packName),
     ])
     hasScreens.value = !!packHasScreens
     // A pack without screens cannot use the renderer panel.
     if (!hasScreens.value) viewerMode.value = 'texture'
     recordMem('stage:info')
     selectedPackInfo.value = info
-    setLastSkyTex(skyTex)
-    const cubemap = await skyBuild(packName + '#base', skyTex)
-    recordMem('stage:sky')
-    currentSkyKey = skyKey(packName + '#base')
-    setSkyOnViewers(cubemap)
     textureCache.delete(packName + '|sky')
-    await applySkin(packName)
-    recordMem('stage:skin')
-    await applyArmor(packName, selectedMaterial.value)
-    recordMem('stage:armor')
+    // Which sky? The pack's own wins: a base cubemap, or a subpack when the
+    // base has none. Only a pack with no sky at all falls back to the user's
+    // chosen background. The background lives in the app settings.
+    await loadBackgroundSetting()
+    skySubpacks.value = (await packApi.skySubpacks(packName)) || []
+    skySlider.value = 0
+    packHasSky.value = hasCubemapFaces(skyTex) || skySubpacks.value.length > 0
+    if (hasCubemapFaces(skyTex)) {
+      const seq = beginSky()
+      setLastSkyTex(skyTex)
+      const cubemap = await skyBuild(packName + '#base', skyTex)
+      if (seq !== skySeq) return
+      currentSkyKey = skyKey(packName + '#base')
+      setSkyOnViewers(cubemap, seq)
+    } else if (skySubpacks.value.length > 0) {
+      await applySkySubpack(0)
+    } else {
+      await applyBackground()
+    }
+    recordMem('stage:sky')
     await loadItems(packName)
     recordMem('stage:items')
-    skySubpacks.value = (await GetPackSkySubpacks(packName)) || []
-    skySlider.value = 0
-    resumeViewers()
+    await player
     recordMem('load pack')
     armIdleGC()
     scheduleIdleGC(null, 'load pack')
   } catch (e) {
     console.error('Failed to load pack data:', e)
+    skyLoading.value = false
+  }
+}
+
+async function applyPlayerAppearance() {
+  if (animationName.value) {
+    await loadAnimationFramesNow()
+    startAnimationLoop()
+  } else {
+    renderAgain = false
+    await renderPlayerStill()
   }
 }
 
@@ -1283,7 +1804,6 @@ async function reloadPack() {
   itemCache.delete(pack)
   invalidateTextureCache(pack)
   await loadPackData(pack)
-  if (fullscreen.value && fsViewerInstance) await applyAppearanceFs()
   recordMem('reload pack')
 }
 
@@ -1291,20 +1811,100 @@ async function applySkySubpack(idx) {
   if (!skySubpacks.value.length) return
   const sp = skySubpacks.value[idx]
   if (!sp) return
-  const tex = await cachedTextureFetch(selectedPack.value + '|sub|' + sp.folderName, () => GetPackSkySubpackTextures(selectedPack.value, sp.folderName))
+  const seq = beginSky()
+  const tex = await cachedTextureFetch(selectedPack.value + '|sub|' + sp.folderName, () => packApi.skySubpackTextures(selectedPack.value, sp.folderName))
   if (isDebug.value) {
     console.log('[subpack]', selectedPack.value, sp.folderName, JSON.stringify(tex, (k, v) => v ? (typeof v === 'string' ? v.slice(0, 40) + '...' : v) : v))
   }
   if (!tex || (!tex.cubemap0 && !tex.cubemap1)) {
     if (isDebug.value) console.warn('[subpack] no cubemap textures returned for', sp.folderName)
+    endSky(seq)
     return
   }
+  if (seq !== skySeq) return
   setLastSkyTex(tex)
   const cubemap = await skyBuild(selectedPack.value + '#' + idx, tex)
+  if (seq !== skySeq) return
   currentSkyKey = skyKey(selectedPack.value + '#' + idx)
-  setSkyOnViewers(cubemap)
-  resumeViewers()
+  setSkyOnViewers(cubemap, seq)
   recordMem('sky subpack')
+}
+
+// loadDefaultSkyPack returns the default sky pack's cubemap and its cache key,
+// or null when the pack has no sky. The chosen subpack comes first, then the
+// pack's own sky, then its first sky subpack, so a pack whose skies are all
+// in subpacks, or whose chosen subpack was removed, still shows one.
+async function loadDefaultSkyPack() {
+  const pack = defaultSkyPack.value
+  const chosen = defaultSkySubpack.value
+  const tryOne = async (sub) => {
+    const tex = await cachedTextureFetch(pack + (sub ? '|' + sub : '') + '|defaultsky', () =>
+      sub ? GetPackSkySubpackTextures(pack, sub) : GetPackSkyTextures(pack))
+    return hasCubemapFaces(tex) ? { tex, key: pack + '#' + (sub || 'default') } : null
+  }
+  if (chosen) {
+    const found = await tryOne(chosen)
+    if (found) return found
+  }
+  const own = await tryOne('')
+  if (own) return own
+  const first = ((await GetPackSkySubpacks(pack)) || []).find(sp => sp.folderName !== chosen)
+  return first ? tryOne(first.folderName) : null
+}
+
+// showPlaceholderSky puts the chosen gradient behind the player at once, so a
+// big pack sky that takes seconds to build never leaves the viewer black. The
+// real sky replaces it when ready; it never replaces a sky already shown.
+async function showPlaceholderSky() {
+  const v = viewerInstance
+  if (!v || v.disposed || v.scene.background) return
+  const preset = currentBackgroundPreset()
+  const cube = await skyBuild(BACKGROUND_PREFIX + preset.id, { background: preset })
+  if (v.disposed || v.scene.background) return
+  v.scene.background = cube
+  renderSky(v)
+  redrawSkySoon(v)
+}
+
+// Show the user's chosen background. A pack's own sky takes precedence, so
+// this does nothing while one is loaded - the menu is disabled for that case.
+async function applyBackground() {
+  if (packHasSky.value) return
+  const seq = beginSky()
+  // The sky pack swatch shows the default sky pack picked in Settings; any
+  // other swatch shows that built-in background.
+  if (backgroundId.value === SKY_PACK_BACKGROUND_ID && defaultSkyPack.value) {
+    try {
+      const found = await loadDefaultSkyPack()
+      if (seq !== skySeq) return
+      if (found) {
+        setLastSkyTex(found.tex)
+        const cubemap = await skyBuild(found.key, found.tex)
+        if (seq !== skySeq) return
+        currentSkyKey = skyKey(found.key)
+        setSkyOnViewers(cubemap, seq)
+        recordMem('background custom sky')
+        return
+      }
+    } catch (e) {
+      if (isDebug.value) console.warn('Failed to load default sky pack:', e)
+    }
+  }
+  const preset = currentBackgroundPreset()
+  const key = backgroundKey()
+  setLastSkyTex({ background: preset })
+  const cubemap = await skyBuild(key, lastSkyTex)
+  if (seq !== skySeq) return
+  currentSkyKey = skyKey(key)
+  setSkyOnViewers(cubemap, seq)
+  recordMem('background ' + preset.id)
+}
+
+function setBackground(id) {
+  if (packHasSky.value) return
+  backgroundId.value = normalizeBackgroundId(id)
+  persistBackgroundSetting(backgroundId.value)
+  return applyBackground()
 }
 
 async function loadItems(packName) {
@@ -1313,7 +1913,7 @@ async function loadItems(packName) {
     return
   }
   const thmb = await cachedTextureFetch(packName + '|itemthumbs|' + selectedMaterial.value, async () => {
-    const items = await GetPackItemTextures(packName, selectedMaterial.value)
+    const items = await packApi.itemTextures(packName, selectedMaterial.value)
     return Promise.all((items || []).map(async itm => itm && itm.dataURI ? { ...itm, dataURI: await toThumb(itm.dataURI) } : itm))
   }) || []
   itemTextures.value = thmb
@@ -1330,35 +1930,13 @@ function reloadItems(packName) {
   return loadItems(packName)
 }
 
-async function applySkin(packName) {
-  if (!viewerInstance) return
-  const skinURI = customSkinURI.value || await cachedTextureFetch(packName + '|skin', () => GetPlayerSkinTexture(packName)) || defaultSkinImg
-  const model = skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value
-  if (loadSkinOnce(viewerInstance, skinURI, model)) {
-    await viewerInstance.loadSkin(skinURI, { model })
-  }
-  resumeViewers()
-  scheduleIdleGC(null, 'skin')
-}
-
-async function applyArmor(packName, material) {
+function selectMaterial(material) {
   selectedMaterial.value = material
-  removeArmorMeshes(viewerInstance)
-  removeArmorMeshes(fsViewerInstance)
-  try {
-    const tex = await cachedTextureFetch(packName + '|armor|' + material, () => GetPackArmorTextures(packName, material))
-    let img1 = null, img2 = null
-    if (tex.layer1) img1 = await loadImage(tex.layer1)
-    if (tex.layer2) img2 = await loadImage(tex.layer2)
-    buildArmor(viewerInstance, img1, img2)
-    buildArmor(fsViewerInstance, img1, img2)
-    resumeViewers()
-    recordMem('material ' + material)
-    armIdleGC()
-    scheduleIdleGC(null, 'armor')
-  } catch (e) {
-    console.error('Failed to apply armor:', e)
-  }
+  if (material === 'naked') elytraOn.value = false
+  recordMem('material ' + material)
+  armIdleGC()
+  scheduleIdleGC(null, 'armor')
+  refreshPlayer()
 }
 
 function formatName(name) {
@@ -1367,16 +1945,64 @@ function formatName(name) {
 
 function triggerSkinUpload() { skinFileInput.value?.click() }
 
-async function onSkinFileChange(e) {
+// refreshPackCard redraws one pack's card image after its skin changed.
+async function refreshPackCard(packName) {
+  try {
+    const thumbs = await GetPackSkinThumbnails([packName], packBase())
+    const list = showServerPacks.value ? cachePackList.value : packList.value
+    const card = (list || []).find(p => p.dirName === packName)
+    if (card && thumbs && thumbs[packName]) card.skinThumb = thumbs[packName]
+  } catch {}
+}
+
+async function loadPackSkinChosen(packName) {
+  try { packSkinChosen.value = !!(await HasPackSkin(packName, packBase())) } catch { packSkinChosen.value = false }
+}
+
+async function clearPackSkin() {
+  const pack = selectedPack.value
+  if (!pack) return
+  try { await ClearPackSkin(pack, packBase()) } catch (err) { console.error('Failed to clear skin:', err); return }
+  packSkinChosen.value = false
+  skinPreviewing.value = false
+  refreshPlayer()
+  refreshPackCard(pack)
+}
+
+async function savePackSkin() {
+  const pack = selectedPack.value
+  if (!pack || !skinPreviewing.value) return
+  try { await SavePackSkin(pack, packBase()) } catch (err) { console.error('Failed to save skin:', err); return }
+  skinPreviewing.value = false
+  packSkinChosen.value = true
+  refreshPackCard(pack)
+}
+
+// dropSkinPreviews forgets every unsaved skin, when the viewer closes.
+function dropSkinPreviews() {
+  skinPreviewing.value = false
+  ClearPreviewSkins().catch(() => {})
+}
+
+function onSkinFileChange(e) {
   const file = e.target.files?.[0]
-  if (!file) return
+  const pack = selectedPack.value
+  e.target.value = ''
+  if (!file || !pack) return
   const reader = new FileReader()
   reader.onload = async () => {
-    customSkinURI.value = reader.result
-    try { await SaveDefaultSkin(reader.result) } catch (err) { console.error('Failed to save skin:', err) }
+    try {
+      await PreviewPackSkin(pack, packBase(), reader.result)
+    } catch (err) {
+      console.error('Failed to load skin:', err)
+      return
+    }
+    if (selectedPack.value === pack) {
+      skinPreviewing.value = true
+      refreshPlayer()
+    }
   }
   reader.readAsDataURL(file)
-  e.target.value = ''
 }
 
 async function loadCustomItems() {
@@ -1401,7 +2027,10 @@ async function openItemPicker() {
   pickerLoaded.clear()
   pickerSearch.value = ''
   try {
-    const names = await GetPackItemTextureNames(selectedPack.value)
+    const packName = selectedPack.value
+    const names = showServerPacks.value
+      ? await GetPackItemTextureNamesFromCache(packName, serverPacksPath.value)
+      : await GetPackItemTextureNames(packName)
     pickerNames.value = names || []
   } catch (err) {
     console.error('Failed to load item names:', err)
@@ -1439,7 +2068,13 @@ async function loadPickerTexture(name) {
   if (pickerLoaded.has(name) || pickerTextures.has(name)) return
   pickerLoaded.add(name)
   try {
-    const dataURI = await cachedTextureFetch(selectedPack.value + '|picker|' + name, () => GetPackItemTexture(selectedPack.value, name))
+    const packName = selectedPack.value
+    const dataURI = await cachedTextureFetch(packName + '|picker|' + name, async () => {
+      if (showServerPacks.value) {
+        return GetPackItemTextureFromCache(packName, name, serverPacksPath.value)
+      }
+      return GetPackItemTexture(packName, name)
+    })
     if (dataURI) pickerTextures.set(name, dataURI)
     loadPickerThumb(name, dataURI)
   } catch (err) {
@@ -1465,6 +2100,72 @@ function closeItemPicker() {
   recordMem('picker close')
   armIdleGC()
   scheduleIdleGC(null, 'picker close')
+}
+
+// --- item 3D dialog ---------------------------------------------------------
+const showItem3D = ref(false)
+const item3DName = ref('')
+const item3DLoading = ref(false)
+const item3DError = ref('')
+const item3DFront = ref('')
+const item3DIso = ref('')
+const item3DSpin = ref('')
+
+async function openItem3D(name) {
+  item3DName.value = name
+  item3DLoading.value = true
+  item3DError.value = ''
+  item3DFront.value = ''
+  item3DIso.value = ''
+  item3DSpin.value = ''
+  showItem3D.value = true
+  await nextTick()
+  loadItem3D()
+  recordMem('item 3d open')
+}
+
+async function loadItem3D() {
+  const pack = selectedPack.value
+  const item = item3DName.value
+  if (!pack || !item) return
+  try {
+    const [front, iso, spin] = await Promise.all([
+      RenderItem(pack, packBase(), item, 'front', 256),
+      RenderItem(pack, packBase(), item, 'iso', 256),
+      RenderItemSpin(pack, packBase(), item, 256),
+    ])
+    item3DFront.value = front
+    item3DIso.value = iso
+    item3DSpin.value = spin
+  } catch (e) {
+    item3DError.value = String(e?.message || e)
+  } finally {
+    item3DLoading.value = false
+  }
+}
+
+function closeItem3D() {
+  showItem3D.value = false
+  item3DName.value = ''
+  item3DFront.value = ''
+  item3DIso.value = ''
+  item3DSpin.value = ''
+  item3DError.value = ''
+}
+
+function itemFileName(name, label) {
+  const pack = (selectedPack.value || 'mew').replace(/[^A-Za-z0-9._-]/g, '_')
+  return pack + '-' + name.replace(/[^A-Za-z0-9._-]/g, '_') + '-' + label
+}
+
+async function saveItemPNG(uri, label) {
+  try { await SaveRender(uri, itemFileName(item3DName.value, label + '.png')) }
+  catch (e) { console.error('Save item PNG failed:', e) }
+}
+
+async function saveItemSpin() {
+  try { await SaveRender(item3DSpin.value, itemFileName(item3DName.value, 'spin.gif')) }
+  catch (e) { console.error('Save item spin failed:', e) }
 }
 
 async function selectPickerItem(name) {
@@ -1503,23 +2204,30 @@ async function removeItem(name) {
 onMounted(async () => {
   try { isDebug.value = await IsDebug() } catch {}
   loadSkyDebugConfig()
+  loadAnimations()
   await loadAllPacks()
   window.addEventListener('resize', onFsResize)
+  // The backend prefetches the renderer's vanilla textures in the background.
+  // When any arrive, redraw: a viewer that opened early may be showing a
+  // placeholder for a texture that is now on disk.
+  vanillaRenderReadyHandler = EventsOn('vanillaRenderReady', () => refreshPlayer())
   if (isDebug.value && showMemPanel.value) startMemSampler()
   recordMem('mounted')
   startGCWatchdog()
 })
 
 onUnmounted(() => {
+  destroyed = true
+  if (vanillaRenderReadyHandler) { vanillaRenderReadyHandler(); vanillaRenderReadyHandler = null }
   stopGCWatchdog()
   if (gcTimer) { clearTimeout(gcTimer); gcTimer = null }
   stopMemSampler()
   window.removeEventListener('resize', onFsResize)
   window.removeEventListener('keydown', onFsNavKey)
-  if (viewerTimer) { clearTimeout(viewerTimer); viewerTimer = null }
-  if (fsViewerTimer) { clearTimeout(fsViewerTimer); fsViewerTimer = null }
-  modelSetupAlive = false
-  clearIdlePause()
+  cancelInertia()
+  stopAnimationLoop()
+  if (animDebounce) { clearTimeout(animDebounce); animDebounce = null }
+  if (skyResizeObserver) { skyResizeObserver.disconnect(); skyResizeObserver = null }
   disposeViewerResources(viewerInstance)
   disposeViewerResources(fsViewerInstance)
   clearSkyCache()
@@ -1531,26 +2239,10 @@ function onFsResize() {
   if (fullscreen.value) measureFs()
 }
 
-watch(() => customSkinURI.value, async () => {
-  if (fsViewerInstance) {
-    const uri = customSkinURI.value || defaultSkinImg
-    const model = skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value
-    if (loadSkinOnce(fsViewerInstance, uri, model)) {
-      await fsViewerInstance.loadSkin(uri, { model })
-      await applyAppearanceFs()
-    }
-  }
-})
-
-watch(() => skinModel.value, async () => {
-  if (fsViewerInstance) {
-    const uri = customSkinURI.value || defaultSkinImg
-    const model = skinModel.value === 'auto-detect' ? 'auto-detect' : skinModel.value
-    if (loadSkinOnce(fsViewerInstance, uri, model)) {
-      await fsViewerInstance.loadSkin(uri, { model })
-    }
-  }
-})
+// Any control that changes the player (hands, model, armor, elytra) kicks off a
+// fresh render; the sky is untouched.
+watch([rightHand, leftHand, elytraOn, equipmentOnly, skinModel, () => selectedMaterial.value], refreshPlayer)
+watch([rightAdjust, leftAdjust], refreshPlayer, { deep: true })
 
 watch(() => props.active, (val) => {
   if (val) {
@@ -1567,10 +2259,15 @@ watch(() => props.openPackReq, (req) => {
 
 <template>
   <div class="pv-page page">
-    <div v-if="packList.length === 0 && !loading" class="pv-empty">
+    <div v-if="!loading && !showServerPacks && packList.length === 0" class="pv-empty">
       <i class="fa fa-box-open pv-empty-icon"></i>
       <p>No installed packs found.</p>
       <p class="pv-empty-sub">Install a pack from the Pack Porter first.</p>
+    </div>
+    <div v-else-if="!loading && showServerPacks && cachePackList.length === 0" class="pv-empty">
+      <i class="fa fa-server pv-empty-icon"></i>
+      <p>No server packs found.</p>
+      <p class="pv-empty-sub">Download a resource pack from a server to see it here.</p>
     </div>
 
     <template v-else>
@@ -1581,6 +2278,9 @@ watch(() => props.openPackReq, (req) => {
           <span v-if="searchQuery" class="pv-search-clear" @click="searchQuery = ''"><i class="fa fa-xmark"></i></span>
         </div>
         <div class="pv-toolbar-right">
+          <button class="pv-sort-btn" :class="{ active: showServerPacks }" @click="showServerPacks = !showServerPacks; closeModal()" title="Toggle server packs from cache">
+            <i class="fa fa-server"></i> Server Packs
+          </button>
           <span class="pv-count">{{ filteredPacks.length }} pack{{ filteredPacks.length !== 1 ? 's' : '' }}</span>
           <div class="pv-sort">
             <button v-for="opt in [{v:'name',icon:'fa-arrow-down-a-z'},{v:'date',icon:'fa-clock'},{v:'size',icon:'fa-hard-drive'}]"
@@ -1598,9 +2298,12 @@ watch(() => props.openPackReq, (req) => {
 
       <div v-else class="pv-grid">
         <div v-for="pack in filteredPacks" :key="pack.dirName" class="pv-card" @click="openPack(pack.dirName)">
-          <img v-if="pack.iconURI" :src="pack.iconURI" class="pv-card-icon" width="56" height="56" loading="lazy" decoding="async" />
-          <div v-else class="pv-card-icon pv-card-placeholder">
-            <i class="fa fa-box"></i>
+          <div class="pv-card-art">
+            <img v-if="pack.iconURI" :src="pack.iconURI" class="pv-card-icon" width="56" height="56" loading="lazy" decoding="async" />
+            <div v-else class="pv-card-icon pv-card-placeholder">
+              <i class="fa fa-box"></i>
+            </div>
+            <img v-if="pack.skinThumb" :src="pack.skinThumb" class="pv-card-skin" width="64" height="64" title="Pack preview: skin, diamond armor and sword" alt="Pack preview" decoding="async" />
           </div>
           <div class="pv-card-info">
             <span class="pv-card-name" v-html="parseBedrockCodes(pack.name || pack.dirName)"></span>
@@ -1626,7 +2329,10 @@ watch(() => props.openPackReq, (req) => {
             <button v-if="hasScreens" class="pv-modal-menubtn" :class="{ active: viewerMode === 'ui' }" :title="viewerMode === 'ui' ? 'Back to texture viewer' : 'Open UI renderer'" @click="toggleUiPanel"><i class="fa fa-bars-staggered"></i></button>
             <button class="pv-modal-folder" @click="openFullscreen" title="Fullscreen preview"><i class="fa fa-expand"></i></button>
             <button class="pv-modal-folder" @click="openPackFolder" title="Open pack folder"><i class="fa fa-folder-open"></i></button>
-            <button class="pv-modal-delete" :class="{ confirming: confirmDelete }" @click="deletePack" :title="confirmDelete ? 'Click again to delete' : 'Delete pack'">
+            <button v-if="showServerPacks" class="pv-modal-folder" :class="{ 'pv-export-btn': true, 'pv-export-active': !exportingServer }" @click="exportSelectedServerPacks" :disabled="exportingServer" title="Export all visible server packs">
+              <i :class="exportingServer ? 'fa fa-circle-notch fa-spin' : 'fa fa-file-export'"></i>
+            </button>
+            <button v-if="!showServerPacks" class="pv-modal-delete" :class="{ confirming: confirmDelete }" @click="deletePack" :title="confirmDelete ? 'Click again to delete' : 'Delete pack'">
               <i :class="confirmDelete ? 'fa fa-triangle-exclamation' : 'fa fa-trash'"></i>
             </button>
             <button class="pv-modal-close" @click="closeModal"><i class="fa fa-xmark"></i></button>
@@ -1635,23 +2341,8 @@ watch(() => props.openPackReq, (req) => {
 
         <div v-show="viewerMode === 'texture'" class="pv-viewer-wrap">
           <div ref="modalContainer" class="pv-3d">
-            <SkinView3d
-              v-if="!fullscreen"
-              ref="viewerRef"
-              :width="getViewerSize().w"
-              :height="getViewerSize().h"
-              :skin-url="customSkinURI || defaultSkinImg"
-              :skin-options="skinOptions"
-              :animation="currentAnimation"
-              :background="null"
-              :fov="45"
-              :zoom="0.9"
-              :enable-rotate="true"
-              :enable-zoom="true"
-              :enable-pan="false"
-              :global-light="3"
-              :camera-light="1.2"
-            />
+            <img v-if="modalPlayerSrc" :src="modalPlayerSrc" class="pv-player-img" width="512" height="512" alt="Player preview" />
+            <div v-if="skyLoading" class="pv-sky-loading"><i class="fa fa-spinner fa-spin"></i> Loading sky…</div>
           </div>
 
           <button class="pv-nav pv-nav-prev" @click.stop="navPack(-1)" title="Previous pack"><i class="fa fa-chevron-left"></i></button>
@@ -1690,6 +2381,23 @@ watch(() => props.openPackReq, (req) => {
             <input type="range" class="pv-skybar-slider" min="0" :max="skySubpacks.length - 1" step="1"
               v-model.number="skySlider" @input="skySlider = Number(skySlider); applySkySubpack(Number(skySlider))" />
           </div>
+          <div v-else class="pv-skybar pv-bgbar" :class="{ 'pv-bgbar-locked': packHasSky }">
+            <div class="pv-skybar-head">
+              <div class="pv-skybar-label"><i class="fa fa-image"></i> Background</div>
+              <div v-if="packHasSky" class="pv-skybar-current"><i class="fa fa-lock"></i> Pack sky</div>
+              <div v-else class="pv-skybar-current">{{ backgroundLabel() }}</div>
+            </div>
+            <div class="pv-bgbar-options">
+              <button v-if="defaultSkyPack" class="pv-bg-swatch pv-bg-swatch-skypack"
+                :class="{ active: backgroundId === SKY_PACK_BACKGROUND_ID }"
+                :style="SKY_PACK_SWATCH_STYLE" :disabled="packHasSky" :title="'Sky pack: ' + defaultSkyPack"
+                @click="setBackground(SKY_PACK_BACKGROUND_ID)"><i class="fa fa-cloud"></i></button>
+              <button v-for="bg in BACKGROUNDS" :key="bg.id"
+                class="pv-bg-swatch" :class="{ active: backgroundId === bg.id }"
+                :style="swatchStyle(bg)" :disabled="packHasSky" :title="bg.name"
+                @click="setBackground(bg.id)"></button>
+            </div>
+          </div>
         </div>
 
         <JsonUiStage v-if="viewerMode === 'ui'" :pack="selectedPack" @close="viewerMode = 'texture'" />
@@ -1697,12 +2405,17 @@ watch(() => props.openPackReq, (req) => {
         <div v-show="viewerMode === 'texture'" class="pv-materials">
           <button v-for="m in materials" :key="m"
             class="pv-mat-btn" :class="{ active: selectedMaterial === m }"
-            @click="applyArmor(selectedPack, m)">
+            @click="selectMaterial(m)">
             {{ materialLabels[m] }}
           </button>
           <span class="pv-mat-sep"></span>
-          <button class="pv-mat-btn" :class="{ active: animating }" @click="animating = !animating">
-            <i class="fa fa-walking"></i> Walk
+          <button class="pv-mat-btn" :class="{ active: elytraOn }" @click="elytraOn = !elytraOn"
+            title="Wings in place of the chestplate">
+            <i class="fa fa-feather"></i> Elytra
+          </button>
+          <button class="pv-mat-btn" :class="{ active: equipmentOnly }" @click="equipmentOnly = !equipmentOnly"
+            title="Hide the skin and show only armor, wings and items">
+            <i class="fa fa-shirt"></i> Gear
           </button>
           <span class="pv-mat-sep"></span>
           <button class="pv-mat-btn" :class="{ active: skinModel === 'auto-detect' }" @click="skinModel = 'auto-detect'">
@@ -1715,16 +2428,71 @@ watch(() => props.openPackReq, (req) => {
             <i class="fa fa-person-dress"></i> Slim
           </button>
           <span class="pv-mat-sep"></span>
+          <label class="pv-anim">
+            <i class="fa fa-film"></i>
+            <select class="pv-anim-select" :value="animationName" @change="setAnimation($event.target.value)">
+              <option value="">Still</option>
+              <option v-for="a in animations" :key="a" :value="a">{{ animationLabel(a) }}</option>
+            </select>
+          </label>
+          <span class="pv-mat-sep"></span>
+          <button class="pv-mat-btn" @click="savePNG" title="Save a high-resolution PNG">
+            <i class="fa fa-image"></i> PNG
+          </button>
+          <button class="pv-mat-btn" :disabled="!animationName" @click="saveGIF" title="Save the current animation as a GIF">
+            <i class="fa fa-film"></i> GIF
+          </button>
+          <span class="pv-mat-sep"></span>
           <button class="pv-mat-btn pv-skin-btn" @click="triggerSkinUpload">
             <i class="fa fa-user-pen"></i> Change Skin
           </button>
-          <button class="pv-mat-btn pv-reload-btn" @click="reloadPack" title="Reload this pack from disk (sky, items, armor)">
+          <button v-if="skinPreviewing" class="pv-mat-btn pv-save-skin-btn" @click="savePackSkin" title="Keep this skin for this pack">
+            <i class="fa fa-floppy-disk"></i> Save Skin
+          </button>
+          <button v-if="packSkinChosen || skinPreviewing" class="pv-mat-btn pv-reload-btn" @click="clearPackSkin" title="Show the pack's own skin again">
+            <i class="fa fa-rotate-left"></i> Pack Skin
+          </button>
+          <button class="pv-mat-btn pv-reload-btn" @click="reloadPack" title="Reload this pack from disk">
             <i class="fa fa-rotate"></i> Reload
           </button>
           <span class="pv-mat-sep"></span>
-          <button class="pv-mat-btn" @click="showExportPopup = true" title="Export this pack as a .mcpack file">
+          <button v-if="!showServerPacks" class="pv-mat-btn" @click="showExportPopup = true" title="Export this pack as a .mcpack file">
             <i class="fa fa-file-export"></i> Export .mcpack
           </button>
+        </div>
+        <div v-show="viewerMode === 'texture'" class="pv-materials pv-held">
+          <span class="pv-held-label"><i class="fa fa-hand"></i> Right</span>
+          <select class="pv-hand-select" :value="rightHand" @change="rightHand = $event.target.value">
+            <option :value="HAND_EMPTY">Empty</option>
+            <option v-for="t in handTools" :key="t" :value="t">{{ handToolLabels[t] }}</option>
+            <option v-for="f in handFlat" :key="f" :value="f">{{ handFlatLabels[f] }}</option>
+          </select>
+          <button class="pv-mat-btn pv-adjust-btn" :class="{ active: rightAdjustOpen }"
+            @click="rightAdjustOpen = !rightAdjustOpen" title="Fine-tune where the item sits"><i class="fa fa-sliders"></i></button>
+          <span class="pv-held-label"><i class="fa fa-hand"></i> Left</span>
+          <select class="pv-hand-select" :value="leftHand" @change="leftHand = $event.target.value">
+            <option :value="HAND_EMPTY">Empty</option>
+            <option v-for="t in handTools" :key="t" :value="t">{{ handToolLabels[t] }}</option>
+            <option v-for="f in handFlat" :key="f" :value="f">{{ handFlatLabels[f] }}</option>
+          </select>
+          <button class="pv-mat-btn pv-adjust-btn" :class="{ active: leftAdjustOpen }"
+            @click="leftAdjustOpen = !leftAdjustOpen" title="Fine-tune where the item sits"><i class="fa fa-sliders"></i></button>
+        </div>
+        <div v-show="viewerMode === 'texture' && rightAdjustOpen" class="pv-adjust">
+          <span class="pv-adjust-title">Right hand placement</span>
+          <label v-for="s in ADJUST_SLIDERS" :key="'r' + s.key" class="pv-adjust-row">
+            <span class="pv-adjust-label">{{ s.label }}</span>
+            <input type="range" class="pv-adjust-range" :min="s.min" :max="s.max" :step="s.step" v-model.number="rightAdjust[s.key]" />
+          </label>
+          <button class="pv-mat-btn" @click="Object.assign(rightAdjust, emptyAdjust())">Reset</button>
+        </div>
+        <div v-show="viewerMode === 'texture' && leftAdjustOpen" class="pv-adjust">
+          <span class="pv-adjust-title">Left hand placement</span>
+          <label v-for="s in ADJUST_SLIDERS" :key="'l' + s.key" class="pv-adjust-row">
+            <span class="pv-adjust-label">{{ s.label }}</span>
+            <input type="range" class="pv-adjust-range" :min="s.min" :max="s.max" :step="s.step" v-model.number="leftAdjust[s.key]" />
+          </label>
+          <button class="pv-mat-btn" @click="Object.assign(leftAdjust, emptyAdjust())">Reset</button>
         </div>
         <input ref="skinFileInput" type="file" accept="image/png" class="pv-hidden-input" @change="onSkinFileChange" />
 
@@ -1736,6 +2504,9 @@ watch(() => props.openPackReq, (req) => {
                 <img :src="item.dataURI" class="pv-item-img" />
                 <button class="pv-item-remove" @click.stop="removeItem(item.name)">
                   <i class="fa fa-xmark"></i>
+                </button>
+                <button class="pv-item-3d" @click.stop="openItem3D(item.name)" title="See this item in 3D">
+                  <i class="fa fa-cube"></i>
                 </button>
               </div>
               <span class="pv-item-label">{{ formatName(item.name) }}</span>
@@ -1753,22 +2524,7 @@ watch(() => props.openPackReq, (req) => {
 
     <div v-if="fullscreen" class="pv-fs-overlay">
       <div ref="fsContainerRef" class="pv-fs-3d">
-        <SkinView3d
-          ref="fsViewerRef"
-          :width="fsSize.w"
-          :height="fsSize.h"
-          :skin-url="customSkinURI || defaultSkinImg"
-          :skin-options="skinOptions"
-          :animation="currentAnimation"
-          :background="null"
-          :fov="45"
-          :zoom="1.1"
-          :enable-rotate="true"
-          :enable-zoom="true"
-          :enable-pan="false"
-          :global-light="3"
-          :camera-light="1.2"
-        />
+        <img v-if="fsPlayerSrc" :src="fsPlayerSrc" class="pv-player-img" width="512" height="512" alt="Player preview" />
         <button class="pv-nav pv-nav-prev" @click.stop="navPack(-1)" title="Previous pack (←)"><i class="fa fa-chevron-left"></i></button>
         <button class="pv-nav pv-nav-next" @click.stop="navPack(1)" title="Next pack (→)"><i class="fa fa-chevron-right"></i></button>
         <div v-if="skySubpacks.length > 0" class="pv-skybar pv-fs-skybar">
@@ -1779,20 +2535,56 @@ watch(() => props.openPackReq, (req) => {
           <input type="range" class="pv-skybar-slider" min="0" :max="skySubpacks.length - 1" step="1"
             v-model.number="skySlider" @input="skySlider = Number(skySlider); applySkySubpack(Number(skySlider))" />
         </div>
+        <div v-else class="pv-skybar pv-fs-skybar pv-bgbar" :class="{ 'pv-bgbar-locked': packHasSky }">
+          <div class="pv-skybar-head">
+            <div class="pv-skybar-label"><i class="fa fa-image"></i> Background</div>
+            <div v-if="packHasSky" class="pv-skybar-current"><i class="fa fa-lock"></i> Pack sky</div>
+            <div v-else class="pv-skybar-current">{{ backgroundLabel() }}</div>
+          </div>
+          <div class="pv-bgbar-options">
+            <button v-if="defaultSkyPack" class="pv-bg-swatch pv-bg-swatch-skypack"
+              :class="{ active: backgroundId === SKY_PACK_BACKGROUND_ID }"
+              :style="SKY_PACK_SWATCH_STYLE" :disabled="packHasSky" :title="'Sky pack: ' + defaultSkyPack"
+              @click="setBackground(SKY_PACK_BACKGROUND_ID)"><i class="fa fa-cloud"></i></button>
+            <button v-for="bg in BACKGROUNDS" :key="bg.id"
+              class="pv-bg-swatch" :class="{ active: backgroundId === bg.id }"
+              :style="swatchStyle(bg)" :disabled="packHasSky" :title="bg.name"
+              @click="setBackground(bg.id)"></button>
+          </div>
+        </div>
       </div>
       <div class="pv-fs-bar">
         <div class="pv-fs-controls">
           <button v-for="m in materials" :key="m" class="pv-mat-btn" :class="{ active: selectedMaterial === m }"
-            @click="applyArmor(selectedPack, m)">{{ materialLabels[m] }}</button>
+            @click="selectMaterial(m)">{{ materialLabels[m] }}</button>
           <span class="pv-mat-sep"></span>
-          <button class="pv-mat-btn" :class="{ active: animating }" @click="animating = !animating"><i class="fa fa-walking"></i> Walk</button>
+          <button class="pv-mat-btn" :class="{ active: elytraOn }" @click="elytraOn = !elytraOn" title="Elytra"><i class="fa fa-feather"></i></button>
+          <button class="pv-mat-btn" :class="{ active: equipmentOnly }" @click="equipmentOnly = !equipmentOnly" title="Gear only"><i class="fa fa-shirt"></i></button>
           <span class="pv-mat-sep"></span>
-          <button class="pv-mat-btn" :class="{ active: skinModel === 'auto-detect' }" @click="skinModel = 'auto-detect'"><i class="fa fa-robot"></i> Auto</button>
-          <button class="pv-mat-btn" :class="{ active: skinModel === 'default' }" @click="skinModel = 'default'"><i class="fa fa-person"></i> Wide</button>
-          <button class="pv-mat-btn" :class="{ active: skinModel === 'slim' }" @click="skinModel = 'slim'"><i class="fa fa-person-dress"></i> Slim</button>
+          <button class="pv-mat-btn" :class="{ active: skinModel === 'auto-detect' }" @click="skinModel = 'auto-detect'"><i class="fa fa-robot"></i></button>
+          <button class="pv-mat-btn" :class="{ active: skinModel === 'default' }" @click="skinModel = 'default'"><i class="fa fa-person"></i></button>
+          <button class="pv-mat-btn" :class="{ active: skinModel === 'slim' }" @click="skinModel = 'slim'"><i class="fa fa-person-dress"></i></button>
           <span class="pv-mat-sep"></span>
-          <button class="pv-mat-btn pv-skin-btn" @click="triggerSkinUpload"><i class="fa fa-user-pen"></i> Change Skin</button>
-          <button class="pv-mat-btn pv-reload-btn" @click="reloadPack" title="Reload this pack from disk (sky, items, armor)"><i class="fa fa-rotate"></i></button>
+          <select class="pv-hand-select" :value="rightHand" @change="rightHand = $event.target.value" title="Right hand">
+            <option :value="HAND_EMPTY">Right: empty</option>
+            <option v-for="t in handTools" :key="'r' + t" :value="t">{{ handToolLabels[t] }}</option>
+            <option v-for="f in handFlat" :key="'rf' + f" :value="f">{{ handFlatLabels[f] }}</option>
+          </select>
+          <select class="pv-hand-select" :value="leftHand" @change="leftHand = $event.target.value" title="Left hand">
+            <option :value="HAND_EMPTY">Left: empty</option>
+            <option v-for="t in handTools" :key="'l' + t" :value="t">{{ handToolLabels[t] }}</option>
+            <option v-for="f in handFlat" :key="'lf' + f" :value="f">{{ handFlatLabels[f] }}</option>
+          </select>
+          <span class="pv-mat-sep"></span>
+          <select class="pv-anim-select" :value="animationName" @change="setAnimation($event.target.value)">
+            <option value="">Still</option>
+            <option v-for="a in animations" :key="a" :value="a">{{ animationLabel(a) }}</option>
+          </select>
+          <span class="pv-mat-sep"></span>
+          <button class="pv-mat-btn" @click="savePNG" title="Save PNG"><i class="fa fa-image"></i></button>
+          <button class="pv-mat-btn" :disabled="!animationName" @click="saveGIF" title="Save GIF"><i class="fa fa-film"></i></button>
+          <button class="pv-mat-btn pv-skin-btn" @click="triggerSkinUpload"><i class="fa fa-user-pen"></i></button>
+          <button class="pv-mat-btn pv-reload-btn" @click="reloadPack" title="Reload this pack from disk"><i class="fa fa-rotate"></i></button>
         </div>
         <button class="pv-fs-btn pv-fs-close" @click="closeFullscreen" title="Close (Esc)"><i class="fa fa-xmark"></i></button>
       </div>
@@ -1825,6 +2617,36 @@ watch(() => props.openPackReq, (req) => {
             <div v-if="itemTextures.some(i => i.name === item)" class="pv-picker-item-check">
               <i class="fa fa-check"></i>
             </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="showItem3D" class="pv-picker-overlay" @click.self="closeItem3D">
+      <div class="pv-item3d" @click.stop>
+        <div class="pv-picker-head">
+          <h3 class="pv-picker-title">3D: {{ formatName(item3DName) }}</h3>
+          <button class="pv-modal-close" @click="closeItem3D"><i class="fa fa-xmark"></i></button>
+        </div>
+        <div v-if="item3DLoading" class="pv-picker-loading">
+          <div class="pv-spinner"></div>
+        </div>
+        <div v-else-if="item3DError" class="pv-item3d-error">{{ item3DError }}</div>
+        <div v-else class="pv-item3d-body">
+          <div class="pv-item3d-cell">
+            <div class="pv-item3d-frame"><img :src="item3DFront" class="pv-item3d-img" alt="Front view" /></div>
+            <span class="pv-item3d-cap">Front</span>
+            <button class="pv-mat-btn" @click="saveItemPNG(item3DFront, 'front')"><i class="fa fa-image"></i> Save PNG</button>
+          </div>
+          <div class="pv-item3d-cell">
+            <div class="pv-item3d-frame"><img :src="item3DIso" class="pv-item3d-img" alt="Isometric view" /></div>
+            <span class="pv-item3d-cap">Iso</span>
+            <button class="pv-mat-btn" @click="saveItemPNG(item3DIso, 'iso')"><i class="fa fa-image"></i> Save PNG</button>
+          </div>
+          <div class="pv-item3d-cell">
+            <div class="pv-item3d-frame"><img :src="item3DSpin" class="pv-item3d-img" alt="Spinning view" /></div>
+            <span class="pv-item3d-cap">Spin</span>
+            <button class="pv-mat-btn" @click="saveItemSpin"><i class="fa fa-film"></i> Save GIF</button>
           </div>
         </div>
       </div>
@@ -2054,6 +2876,21 @@ watch(() => props.openPackReq, (req) => {
   border: 1px solid var(--border-subtle);
 }
 
+.pv-card-art {
+  position: relative;
+  display: flex;
+}
+
+.pv-card-skin {
+  position: absolute;
+  right: -38px;
+  bottom: -8px;
+  width: 64px;
+  height: 64px;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.35));
+  pointer-events: none;
+}
+
 .pv-card-placeholder {
   display: flex;
   align-items: center;
@@ -2170,7 +3007,8 @@ watch(() => props.openPackReq, (req) => {
 
 .pv-modal-folder,
 .pv-modal-delete,
-.pv-modal-close {
+.pv-modal-close,
+.pv-export-btn {
   width: 32px;
   height: 32px;
   border-radius: 8px;
@@ -2192,6 +3030,17 @@ watch(() => props.openPackReq, (req) => {
   border-color: var(--border-focus);
 }
 
+.pv-export-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pv-export-btn:not(:disabled):hover {
+  background: var(--accent-active-bg);
+  color: var(--accent-light);
+  border-color: var(--accent);
+}
+
 .pv-modal-delete:hover {
   background: rgba(248, 113, 113, 0.15);
   color: #f87171;
@@ -2205,19 +3054,131 @@ watch(() => props.openPackReq, (req) => {
 }
 
 .pv-3d {
+  position: relative;
   width: 100%;
   height: 400px;
   border-radius: 0;
   background: transparent;
+  overflow: hidden;
 }
 
 .pv-3d canvas { display: block; }
+.pv-sky-loading {
+  position: absolute;
+  top: 0.6rem;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #ddd;
+  font-size: 0.75rem;
+  pointer-events: none;
+}
+
+/* The player is a transparent bedrock-skin-go render laid over the sky
+   canvas and centred in the square that fits the viewer. object-fit keeps the
+   displayed size fixed however many pixels a still or frame was rendered at,
+   so releasing a drag does not change the apparent zoom. */
+.pv-player-img {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  image-rendering: auto;
+}
+
+.pv-anim {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--text-dim);
+}
+
+.pv-anim-select,
+.pv-hand-select {
+  padding: 0.35rem 0.5rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-body);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  max-width: 160px;
+}
+
+.pv-hand-select {
+  max-width: 130px;
+}
+
+.pv-adjust-btn {
+  padding: 0.35rem 0.55rem;
+}
+
+.pv-adjust {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem 0.8rem;
+  margin-top: 0.4rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-hover-1);
+}
+
+.pv-adjust-title {
+  width: 100%;
+  text-align: center;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.pv-adjust-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+
+.pv-adjust-label {
+  min-width: 28px;
+  text-align: right;
+}
+
+.pv-adjust-range {
+  width: 110px;
+}
+
+.pv-mat-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 
 .pv-materials {
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem;
   justify-content: center;
+}
+
+.pv-held {
+  align-items: center;
+  margin-top: 0.4rem;
+}
+
+.pv-held-label {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-right: 0.25rem;
 }
 
 .pv-mat-btn {
@@ -2252,6 +3213,13 @@ watch(() => props.openPackReq, (req) => {
 
 .pv-skin-btn i { margin-right: 0.3rem; }
 
+.pv-save-skin-btn {
+  border-color: rgba(120, 220, 140, 0.55);
+  color: #8fe3a1;
+}
+.pv-save-skin-btn:hover {
+  background: rgba(120, 220, 140, 0.15);
+}
 .pv-reload-btn {
   color: var(--accent-light);
 }
@@ -2323,7 +3291,29 @@ watch(() => props.openPackReq, (req) => {
   line-height: 1;
 }
 
-.pv-item-card:hover .pv-item-remove {
+.pv-item-3d {
+  position: absolute;
+  top: -4px;
+  left: -4px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: none;
+  background: #2980b9;
+  color: #fff;
+  font-size: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+  padding: 0;
+  line-height: 1;
+}
+
+.pv-item-card:hover .pv-item-remove,
+.pv-item-card:hover .pv-item-3d {
   opacity: 1;
 }
 
@@ -2395,6 +3385,63 @@ watch(() => props.openPackReq, (req) => {
   padding: 3rem;
   color: var(--text-dim);
   font-size: 0.85rem;
+}
+
+.pv-item3d {
+  background: var(--bg-body);
+  border: 1px solid var(--border-default);
+  border-radius: 14px;
+  width: 90vw;
+  max-width: 560px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.pv-item3d-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  justify-content: center;
+  padding: 1rem;
+  overflow: auto;
+}
+
+.pv-item3d-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.pv-item3d-frame {
+  width: 160px;
+  height: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-hover-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.pv-item3d-img {
+  max-width: 100%;
+  max-height: 100%;
+  image-rendering: pixelated;
+}
+
+.pv-item3d-cap {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.pv-item3d-error {
+  color: #f44;
+  padding: 1rem;
+  text-align: center;
 }
 
 .pv-picker-search {
@@ -2805,6 +3852,46 @@ watch(() => props.openPackReq, (req) => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.pv-bgbar-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.pv-bg-swatch-skypack {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 0.8rem;
+}
+.pv-bg-swatch {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 8px;
+  border: 2px solid var(--border-subtle);
+  cursor: pointer;
+  transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
+}
+
+.pv-bg-swatch:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: var(--accent-light);
+}
+
+.pv-bg-swatch.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.pv-bg-swatch:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.pv-bgbar-locked .pv-skybar-current i { margin-right: 0.25rem; }
 
 .pv-fs-overlay {
   position: fixed;
